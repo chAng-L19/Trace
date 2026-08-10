@@ -1,0 +1,456 @@
+{
+  "definitions": [
+    {
+      "description": "Single autonomous entrypoint: start or resume one operation or a multi-target batch, accept Host Agent observations, and continue to the next durable or terminal state.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "auto_continue": {
+            "type": "boolean"
+          },
+          "batch_session_id": {
+            "type": "string"
+          },
+          "budget_delta": {
+            "additionalProperties": false,
+            "properties": {
+              "actions": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "deadline": {
+                "type": "string"
+              },
+              "time_seconds": {
+                "minimum": 0,
+                "type": "number"
+              },
+              "tokens": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "constraints": {
+            "type": "object"
+          },
+          "credential_bindings": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Process-local mapping of required SECRET_REF values to raw tool-channel credentials.",
+            "type": "object"
+          },
+          "deadline": {
+            "type": "string"
+          },
+          "max_actions": {
+            "maximum": 512,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "max_cycles": {
+            "maximum": 64,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "max_retries_per_action": {
+            "maximum": 8,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_time_seconds": {
+            "minimum": 0.1,
+            "type": "number"
+          },
+          "max_tokens": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "max_total_actions": {
+            "maximum": 4096,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "objective": {
+            "type": "string"
+          },
+          "observation": {
+            "additionalProperties": false,
+            "properties": {
+              "action_id": {
+                "type": "string"
+              },
+              "attempt_id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "contract_hash": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "handoff_id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "handoff_token": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "output": {},
+              "tool": {
+                "type": "string"
+              },
+              "usage": {
+                "additionalProperties": false,
+                "properties": {
+                  "input_tokens": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "output_tokens": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "total_tokens": {
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "required": [
+              "handoff_id",
+              "handoff_token",
+              "attempt_id",
+              "contract_hash",
+              "output"
+            ],
+            "type": "object"
+          },
+          "observations": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "action_id": {
+                  "type": "string"
+                },
+                "attempt_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "contract_hash": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "handoff_id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "handoff_token": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "output": {},
+                "run_id": {
+                  "type": "string"
+                },
+                "tool": {
+                  "type": "string"
+                },
+                "usage": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "input_tokens": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "output_tokens": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "total_tokens": {
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "required": [
+                "run_id",
+                "handoff_id",
+                "handoff_token",
+                "attempt_id",
+                "contract_hash",
+                "output"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "starting_context": {
+            "type": "object"
+          },
+          "success_predicates": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "targets": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "workflow_hint": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "redteam_run"
+    },
+    {
+      "description": "Return non-advancing operation or batch state, verified evidence, missing predicates, and the next executable action.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_session_id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "redteam_status"
+    },
+    {
+      "description": "Fetch one verified evidence node by operation and evidence ID when its payload was omitted from a compact status response.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence_id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "evidence_id"
+        ],
+        "type": "object"
+      },
+      "name": "redteam_evidence"
+    },
+    {
+      "description": "Cancel an active operation, run an available cleanup action, and persist the cleanup outcome.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_session_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "redteam_cancel"
+    },
+    {
+      "description": "Return the durable event trace for an operation.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "after_event_id": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "limit": {
+            "maximum": 1000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "run_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id"
+        ],
+        "type": "object"
+      },
+      "name": "redteam_events"
+    },
+    {
+      "description": "Compile a red-team goal, select a typed workflow, execute available tools, and persist the operation until its next durable state.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "constraints": {
+            "type": "object"
+          },
+          "deadline": {
+            "type": "string"
+          },
+          "max_actions": {
+            "maximum": 512,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "max_retries_per_action": {
+            "maximum": 8,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_time_seconds": {
+            "minimum": 0.1,
+            "type": "number"
+          },
+          "max_tokens": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "max_total_actions": {
+            "maximum": 4096,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "objective": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "starting_context": {
+            "type": "object"
+          },
+          "success_predicates": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "targets": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "workflow_hint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "objective"
+        ],
+        "type": "object"
+      },
+      "name": "redteam_start"
+    },
+    {
+      "description": "Resume a persisted operation without requiring copied tool output from the user.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "credential_bindings": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "max_actions": {
+            "maximum": 512,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "run_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id"
+        ],
+        "type": "object"
+      },
+      "name": "redteam_resume"
+    },
+    {
+      "description": "Submit host-agent tool output to the current typed action; semantic verification and lineage checks run before the workflow advances automatically.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "action_id": {
+            "type": "string"
+          },
+          "continue_run": {
+            "type": "boolean"
+          },
+          "output": {},
+          "run_id": {
+            "type": "string"
+          },
+          "tool": {
+            "type": "string"
+          },
+          "usage": {
+            "additionalProperties": false,
+            "properties": {
+              "input_tokens": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "output_tokens": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "total_tokens": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "run_id",
+          "action_id",
+          "output"
+        ],
+        "type": "object"
+      },
+      "name": "redteam_submit_observation"
+    }
+  ],
+  "legacy_tool_names": [
+    "redteam_start",
+    "redteam_resume",
+    "redteam_submit_observation"
+  ],
+  "public_tool_names": [
+    "redteam_run",
+    "redteam_status",
+    "redteam_evidence",
+    "redteam_cancel",
+    "redteam_events"
+  ]
+}

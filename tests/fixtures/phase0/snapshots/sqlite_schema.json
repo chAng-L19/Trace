@@ -1,0 +1,119 @@
+{
+  "objects": [
+    {
+      "name": "idx_attempts_run",
+      "sql": "CREATE INDEX idx_attempts_run ON task_attempts(run_id, action_id, started_at)",
+      "table": "task_attempts",
+      "type": "index"
+    },
+    {
+      "name": "idx_evidence_run",
+      "sql": "CREATE INDEX idx_evidence_run ON evidence_nodes(run_id, created_at, evidence_id)",
+      "table": "evidence_nodes",
+      "type": "index"
+    },
+    {
+      "name": "idx_facts_run",
+      "sql": "CREATE INDEX idx_facts_run ON facts(run_id, branch_id, fact_key, version)",
+      "table": "facts",
+      "type": "index"
+    },
+    {
+      "name": "idx_handoffs_pending",
+      "sql": "CREATE INDEX idx_handoffs_pending ON host_handoffs(run_id, branch_id, plan_revision, action_id, status)",
+      "table": "host_handoffs",
+      "type": "index"
+    },
+    {
+      "name": "idx_operations_session",
+      "sql": "CREATE INDEX idx_operations_session ON operations(session_id, updated_at DESC)",
+      "table": "operations",
+      "type": "index"
+    },
+    {
+      "name": "idx_reviews_run",
+      "sql": "CREATE INDEX idx_reviews_run ON reviews(run_id, branch_id, plan_revision)",
+      "table": "reviews",
+      "type": "index"
+    },
+    {
+      "name": "action_leases",
+      "sql": "CREATE TABLE action_leases ( run_id TEXT NOT NULL, action_id TEXT NOT NULL, owner TEXT NOT NULL, fencing_token INTEGER NOT NULL DEFAULT 0, expires_at REAL NOT NULL, PRIMARY KEY(run_id, action_id), FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE )",
+      "table": "action_leases",
+      "type": "table"
+    },
+    {
+      "name": "action_results",
+      "sql": "CREATE TABLE action_results ( run_id TEXT NOT NULL, action_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(run_id, idempotency_key), FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE )",
+      "table": "action_results",
+      "type": "table"
+    },
+    {
+      "name": "evidence_nodes",
+      "sql": "CREATE TABLE evidence_nodes ( evidence_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, action_id TEXT NOT NULL, artifact_type TEXT NOT NULL, tool TEXT NOT NULL, content_hash TEXT NOT NULL, node_json TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE )",
+      "table": "evidence_nodes",
+      "type": "table"
+    },
+    {
+      "name": "facts",
+      "sql": "CREATE TABLE facts ( fact_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, branch_id TEXT NOT NULL, fact_key TEXT NOT NULL, version INTEGER NOT NULL, valid INTEGER NOT NULL, fact_json TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(run_id, branch_id, fact_key, version), FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE )",
+      "table": "facts",
+      "type": "table"
+    },
+    {
+      "name": "host_handoffs",
+      "sql": "CREATE TABLE host_handoffs ( handoff_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, branch_id TEXT NOT NULL, plan_revision INTEGER NOT NULL, action_id TEXT NOT NULL, attempt_id TEXT NOT NULL, token_hash TEXT NOT NULL, contract_hash TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL DEFAULT '', consumed_at TEXT NOT NULL, FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE, FOREIGN KEY(attempt_id) REFERENCES task_attempts(attempt_id) ON DELETE CASCADE )",
+      "table": "host_handoffs",
+      "type": "table"
+    },
+    {
+      "name": "lease_generations",
+      "sql": "CREATE TABLE lease_generations ( run_id TEXT NOT NULL, action_id TEXT NOT NULL, generation INTEGER NOT NULL, PRIMARY KEY(run_id, action_id), FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE )",
+      "table": "lease_generations",
+      "type": "table"
+    },
+    {
+      "name": "operation_events",
+      "sql": "CREATE TABLE operation_events ( event_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, event_type TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE )",
+      "table": "operation_events",
+      "type": "table"
+    },
+    {
+      "name": "operations",
+      "sql": "CREATE TABLE operations ( run_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, goal_id TEXT NOT NULL, workflow_id TEXT NOT NULL, status TEXT NOT NULL, state_json TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL )",
+      "table": "operations",
+      "type": "table"
+    },
+    {
+      "name": "plan_revisions",
+      "sql": "CREATE TABLE plan_revisions ( run_id TEXT NOT NULL, plan_id TEXT NOT NULL, branch_id TEXT NOT NULL, revision INTEGER NOT NULL, parent_revision INTEGER NOT NULL, plan_hash TEXT NOT NULL, plan_json TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(run_id, plan_id, branch_id, revision), FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE )",
+      "table": "plan_revisions",
+      "type": "table"
+    },
+    {
+      "name": "reviews",
+      "sql": "CREATE TABLE reviews ( review_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, branch_id TEXT NOT NULL, plan_revision INTEGER NOT NULL, scope TEXT NOT NULL, subject_id TEXT NOT NULL, decision TEXT NOT NULL, review_json TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE )",
+      "table": "reviews",
+      "type": "table"
+    },
+    {
+      "name": "schema_metadata",
+      "sql": "CREATE TABLE schema_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+      "table": "schema_metadata",
+      "type": "table"
+    },
+    {
+      "name": "session_bindings",
+      "sql": "CREATE TABLE session_bindings ( session_id TEXT PRIMARY KEY, run_id TEXT NOT NULL DEFAULT '', version INTEGER NOT NULL, binding_json TEXT NOT NULL, updated_at TEXT NOT NULL )",
+      "table": "session_bindings",
+      "type": "table"
+    },
+    {
+      "name": "task_attempts",
+      "sql": "CREATE TABLE task_attempts ( attempt_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, branch_id TEXT NOT NULL, plan_revision INTEGER NOT NULL, action_id TEXT NOT NULL, tool TEXT NOT NULL, tool_version TEXT NOT NULL, input_hash TEXT NOT NULL, idempotency_key TEXT NOT NULL, status TEXT NOT NULL, fencing_token INTEGER NOT NULL, attempt_json TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT NOT NULL, UNIQUE(run_id, branch_id, plan_revision, idempotency_key), FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE )",
+      "table": "task_attempts",
+      "type": "table"
+    }
+  ],
+  "user_version": 4
+}

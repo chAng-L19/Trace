@@ -1,0 +1,10 @@
+{
+  "mcp_protocol": "2025-06-18",
+  "mcp_server": "redteam-agent-runtime",
+  "package": "codex-redteam-agent",
+  "package_version": "0.1.0",
+  "public_tool_count": 5,
+  "python_baseline": "3.12",
+  "requires_python": ">=3.11",
+  "sqlite_schema_version": 4
+}

@@ -1,0 +1,158 @@
+{
+  "evidence": [
+    {
+      "action_id": "map-surface",
+      "artifact_type": "surface_map",
+      "confidence": 0.88,
+      "parent_artifact_types": [],
+      "semantic_payload": {
+        "clause_ids": [],
+        "clause_support": {},
+        "files": [
+          {
+            "path": "tests/fixtures/phase0/target.txt",
+            "sha256": "5b74b561c9e110e7582d12cdfacaa22c2ca4d3b6fdd8bd3866f85146dbbddae1",
+            "size": 25
+          }
+        ]
+      },
+      "target": "tests/fixtures/phase0/target.txt",
+      "tool": "builtin:local-target-inspector",
+      "trust": "runtime_verified",
+      "verified": true,
+      "verifier": "surface_map"
+    },
+    {
+      "action_id": "build-hypotheses",
+      "artifact_type": "hypothesis_queue",
+      "confidence": 0.9,
+      "parent_artifact_types": [
+        "surface_map"
+      ],
+      "semantic_payload": {
+        "clause_ids": [
+          "clause-01-7a7c4be1313a",
+          "clause-02-56f665c83105",
+          "clause-03-f5594730c903"
+        ],
+        "clause_support": {
+          "clause-01-7a7c4be1313a": {
+            "artifact_type": "hypothesis_queue",
+            "basis": "the verified hypothesis_queue satisfies this clause's declared evidence contract",
+            "source_text": "Give me a plan for tests/fixtures/phase0/target.txt"
+          },
+          "clause-02-56f665c83105": {
+            "artifact_type": "hypothesis_queue",
+            "basis": "the verified hypothesis_queue satisfies this clause's declared evidence contract",
+            "source_text": "do not make changes yet"
+          },
+          "clause-03-f5594730c903": {
+            "artifact_type": "hypothesis_queue",
+            "basis": "the verified hypothesis_queue satisfies this clause's declared evidence contract",
+            "source_text": "no need to run tests"
+          }
+        },
+        "hypotheses": [
+          {
+            "id": "hypothesis-1",
+            "negative_control": "Repeat the same validation with the suspected control variable removed or a non-privileged identity.",
+            "priority": "high",
+            "recommended_capabilities": [
+              "code_analysis",
+              "test_harness"
+            ],
+            "statement": "Trace untrusted inputs through security-sensitive code and validate the highest-impact reachable sink.",
+            "status": "unvalidated"
+          }
+        ]
+      },
+      "target": "tests/fixtures/phase0/target.txt",
+      "tool": "builtin:evidence-hypothesis-builder",
+      "trust": "runtime_verified",
+      "verified": true,
+      "verifier": "hypothesis_queue"
+    },
+    {
+      "action_id": "report",
+      "artifact_type": "final_report",
+      "confidence": 0.92,
+      "parent_artifact_types": [
+        "hypothesis_queue",
+        "surface_map"
+      ],
+      "semantic_payload": {
+        "clause_results": [
+          {
+            "clause_id": "clause-01-7a7c4be1313a",
+            "status": "achieved",
+            "target": "tests/fixtures/phase0/target.txt"
+          },
+          {
+            "clause_id": "clause-02-56f665c83105",
+            "status": "achieved",
+            "target": "tests/fixtures/phase0/target.txt"
+          },
+          {
+            "clause_id": "clause-03-f5594730c903",
+            "status": "achieved",
+            "target": "tests/fixtures/phase0/target.txt"
+          }
+        ],
+        "criteria": [
+          {
+            "criterion_id": "criterion-057ca39fd9056cf1",
+            "statement": "Complete clause-01-7a7c4be1313a, clause-02-56f665c83105, clause-03-f5594730c903 for tests/fixtures/phase0/target.txt through the generic adaptive evidence path: Give me a plan for tests/fixtures/phase0/target.txt; do not make changes yet and no need to run tests",
+            "status": "achieved",
+            "target": "tests/fixtures/phase0/target.txt",
+            "workflow_id": "generic-adaptive"
+          }
+        ],
+        "findings": [
+          {
+            "artifact_type": "hypothesis_queue",
+            "result": null,
+            "target": "tests/fixtures/phase0/target.txt"
+          },
+          {
+            "artifact_type": "surface_map",
+            "result": null,
+            "target": "tests/fixtures/phase0/target.txt"
+          }
+        ],
+        "goal_result": "achieved",
+        "report": {
+          "cleanup_verified": false,
+          "evidence_count": 2,
+          "negative_results": [],
+          "objective": "Give me a plan for tests/fixtures/phase0/target.txt; do not make changes yet and no need to run tests",
+          "targets": [
+            "tests/fixtures/phase0/target.txt"
+          ],
+          "verified_artifacts": [
+            "hypothesis_queue",
+            "surface_map"
+          ],
+          "workflow_id": "generic-adaptive"
+        },
+        "summary": "Give me a plan for tests/fixtures/phase0/target.txt; do not make changes yet and no need to run tests"
+      },
+      "target": "tests/fixtures/phase0/target.txt",
+      "tool": "builtin:evidence-report-builder",
+      "trust": "runtime_verified",
+      "verified": true,
+      "verifier": "final_report"
+    }
+  ],
+  "missing_capabilities": [],
+  "next_action": "",
+  "terminal": {
+    "missing": [],
+    "reason": "goal_contract_satisfied",
+    "satisfied": [
+      "workflow_actions_complete:required",
+      "artifact_verified:final_report"
+    ],
+    "success": true,
+    "terminal": true
+  }
+}

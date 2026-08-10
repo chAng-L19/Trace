@@ -1,0 +1,118 @@
+{
+  "constraints": {},
+  "evidence_standard": "reproducible",
+  "goal_id": "goal-141f327afb673f9f611adfe65c1626ef",
+  "intent_envelope": {
+    "action_kind": "plan",
+    "actions": [],
+    "authoritative_source": "goal.objective",
+    "clause_contracts": [
+      {
+        "actions": [],
+        "clause_id": "clause-01-7a7c4be1313a",
+        "constraints": [],
+        "deliverables": [
+          "plan"
+        ],
+        "required_artifacts": [
+          "hypothesis_queue"
+        ],
+        "source_text": "Give me a plan for tests/fixtures/phase0/target.txt",
+        "targets": [
+          "tests/fixtures/phase0/target.txt"
+        ]
+      },
+      {
+        "actions": [],
+        "clause_id": "clause-02-56f665c83105",
+        "constraints": [
+          "do not make changes yet"
+        ],
+        "deliverables": [],
+        "required_artifacts": [
+          "hypothesis_queue"
+        ],
+        "source_text": "do not make changes yet",
+        "targets": []
+      },
+      {
+        "actions": [],
+        "clause_id": "clause-03-f5594730c903",
+        "constraints": [],
+        "deliverables": [],
+        "required_artifacts": [
+          "hypothesis_queue"
+        ],
+        "source_text": "no need to run tests",
+        "targets": []
+      }
+    ],
+    "clause_ids": [
+      "clause-01-7a7c4be1313a",
+      "clause-02-56f665c83105",
+      "clause-03-f5594730c903"
+    ],
+    "clauses": [
+      "Give me a plan for tests/fixtures/phase0/target.txt",
+      "do not make changes yet",
+      "no need to run tests"
+    ],
+    "constraints": [
+      "do not make changes yet"
+    ],
+    "credential_refs": [],
+    "deliverables": [
+      "plan"
+    ],
+    "execution_prompt": "[prompt-rewrite:lossless-execution-v2]\nAuthority: execute source_text exactly; this rewrite augments it and never replaces it.\nSource projection: sha256=ad85203caef7e77356852c0ffa69e420ce991369f011e273dc9e4b44e41fab2b bytes=101 representation=original-source\nOriginal source identity: sha256=ad85203caef7e77356852c0ffa69e420ce991369f011e273dc9e4b44e41fab2b bytes=101\nMode: plan; execution_required=false; scene=general\nClause index: count=3 ids_sha256=7dfeeb8929c646295b99d65d91f5560647bcf4eeab8d8318d67953640ec82c0d\nActions: unspecified\nDeliverables: plan\nConstraints: count=1\nRequired artifacts: hypothesis_queue\nOriginal objective (verbatim):\nGive me a plan for tests/fixtures/phase0/target.txt; do not make changes yet and no need to run tests\nClause contracts: use the structured clause_contracts field bound by the Clause index digest above.\nPreserve: every concrete identifier, target, constraint, requested format, action, and deliverable.\nCompletion: each clause must have target-bound evidence or an explicit durable unresolved dependency.",
+    "execution_required": false,
+    "fingerprint": "de2538d6c4fdbf7135a15ece116486c4f0161bbe3eb6344ddfcdfcaa25dbf789",
+    "input_redaction": {
+      "applied": false,
+      "canonical_bytes": 101,
+      "canonical_sha256": "ad85203caef7e77356852c0ffa69e420ce991369f011e273dc9e4b44e41fab2b",
+      "credential_refs": [],
+      "original_bytes": 101,
+      "original_sha256": "ad85203caef7e77356852c0ffa69e420ce991369f011e273dc9e4b44e41fab2b",
+      "representation": "original-source"
+    },
+    "lossless": true,
+    "original_source_bytes": 101,
+    "original_source_sha256": "ad85203caef7e77356852c0ffa69e420ce991369f011e273dc9e4b44e41fab2b",
+    "scene": "general",
+    "source_bytes": 101,
+    "source_representation": "original-source",
+    "source_sha256": "ad85203caef7e77356852c0ffa69e420ce991369f011e273dc9e4b44e41fab2b",
+    "source_text": "Give me a plan for tests/fixtures/phase0/target.txt; do not make changes yet and no need to run tests",
+    "target_binding": "compiled",
+    "targets": [
+      "tests/fixtures/phase0/target.txt"
+    ],
+    "unresolved_clauses": [],
+    "verbs": [],
+    "version": "lossless-execution-v2"
+  },
+  "max_actions": 16,
+  "max_retries_per_action": 2,
+  "objective": "Give me a plan for tests/fixtures/phase0/target.txt; do not make changes yet and no need to run tests",
+  "starting_context": {},
+  "stop_conditions": [
+    "action_budget_exhausted",
+    "explicit_stop_condition",
+    "nonrecoverable_tool_failure"
+  ],
+  "success_criteria": [
+    {
+      "criterion_id": "criterion-057ca39fd9056cf1",
+      "statement": "Complete clause-01-7a7c4be1313a, clause-02-56f665c83105, clause-03-f5594730c903 for tests/fixtures/phase0/target.txt through the generic adaptive evidence path: Give me a plan for tests/fixtures/phase0/target.txt; do not make changes yet and no need to run tests",
+      "target": "tests/fixtures/phase0/target.txt",
+      "workflow_id": "generic-adaptive"
+    }
+  ],
+  "success_predicates": [],
+  "targets": [
+    "tests/fixtures/phase0/target.txt"
+  ],
+  "workflow_hint": "generic-adaptive",
+  "workflow_hints": []
+}

@@ -1,0 +1,295 @@
+{
+  "completed": {
+    "action_attempts": {
+      "build-hypotheses": 1,
+      "map-surface": 1,
+      "report": 2
+    },
+    "action_status": {
+      "build-hypotheses": "completed",
+      "map-surface": "completed",
+      "report": "completed"
+    },
+    "branch_id": "main",
+    "budget": {
+      "action_limit": 16,
+      "actions_used": 4,
+      "exhausted": false,
+      "pause_reason": "",
+      "time_limit_seconds": null,
+      "token_limit": null,
+      "tokens_used": null
+    },
+    "cleanup_status": "not_started",
+    "current_action_id": "",
+    "evidence_count": 3,
+    "plan_id": "plan-f9809b4fb6b797de3789757cf7bf658b",
+    "plan_revision": 1,
+    "run_id": "run-141f327afb673f9f611adfe65c1626ef",
+    "session_id": "phase0-baseline",
+    "state_version": 10,
+    "status": "completed",
+    "terminal_reason": "goal_contract_satisfied",
+    "workflow_id": "generic-adaptive",
+    "workflow_version": 2
+  },
+  "events": [
+    {
+      "action_id": "",
+      "event_id": 1,
+      "event_type": "operation_started",
+      "payload_keys": [
+        "objective",
+        "state_version",
+        "targets",
+        "workflow_id"
+      ],
+      "state_status": "running",
+      "state_version": 1
+    },
+    {
+      "action_id": "map-surface",
+      "event_id": 2,
+      "event_type": "tool_selected",
+      "payload_keys": [
+        "action_id",
+        "candidates",
+        "fallback_reason",
+        "required_capabilities",
+        "risk",
+        "selected_tool"
+      ],
+      "state_status": "",
+      "state_version": 0
+    },
+    {
+      "action_id": "map-surface",
+      "event_id": 3,
+      "event_type": "action_started",
+      "payload_keys": [
+        "action_id",
+        "attempt_id",
+        "fencing_token",
+        "input_hash",
+        "state_version",
+        "tool"
+      ],
+      "state_status": "running",
+      "state_version": 2
+    },
+    {
+      "action_id": "map-surface",
+      "event_id": 4,
+      "event_type": "action_completed",
+      "payload_keys": [
+        "action_id",
+        "added_actions",
+        "attempt_id",
+        "evidence_id",
+        "evidence_ids",
+        "fact_ids",
+        "plan_revision",
+        "plan_revisions",
+        "review_ids",
+        "state_version",
+        "tool"
+      ],
+      "state_status": "running",
+      "state_version": 3
+    },
+    {
+      "action_id": "build-hypotheses",
+      "event_id": 5,
+      "event_type": "tool_selected",
+      "payload_keys": [
+        "action_id",
+        "candidates",
+        "fallback_reason",
+        "required_capabilities",
+        "risk",
+        "selected_tool"
+      ],
+      "state_status": "",
+      "state_version": 0
+    },
+    {
+      "action_id": "build-hypotheses",
+      "event_id": 6,
+      "event_type": "action_started",
+      "payload_keys": [
+        "action_id",
+        "attempt_id",
+        "fencing_token",
+        "input_hash",
+        "state_version",
+        "tool"
+      ],
+      "state_status": "running",
+      "state_version": 4
+    },
+    {
+      "action_id": "build-hypotheses",
+      "event_id": 7,
+      "event_type": "action_completed",
+      "payload_keys": [
+        "action_id",
+        "added_actions",
+        "attempt_id",
+        "evidence_id",
+        "evidence_ids",
+        "fact_ids",
+        "plan_revision",
+        "plan_revisions",
+        "review_ids",
+        "state_version",
+        "tool"
+      ],
+      "state_status": "running",
+      "state_version": 5
+    },
+    {
+      "action_id": "report",
+      "event_id": 8,
+      "event_type": "tool_selected",
+      "payload_keys": [
+        "action_id",
+        "candidates",
+        "fallback_reason",
+        "required_capabilities",
+        "risk",
+        "selected_tool"
+      ],
+      "state_status": "",
+      "state_version": 0
+    },
+    {
+      "action_id": "report",
+      "event_id": 9,
+      "event_type": "action_started",
+      "payload_keys": [
+        "action_id",
+        "attempt_id",
+        "fencing_token",
+        "input_hash",
+        "state_version",
+        "tool"
+      ],
+      "state_status": "running",
+      "state_version": 6
+    },
+    {
+      "action_id": "report",
+      "event_id": 10,
+      "event_type": "action_fallback_scheduled",
+      "payload_keys": [
+        "action_id",
+        "attempt_id",
+        "evidence_ids",
+        "fact_ids",
+        "plan_revisions",
+        "reason",
+        "retryable",
+        "review_ids",
+        "state_version",
+        "tool"
+      ],
+      "state_status": "running",
+      "state_version": 7
+    },
+    {
+      "action_id": "report",
+      "event_id": 11,
+      "event_type": "tool_selected",
+      "payload_keys": [
+        "action_id",
+        "candidates",
+        "fallback_reason",
+        "required_capabilities",
+        "risk",
+        "selected_tool"
+      ],
+      "state_status": "",
+      "state_version": 0
+    },
+    {
+      "action_id": "report",
+      "event_id": 12,
+      "event_type": "action_started",
+      "payload_keys": [
+        "action_id",
+        "attempt_id",
+        "fencing_token",
+        "input_hash",
+        "state_version",
+        "tool"
+      ],
+      "state_status": "running",
+      "state_version": 8
+    },
+    {
+      "action_id": "report",
+      "event_id": 13,
+      "event_type": "action_completed",
+      "payload_keys": [
+        "action_id",
+        "added_actions",
+        "attempt_id",
+        "evidence_id",
+        "evidence_ids",
+        "fact_ids",
+        "plan_revision",
+        "plan_revisions",
+        "review_ids",
+        "state_version",
+        "tool"
+      ],
+      "state_status": "running",
+      "state_version": 9
+    },
+    {
+      "action_id": "",
+      "event_id": 14,
+      "event_type": "operation_completed",
+      "payload_keys": [
+        "reason",
+        "state_version"
+      ],
+      "state_status": "completed",
+      "state_version": 10
+    }
+  ],
+  "started": {
+    "action_attempts": {
+      "build-hypotheses": 0,
+      "map-surface": 0,
+      "report": 0
+    },
+    "action_status": {
+      "build-hypotheses": "pending",
+      "map-surface": "pending",
+      "report": "pending"
+    },
+    "branch_id": "main",
+    "budget": {
+      "action_limit": 16,
+      "actions_used": 0,
+      "exhausted": false,
+      "pause_reason": "",
+      "time_limit_seconds": null,
+      "token_limit": null,
+      "tokens_used": null
+    },
+    "cleanup_status": "not_started",
+    "current_action_id": "",
+    "evidence_count": 0,
+    "plan_id": "plan-f9809b4fb6b797de3789757cf7bf658b",
+    "plan_revision": 1,
+    "run_id": "run-141f327afb673f9f611adfe65c1626ef",
+    "session_id": "phase0-baseline",
+    "state_version": 1,
+    "status": "running",
+    "terminal_reason": "",
+    "workflow_id": "generic-adaptive",
+    "workflow_version": 2
+  }
+}
