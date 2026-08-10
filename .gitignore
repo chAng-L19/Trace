@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+build/
+dist/
+*.egg-info/
+state/
+*.sqlite3
+artifacts/
+codex-redteam-mode-v2.1.0-backup/

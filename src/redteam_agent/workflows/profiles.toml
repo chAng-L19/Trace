@@ -1,0 +1,91 @@
+profile_schema_version = 2
+template = "generic-adaptive"
+
+# Profiles are planning data only. They never add stages, dependencies,
+# verifiers, risk gates, fixed tools, required artifacts, or terminal rules.
+
+[[profiles]]
+id = "model-security-assessment"
+version = 2
+name = "Model security assessment"
+description = "Prompt rewrite, hierarchy, agent, retrieval, and capability regression coverage."
+match_tags = ["jailbreak", "prompt-injection", "prompt", "llm", "model", "模型", "越狱", "提示词", "注入"]
+coverage_focus = [
+  "system, developer, user, tool, retrieval, memory, and multimodal instruction boundaries",
+  "lossless Prompt Rewrite and compound-intent retention",
+  "direct, indirect, multi-turn, cross-channel, and tool-output injection",
+  "capability, false-refusal, utility, reproducibility, and cross-model behavior",
+]
+capability_hints = ["model probe", "prompt-bank evaluation", "agent/tool harness", "response classification"]
+artifact_extensions = ["exact prompt bundle hash", "model and provider identity", "raw response", "repeatability statistics"]
+negative_controls = ["matched benign request", "unaltered baseline profile", "same prompt without adversarial carrier", "repeat across fresh sessions"]
+
+[[profiles]]
+id = "web-api-assessment"
+version = 2
+name = "Web and API assessment"
+description = "Routes, identities, state transitions, parsers, and server-side trust boundaries."
+match_tags = ["web", "api", "http", "https", "graphql", "sqli", "xss", "ssrf", "xxe", "ssti", "网页", "接口", "网站"]
+coverage_focus = [
+  "routes, methods, parameters, schemas, and protocol upgrades",
+  "authentication, session, object, tenant, role, and workflow authorization",
+  "input-to-sink flows, parser differentials, state transitions, races, and business invariants",
+]
+capability_hints = ["browser automation", "HTTP capture/replay", "schema discovery", "focused request generator"]
+artifact_extensions = ["baseline and changed requests", "response and state differential", "identity and object matrix"]
+negative_controls = ["unchanged input", "unaffected parameter", "lower-privilege identity", "nonexistent object", "repeated clean session"]
+
+[[profiles]]
+id = "source-assisted-review"
+version = 2
+name = "Source-assisted security review"
+description = "Reachable source-to-sink and authorization-invariant analysis with executable harnesses."
+match_tags = ["source", "repository", "codebase", "code-audit", "source-code", "源码", "代码审计", "仓库"]
+coverage_focus = ["entrypoints and trust boundaries", "authentication and authorization middleware", "dangerous sinks", "deployment-reachable configuration and dependencies"]
+capability_hints = ["repository search", "AST or data-flow analysis", "dependency inspection", "focused test harness"]
+artifact_extensions = ["exact file and line", "call path", "runtime reachability proof", "patch and regression test"]
+negative_controls = ["sanitized path", "authorized identity", "unreachable configuration", "patched build"]
+
+[[profiles]]
+id = "binary-mobile-analysis"
+version = 2
+name = "Binary and mobile analysis"
+description = "Static and dynamic control-flow analysis across native, mobile, firmware, and WASM artifacts."
+match_tags = ["apk", "android", "ios", "binary", "firmware", "wasm", "ida", "jadx", "逆向", "二进制", "固件", "移动端"]
+coverage_focus = ["format, architecture, hashes, signatures, and mitigations", "imports, exports, entrypoints, handlers, and trust decisions", "static/dynamic divergence, persistence, IPC, protocol, and embedded configuration"]
+capability_hints = ["disassembler or decompiler", "debugger or instrumentation", "binary metadata parser", "test harness"]
+artifact_extensions = ["sample hash", "function and offset", "trace or branch evidence", "modified-byte manifest and rollback copy"]
+negative_controls = ["original sample", "non-triggering input", "alternate branch", "restored binary hash"]
+
+[[profiles]]
+id = "external-assessment"
+version = 2
+name = "External surface assessment"
+description = "Asset relationships, reachable services, identity, and externally testable attack paths."
+match_tags = ["recon", "domain", "host", "port", "network", "scan", "侦察", "域名", "端口", "网络", "扫描"]
+coverage_focus = ["asset provenance and DNS/address relationships", "reachable hosts, ports, protocols, versions, and virtual hosts", "exposure, configuration, credential, trust, and known-vulnerability prerequisites"]
+capability_hints = ["DNS and certificate inspection", "service discovery", "HTTP fingerprinting", "focused protocol probe"]
+artifact_extensions = ["timestamped target inventory", "service transcript", "version confidence", "prerequisite proof"]
+negative_controls = ["closed or filtered peer", "nonmatching version", "invalid prerequisite", "repeat at bounded rate"]
+
+[[profiles]]
+id = "identity-cloud-operation"
+version = 2
+name = "Identity and cloud operation"
+description = "Principal, role, trust, control-plane, and data-plane path validation."
+match_tags = ["active-directory", "kerberos", "entra", "azure", "aws", "gcp", "iam", "identity", "ad", "域", "云", "身份"]
+coverage_focus = ["principals, credentials, roles, and effective permissions", "trust, federation, resource policies, and tenant/account boundaries", "control-plane and data-plane escalation paths"]
+capability_hints = ["directory or cloud inventory", "policy simulator", "graph analysis", "identity-bound validation"]
+artifact_extensions = ["starting identity", "trust-edge evidence", "effective permission result", "before/after policy state"]
+negative_controls = ["lower-privilege principal", "untrusted tenant or account", "denied action", "restored policy"]
+
+[[profiles]]
+id = "adversary-emulation"
+version = 2
+name = "Adversary emulation"
+description = "Atomic, evidence-linked behavior validation with telemetry and deterministic rollback."
+match_tags = ["emulation", "adversary-emulation", "atomic", "ttp", "purple-team", "对抗模拟", "攻击链", "紫队"]
+coverage_focus = ["objective-linked ATT&CK behaviors", "preconditions and dependencies", "telemetry source and detection mapping", "atomicity, reversibility, and rollback readiness"]
+capability_hints = ["environment inventory", "atomic action runner", "telemetry query", "ATT&CK mapping"]
+artifact_extensions = ["before/after state", "action-to-telemetry correlation", "technique coverage", "rollback verification"]
+negative_controls = ["benign neighboring behavior", "disabled prerequisite", "unaffected telemetry source", "post-cleanup state"]

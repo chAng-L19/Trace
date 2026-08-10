@@ -1,0 +1,6 @@
+from __future__ import annotations
+
+
+MAX_REQUEST_BYTES = 8 * 1024 * 1024
+MAX_TOOL_ARGUMENT_BYTES = 4 * 1024 * 1024
+MAX_OBSERVATION_BYTES = 2 * 1024 * 1024
