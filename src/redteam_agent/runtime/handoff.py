@@ -181,7 +181,10 @@ def _expire_row(connection: "sqlite3.Connection", row: Mapping[str, Any]) -> Non
 
 
 def ensure_handoff_schema(connection: "sqlite3.Connection") -> None:
-    connection.executescript(
+    from .store_migrations import execute_sql_script
+
+    execute_sql_script(
+        connection,
         """
         CREATE TABLE IF NOT EXISTS host_handoffs (
             handoff_id TEXT PRIMARY KEY,

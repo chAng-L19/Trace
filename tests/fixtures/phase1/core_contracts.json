@@ -1,0 +1,492 @@
+{
+  "contracts": {
+    "asset": {
+      "asset_id": "asset-1",
+      "asset_type": "api_endpoint",
+      "attributes": {
+        "authenticated": true,
+        "method": "GET"
+      },
+      "evidence_ids": [
+        "evidence-1"
+      ],
+      "kind": "asset",
+      "name": "GET /objects/{id}",
+      "run_id": "run-1",
+      "schema_version": 1,
+      "status": "verified",
+      "target": "fixture://web-api"
+    },
+    "attack_path": {
+      "asset_ids": [
+        "asset-1"
+      ],
+      "evidence_ids": [
+        "evidence-2",
+        "evidence-3"
+      ],
+      "finding_ids": [
+        "finding-1"
+      ],
+      "impact": "Read another account's object",
+      "kind": "attack_path",
+      "metadata": {},
+      "path_id": "path-1",
+      "relationship_ids": [],
+      "run_id": "run-1",
+      "schema_version": 1,
+      "status": "verified",
+      "title": "User token to foreign object"
+    },
+    "budget": {
+      "action_limit": 32,
+      "actions_used": 4,
+      "deadline": "",
+      "input_tokens_used": 1200,
+      "kind": "budget",
+      "output_tokens_used": 800,
+      "pause_reason": "",
+      "paused_at": "",
+      "schema_version": 1,
+      "started_at": "2026-08-10T00:00:00+00:00",
+      "time_limit_seconds": 1800.0,
+      "token_limit": 100000,
+      "token_usage_missing": 0
+    },
+    "event": {
+      "created_at": "2026-08-10T00:04:00+00:00",
+      "event_type": "observation_recorded",
+      "kind": "event",
+      "metadata": {},
+      "payload": {
+        "evidence_id": "evidence-2"
+      },
+      "run_id": "run-1",
+      "schema_version": 1,
+      "sequence": 12
+    },
+    "evidence": {
+      "action_id": "validate-path",
+      "artifact_type": "reproduction_artifact",
+      "confidence": 0.95,
+      "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "created_at": "2026-08-10T00:04:00+00:00",
+      "evidence_id": "evidence-2",
+      "kind": "evidence",
+      "metadata": {},
+      "parent_ids": [
+        "evidence-1"
+      ],
+      "payload": {
+        "baseline": 403,
+        "observed": 200
+      },
+      "provenance": {
+        "action_id": "validate-path",
+        "attempt_id": "attempt-1",
+        "branch_id": "main",
+        "input_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "evidence_provenance",
+        "metadata": {},
+        "output_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "parent_ids": [
+          "evidence-1"
+        ],
+        "plan_revision": 2,
+        "run_id": "run-1",
+        "schema_version": 1,
+        "target": "fixture://web-api",
+        "tool": "fixture:http-client",
+        "tool_version": "1.0"
+      },
+      "run_id": "run-1",
+      "schema_version": 1,
+      "target": "fixture://web-api",
+      "tool": "fixture:http-client",
+      "trust": "runtime_verified",
+      "verified": true,
+      "verifier": "reproduction_artifact"
+    },
+    "evidence_provenance": {
+      "action_id": "validate-path",
+      "attempt_id": "attempt-1",
+      "branch_id": "main",
+      "input_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "kind": "evidence_provenance",
+      "metadata": {},
+      "output_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parent_ids": [
+        "evidence-1"
+      ],
+      "plan_revision": 2,
+      "run_id": "run-1",
+      "schema_version": 1,
+      "target": "fixture://web-api",
+      "tool": "fixture:http-client",
+      "tool_version": "1.0"
+    },
+    "finding": {
+      "asset_ids": [
+        "asset-1"
+      ],
+      "cleanup_evidence_ids": [
+        "evidence-5"
+      ],
+      "description": "",
+      "finding_id": "finding-1",
+      "impact_evidence_ids": [
+        "evidence-3"
+      ],
+      "kind": "finding",
+      "metadata": {},
+      "negative_control_evidence_ids": [
+        "evidence-4"
+      ],
+      "reproduction_evidence_ids": [
+        "evidence-2"
+      ],
+      "run_id": "run-1",
+      "schema_version": 1,
+      "severity": "high",
+      "status": "verified",
+      "target": "fixture://web-api",
+      "title": "Cross-account object access"
+    },
+    "goal": {
+      "constraints": {
+        "scope": [
+          "fixture://web-api"
+        ]
+      },
+      "criteria": [
+        {
+          "criterion_id": "criterion-1",
+          "kind": "goal_criterion",
+          "metadata": {
+            "workflow_id": "generic-adaptive"
+          },
+          "required_artifacts": [
+            "reproduction_artifact"
+          ],
+          "schema_version": 1,
+          "statement": "Produce verified reproduction evidence",
+          "target": "fixture://web-api"
+        }
+      ],
+      "evidence_standard": "reproducible",
+      "goal_id": "goal-1",
+      "kind": "goal",
+      "max_actions": 32,
+      "max_retries_per_action": 2,
+      "metadata": {
+        "workflow_hint": "generic-adaptive"
+      },
+      "objective": "Assess the Web API fixture and prove one attack path",
+      "schema_version": 1,
+      "success_predicates": [
+        {
+          "kind": "artifact_verified",
+          "subject": "reproduction_artifact"
+        }
+      ],
+      "targets": [
+        "fixture://web-api"
+      ]
+    },
+    "goal_criterion": {
+      "criterion_id": "criterion-1",
+      "kind": "goal_criterion",
+      "metadata": {
+        "workflow_id": "generic-adaptive"
+      },
+      "required_artifacts": [
+        "reproduction_artifact"
+      ],
+      "schema_version": 1,
+      "statement": "Produce verified reproduction evidence",
+      "target": "fixture://web-api"
+    },
+    "intent": {
+      "goal_id": "goal-1",
+      "intent_id": "intent-1",
+      "intent_type": "controlled_validation",
+      "kind": "intent",
+      "metadata": {},
+      "parent_intent_id": "",
+      "priority": 90,
+      "required_evidence": [
+        "baseline",
+        "request_diff",
+        "negative_control"
+      ],
+      "schema_version": 1,
+      "statement": "Test the highest-value authorization boundary",
+      "status": "active",
+      "target": "fixture://web-api"
+    },
+    "model_capabilities": {
+      "kind": "model_capabilities",
+      "max_context_tokens": 200000,
+      "metadata": {},
+      "modalities": [
+        "text",
+        "image"
+      ],
+      "native_system_role": true,
+      "native_tool_calls": true,
+      "parallel_tool_calls": true,
+      "schema_version": 1,
+      "streaming": true,
+      "structured_output": true,
+      "usage_reporting": true
+    },
+    "model_request": {
+      "allow_parallel_tools": true,
+      "kind": "model_request",
+      "messages": [
+        {
+          "content": "Assess the Web API fixture and prove one attack path",
+          "role": "user"
+        }
+      ],
+      "metadata": {},
+      "model": "primary-model",
+      "request_id": "model-request-1",
+      "response_schema": {
+        "type": "object"
+      },
+      "run_id": "run-1",
+      "schema_version": 1,
+      "tools": [
+        {
+          "inputSchema": {
+            "type": "object"
+          },
+          "name": "http_request"
+        }
+      ]
+    },
+    "model_response": {
+      "error": "",
+      "finish_reason": "tool_calls",
+      "kind": "model_response",
+      "metadata": {},
+      "model": "primary-model",
+      "provider": "fixture",
+      "request_id": "model-request-1",
+      "response_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "schema_version": 1,
+      "status": "completed",
+      "structured_output": {
+        "next": "tool_call"
+      },
+      "text": "Validate the authorization hypothesis.",
+      "tool_calls": [
+        {
+          "arguments": {},
+          "id": "call-1",
+          "name": "http_request"
+        }
+      ],
+      "usage": {
+        "input_tokens": 100,
+        "output_tokens": 50
+      }
+    },
+    "model_stream_event": {
+      "event_type": "text_delta",
+      "kind": "model_stream_event",
+      "payload": {
+        "text": "Validate"
+      },
+      "request_id": "model-request-1",
+      "schema_version": 1,
+      "sequence": 1
+    },
+    "run": {
+      "branch_id": "main",
+      "budget": {
+        "action_limit": 32,
+        "actions_used": 4,
+        "deadline": "",
+        "input_tokens_used": 1200,
+        "kind": "budget",
+        "output_tokens_used": 800,
+        "pause_reason": "",
+        "paused_at": "",
+        "schema_version": 1,
+        "started_at": "2026-08-10T00:00:00+00:00",
+        "time_limit_seconds": 1800.0,
+        "token_limit": 100000,
+        "token_usage_missing": 0
+      },
+      "created_at": "2026-08-10T00:00:00+00:00",
+      "current_intent_id": "intent-1",
+      "current_search_node_id": "search-1",
+      "evidence_ids": [
+        "evidence-1"
+      ],
+      "goal_id": "goal-1",
+      "kind": "run",
+      "metadata": {
+        "workflow_id": "generic-adaptive"
+      },
+      "run_id": "run-1",
+      "schema_version": 1,
+      "session_id": "session-1",
+      "state_version": 7,
+      "status": "running",
+      "updated_at": "2026-08-10T00:05:00+00:00"
+    },
+    "search_node": {
+      "evidence_refs": [
+        "evidence-1"
+      ],
+      "intent_id": "intent-1",
+      "kind": "search_node",
+      "metadata": {},
+      "node_id": "search-1",
+      "node_type": "hypothesis",
+      "parent_node_id": "",
+      "priority": 90,
+      "required_capabilities": [
+        "controlled_validation",
+        "browser_automation"
+      ],
+      "run_id": "run-1",
+      "schema_version": 1,
+      "statement": "Compare owner and non-owner object access",
+      "status": "active",
+      "target": "fixture://web-api"
+    },
+    "terminal_decision": {
+      "evidence_refs": [
+        "evidence-2"
+      ],
+      "kind": "terminal_decision",
+      "metadata": {},
+      "missing": [
+        "artifact_verified:impact_proof",
+        "artifact_verified:cleanup_proof"
+      ],
+      "reason": "impact_and_cleanup_missing",
+      "satisfied": [
+        "artifact_verified:reproduction_artifact"
+      ],
+      "schema_version": 1,
+      "success": false,
+      "terminal": false
+    },
+    "tool_call": {
+      "arguments": {
+        "method": "GET",
+        "url": "fixture://web-api/objects/2"
+      },
+      "call_id": "call-1",
+      "idempotency_key": "idempotency-1",
+      "kind": "tool_call",
+      "metadata": {},
+      "run_id": "run-1",
+      "schema_version": 1,
+      "timeout_seconds": 30.0,
+      "tool_name": "fixture:http-request"
+    },
+    "tool_definition": {
+      "capabilities": [
+        "page_fetch",
+        "controlled_validation"
+      ],
+      "description": "Execute an HTTP request against the fixture.",
+      "input_schema": {
+        "type": "object"
+      },
+      "kind": "tool_definition",
+      "metadata": {},
+      "name": "http-request",
+      "qualified_name": "fixture:http-request",
+      "schema_version": 1,
+      "server": "fixture",
+      "side_effecting": false,
+      "supports_reconcile": false,
+      "version": "1.0"
+    },
+    "tool_result": {
+      "call_id": "call-1",
+      "error": "",
+      "finished_at": "",
+      "input_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "kind": "tool_result",
+      "metadata": {},
+      "output": {
+        "status": 200
+      },
+      "output_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "retryable": false,
+      "schema_version": 1,
+      "started_at": "",
+      "status": "success",
+      "tool_name": "fixture:http-request"
+    },
+    "worker_result": {
+      "artifact_refs": [
+        "evidence-2"
+      ],
+      "error": "",
+      "kind": "worker_result",
+      "metadata": {},
+      "output": {
+        "observation": {
+          "call_id": "call-1",
+          "error": "",
+          "finished_at": "",
+          "input_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "kind": "tool_result",
+          "metadata": {},
+          "output": {
+            "status": 200
+          },
+          "output_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "retryable": false,
+          "schema_version": 1,
+          "started_at": "",
+          "status": "success",
+          "tool_name": "fixture:http-request"
+        }
+      },
+      "retryable": false,
+      "schema_version": 1,
+      "status": "completed",
+      "task_id": "worker-task-1"
+    },
+    "worker_task": {
+      "capability": "controlled_validation",
+      "idempotency_key": "worker-idempotency-1",
+      "kind": "worker_task",
+      "metadata": {},
+      "payload": {
+        "tool_call": {
+          "arguments": {
+            "method": "GET",
+            "url": "fixture://web-api/objects/2"
+          },
+          "call_id": "call-1",
+          "idempotency_key": "idempotency-1",
+          "kind": "tool_call",
+          "metadata": {},
+          "run_id": "run-1",
+          "schema_version": 1,
+          "timeout_seconds": 30.0,
+          "tool_name": "fixture:http-request"
+        }
+      },
+      "required_artifacts": [
+        "reproduction_artifact"
+      ],
+      "run_id": "run-1",
+      "schema_version": 1,
+      "task_id": "worker-task-1",
+      "timeout_seconds": 60.0
+    }
+  },
+  "core_schema_version": 1
+}

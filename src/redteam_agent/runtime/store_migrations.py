@@ -1,0 +1,234 @@
+from __future__ import annotations
+
+import sqlite3
+from dataclasses import dataclass
+from typing import Any, Callable
+
+from .store_common import SCHEMA_VERSION
+
+
+MigrationAction = Callable[[Any, sqlite3.Connection], None]
+
+
+class SchemaMigrationError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class Migration:
+    version: int
+    name: str
+    apply: MigrationAction
+
+
+@dataclass(frozen=True, slots=True)
+class MigrationReport:
+    detected_version: int
+    current_version: int
+    applied: tuple[int, ...]
+    verified: tuple[int, ...]
+
+
+def execute_sql_script(connection: sqlite3.Connection, script: str) -> None:
+    """Execute a fixed DDL script without sqlite3.executescript's implicit commit."""
+
+    pending: list[str] = []
+    for line in script.splitlines():
+        pending.append(line)
+        statement = "\n".join(pending).strip()
+        if statement and sqlite3.complete_statement(statement):
+            connection.execute(statement)
+            pending.clear()
+    if "\n".join(pending).strip():
+        raise SchemaMigrationError("migration_sql_incomplete")
+
+
+def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
+    row = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
+def detected_schema_version(connection: sqlite3.Connection) -> int:
+    pragma_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    metadata_version = 0
+    if _table_exists(connection, "schema_metadata"):
+        row = connection.execute(
+            "SELECT value FROM schema_metadata WHERE key='schema_version'"
+        ).fetchone()
+        if row is not None:
+            try:
+                metadata_version = int(row[0])
+            except (TypeError, ValueError, OverflowError):
+                metadata_version = 0
+    detected = max(pragma_version, metadata_version)
+    if detected < 0:
+        raise SchemaMigrationError(f"schema_version_invalid:{detected}")
+    if detected > SCHEMA_VERSION:
+        raise SchemaMigrationError(f"schema_version_newer_than_runtime:{detected}:{SCHEMA_VERSION}")
+    return detected
+
+
+def _migration_1_base(context: Any, connection: sqlite3.Connection) -> None:
+    del context
+    execute_sql_script(
+        connection,
+        """
+        CREATE TABLE IF NOT EXISTS operations (
+            run_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, goal_id TEXT NOT NULL,
+            workflow_id TEXT NOT NULL, status TEXT NOT NULL, state_json TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_operations_session ON operations(session_id, updated_at DESC);
+        CREATE TABLE IF NOT EXISTS operation_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL,
+            event_type TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS action_leases (
+            run_id TEXT NOT NULL, action_id TEXT NOT NULL, owner TEXT NOT NULL,
+            fencing_token INTEGER NOT NULL DEFAULT 0, expires_at REAL NOT NULL,
+            PRIMARY KEY(run_id, action_id),
+            FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS lease_generations (
+            run_id TEXT NOT NULL, action_id TEXT NOT NULL, generation INTEGER NOT NULL,
+            PRIMARY KEY(run_id, action_id),
+            FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS action_results (
+            run_id TEXT NOT NULL, action_id TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+            result_json TEXT NOT NULL, created_at TEXT NOT NULL,
+            PRIMARY KEY(run_id, idempotency_key),
+            FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS evidence_nodes (
+            evidence_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, action_id TEXT NOT NULL,
+            artifact_type TEXT NOT NULL, tool TEXT NOT NULL, content_hash TEXT NOT NULL,
+            node_json TEXT NOT NULL, created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS plan_revisions (
+            run_id TEXT NOT NULL, plan_id TEXT NOT NULL, branch_id TEXT NOT NULL,
+            revision INTEGER NOT NULL, parent_revision INTEGER NOT NULL, plan_hash TEXT NOT NULL,
+            plan_json TEXT NOT NULL, created_at TEXT NOT NULL,
+            PRIMARY KEY(run_id, plan_id, branch_id, revision),
+            FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS task_attempts (
+            attempt_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, branch_id TEXT NOT NULL,
+            plan_revision INTEGER NOT NULL, action_id TEXT NOT NULL, tool TEXT NOT NULL,
+            tool_version TEXT NOT NULL, input_hash TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+            status TEXT NOT NULL, fencing_token INTEGER NOT NULL, attempt_json TEXT NOT NULL,
+            started_at TEXT NOT NULL, finished_at TEXT NOT NULL,
+            UNIQUE(run_id, branch_id, plan_revision, idempotency_key),
+            FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS facts (
+            fact_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, branch_id TEXT NOT NULL,
+            fact_key TEXT NOT NULL, version INTEGER NOT NULL, valid INTEGER NOT NULL,
+            fact_json TEXT NOT NULL, created_at TEXT NOT NULL,
+            UNIQUE(run_id, branch_id, fact_key, version),
+            FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS reviews (
+            review_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, branch_id TEXT NOT NULL,
+            plan_revision INTEGER NOT NULL, scope TEXT NOT NULL, subject_id TEXT NOT NULL,
+            decision TEXT NOT NULL, review_json TEXT NOT NULL, created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS session_bindings (
+            session_id TEXT PRIMARY KEY, run_id TEXT NOT NULL DEFAULT '', version INTEGER NOT NULL,
+            binding_json TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS schema_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        """
+    )
+
+
+def _migration_2_cas_and_fencing(context: Any, connection: sqlite3.Connection) -> None:
+    if "version" not in context._columns(connection, "operations"):
+        connection.execute("ALTER TABLE operations ADD COLUMN version INTEGER NOT NULL DEFAULT 1")
+    if "fencing_token" not in context._columns(connection, "action_leases"):
+        connection.execute("ALTER TABLE action_leases ADD COLUMN fencing_token INTEGER NOT NULL DEFAULT 0")
+
+
+def _migration_3_evidence_identity(context: Any, connection: sqlite3.Connection) -> None:
+    context._migrate_evidence_table(connection)
+
+
+def _migration_4_handoff_and_indexes(context: Any, connection: sqlite3.Connection) -> None:
+    del context
+    from .handoff import ensure_handoff_schema
+
+    ensure_handoff_schema(connection)
+    execute_sql_script(
+        connection,
+        """
+        CREATE INDEX IF NOT EXISTS idx_evidence_run ON evidence_nodes(run_id, created_at, evidence_id);
+        CREATE INDEX IF NOT EXISTS idx_attempts_run ON task_attempts(run_id, action_id, started_at);
+        CREATE INDEX IF NOT EXISTS idx_facts_run ON facts(run_id, branch_id, fact_key, version);
+        CREATE INDEX IF NOT EXISTS idx_reviews_run ON reviews(run_id, branch_id, plan_revision);
+        """
+    )
+
+
+MIGRATIONS = (
+    Migration(1, "base_runtime_schema", _migration_1_base),
+    Migration(2, "operation_cas_and_lease_fencing", _migration_2_cas_and_fencing),
+    Migration(3, "evidence_identity_without_uniqueness_collapse", _migration_3_evidence_identity),
+    Migration(4, "durable_handoff_and_query_indexes", _migration_4_handoff_and_indexes),
+)
+
+
+def _validate_registry() -> None:
+    versions = tuple(item.version for item in MIGRATIONS)
+    expected = tuple(range(1, SCHEMA_VERSION + 1))
+    if versions != expected:
+        raise SchemaMigrationError(f"migration_registry_non_contiguous:{versions}:{expected}")
+    if len({item.name for item in MIGRATIONS}) != len(MIGRATIONS):
+        raise SchemaMigrationError("migration_registry_duplicate_name")
+
+
+def apply_migrations(context: Any, connection: sqlite3.Connection) -> MigrationReport:
+    _validate_registry()
+    detected = detected_schema_version(connection)
+    applied: list[int] = []
+    for migration in MIGRATIONS:
+        migration.apply(context, connection)
+        if migration.version > detected:
+            applied.append(migration.version)
+        connection.execute(
+            "INSERT OR IGNORE INTO schema_metadata(key, value) VALUES(?, ?)",
+            (f"migration:{migration.version}", migration.name),
+        )
+    connection.execute(
+        "INSERT INTO schema_metadata(key, value) VALUES('schema_version', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (str(SCHEMA_VERSION),),
+    )
+    connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+    return MigrationReport(
+        detected_version=detected,
+        current_version=SCHEMA_VERSION,
+        applied=tuple(applied),
+        verified=tuple(item.version for item in MIGRATIONS),
+    )
+
+
+def migration_history(connection: sqlite3.Connection) -> tuple[tuple[int, str], ...]:
+    if not _table_exists(connection, "schema_metadata"):
+        return ()
+    rows = connection.execute(
+        "SELECT key, value FROM schema_metadata WHERE key LIKE 'migration:%' ORDER BY key"
+    ).fetchall()
+    history: list[tuple[int, str]] = []
+    for row in rows:
+        try:
+            version = int(str(row[0]).partition(":")[2])
+        except (TypeError, ValueError, OverflowError):
+            continue
+        history.append((version, str(row[1])))
+    return tuple(sorted(history))

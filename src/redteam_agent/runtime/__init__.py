@@ -32,6 +32,7 @@ from .models import (
 from .operation_runtime import OperationResult, OperationRuntime
 from .plan import Fork, PlanDelta, PlanFork, PlanRevision, PlanValidationError
 from .review import GateEvaluationError, GateResult, ReviewEngine
+from .store_migrations import MigrationReport, SchemaMigrationError
 from .terminal_judge import TerminalJudge
 from .tool_broker import ToolBroker
 from .verifier import SemanticVerifier
@@ -59,6 +60,7 @@ __all__ = [
     "ImmutableRecordError",
     "LeaseLostError",
     "LeaseToken",
+    "MigrationReport",
     "OperationResult",
     "OperationRuntime",
     "OperationState",
@@ -69,6 +71,7 @@ __all__ = [
     "PlanValidationError",
     "ReviewEngine",
     "ReviewRecord",
+    "SchemaMigrationError",
     "SemanticVerifier",
     "StateVersionConflict",
     "StoreConflictError",

@@ -22,13 +22,16 @@ from .store_common import (
 from .store_handoff import HandoffStoreMixin
 from .store_records import DurableRecordStoreMixin
 from .store_schema import StoreSchemaMixin
+from .store_migrations import MigrationReport, SchemaMigrationError
 
 __all__ = [
     "DurableStore",
     "ImmutableRecordError",
     "LeaseLostError",
     "MAX_HANDOFF_OBSERVATION_BYTES",
+    "MigrationReport",
     "SCHEMA_VERSION",
+    "SchemaMigrationError",
     "StateVersionConflict",
     "StoreConflictError",
 ]
@@ -465,5 +468,4 @@ class DurableStore(HandoffStoreMixin, DurableRecordStoreMixin, StoreSchemaMixin)
                     (run_id, action_id, owner, int(fencing_token)),
                 )
             return cursor.rowcount == 1
-
 
