@@ -1,0 +1,337 @@
+{
+  "contracts": {
+    "agent_service": {
+      "cancel": [
+        "run_id",
+        "reason"
+      ],
+      "events": [
+        "run_id",
+        "after_sequence",
+        "limit"
+      ],
+      "run": [
+        "run_id",
+        "budget_delta",
+        "max_actions"
+      ],
+      "start": [
+        "request"
+      ],
+      "status": [
+        "run_id"
+      ],
+      "submit_observation": [
+        "run_id",
+        "observation"
+      ]
+    },
+    "budget_delta": {
+      "acknowledge_missing_usage": true,
+      "actions": 2,
+      "deadline": "2026-08-11T00:00:00+00:00",
+      "idempotency_key": "fixture-budget-extension",
+      "time_seconds": 30.0,
+      "tokens": 128
+    },
+    "conversation": {
+      "append": [
+        "run_id",
+        "role",
+        "content",
+        "protected",
+        "source_type",
+        "source_id",
+        "metadata"
+      ],
+      "compact": [
+        "run_id",
+        "message_ids"
+      ],
+      "select": [
+        "view",
+        "max_messages"
+      ]
+    }
+  },
+  "invariants": [
+    "conversation_transcript_is_append_only",
+    "compaction_adds_traceable_source_hash_summary",
+    "protected_context_survives_any_selection_limit",
+    "unknown_token_usage_is_never_fabricated",
+    "budget_exhaustion_is_recoverable_paused_state",
+    "partial_stream_is_diagnostic_artifact_only",
+    "context_snapshots_are_immutable"
+  ],
+  "record_hashes": {
+    "content_hash_contract": "contract_hash(canonical_json(value))",
+    "hash_algorithm": "sha256",
+    "protected_context_keys": [
+      "original_goal",
+      "unsatisfied_clauses",
+      "active_plan",
+      "critical_evidence_refs",
+      "irreversible_state"
+    ]
+  },
+  "schema": {
+    "indexes": [
+      "idx_context_summary_run",
+      "idx_conversation_run",
+      "idx_diagnostic_run"
+    ],
+    "tables": {
+      "context_snapshots": [
+        {
+          "name": "snapshot_id",
+          "not_null": false,
+          "primary_key": 1,
+          "type": "TEXT"
+        },
+        {
+          "name": "run_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "source_hash",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "protected_hash",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "context_hash",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "context_json",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        }
+      ],
+      "context_summaries": [
+        {
+          "name": "summary_id",
+          "not_null": false,
+          "primary_key": 1,
+          "type": "TEXT"
+        },
+        {
+          "name": "run_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "source_hash",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "summary_hash",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "source_ids_json",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "summary_json",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        }
+      ],
+      "conversation_messages": [
+        {
+          "name": "message_id",
+          "not_null": false,
+          "primary_key": 1,
+          "type": "TEXT"
+        },
+        {
+          "name": "run_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "sequence",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "INTEGER"
+        },
+        {
+          "name": "role",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "content_hash",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "protected",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "INTEGER"
+        },
+        {
+          "name": "source_type",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "source_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "message_json",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        }
+      ],
+      "diagnostic_artifacts": [
+        {
+          "name": "artifact_id",
+          "not_null": false,
+          "primary_key": 1,
+          "type": "TEXT"
+        },
+        {
+          "name": "run_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "artifact_type",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "source_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "content_hash",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "artifact_json",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        }
+      ],
+      "model_budget_usage": [
+        {
+          "name": "request_id",
+          "not_null": false,
+          "primary_key": 1,
+          "type": "TEXT"
+        },
+        {
+          "name": "run_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "usage_hash",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "input_tokens",
+          "not_null": false,
+          "primary_key": 0,
+          "type": "INTEGER"
+        },
+        {
+          "name": "output_tokens",
+          "not_null": false,
+          "primary_key": 0,
+          "type": "INTEGER"
+        },
+        {
+          "name": "total_tokens",
+          "not_null": false,
+          "primary_key": 0,
+          "type": "INTEGER"
+        },
+        {
+          "name": "usage_missing",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "INTEGER"
+        },
+        {
+          "name": "usage_json",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        }
+      ]
+    },
+    "version": 6
+  }
+}

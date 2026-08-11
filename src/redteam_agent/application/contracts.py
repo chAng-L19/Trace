@@ -130,6 +130,7 @@ class BudgetDelta:
     time_seconds: float = 0.0
     deadline: str = ""
     idempotency_key: str = ""
+    acknowledge_missing_usage: bool = False
 
     @classmethod
     def from_value(cls, value: "BudgetDelta | Mapping[str, Any] | None") -> "BudgetDelta":
@@ -144,6 +145,7 @@ class BudgetDelta:
                 time_seconds=float(value.get("time_seconds", 0.0)),
                 deadline=str(value.get("deadline") or ""),
                 idempotency_key=str(value.get("idempotency_key") or ""),
+                acknowledge_missing_usage=bool(value.get("acknowledge_missing_usage", False)),
             )
         else:
             raise TypeError("budget_delta_must_be_mapping")
@@ -159,7 +161,13 @@ class BudgetDelta:
 
     @property
     def changes_budget(self) -> bool:
-        return bool(self.actions or self.tokens or self.time_seconds or self.deadline)
+        return bool(
+            self.actions
+            or self.tokens
+            or self.time_seconds
+            or self.deadline
+            or self.acknowledge_missing_usage
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -168,6 +176,7 @@ class BudgetDelta:
             "time_seconds": self.time_seconds,
             "deadline": self.deadline,
             "idempotency_key": self.idempotency_key,
+            "acknowledge_missing_usage": self.acknowledge_missing_usage,
         }
 
 

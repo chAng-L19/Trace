@@ -280,7 +280,7 @@ def test_stream_interruption_is_durable_and_retryable(tmp_path: Path) -> None:
 
     response = service.runtime.store.model_responses(run_id)[0]
     assert response.status == "failed"
-    assert response.response["text"] == "partial"
+    assert response.response["text"] == ""
     assert service.status(run_id).terminal.terminal is False
 
 

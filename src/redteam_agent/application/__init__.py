@@ -10,6 +10,12 @@ from .contracts import (
 from .lifecycle import ALLOWED_RUN_TRANSITIONS, CANONICAL_RUN_STATUSES, validate_run_transition
 from .model_loop import ModelIntegrityError, ModelInterruptedError, ModelLoop, ModelLoopError
 from .model_records import ModelObservationRecord, ModelRequestRecord, ModelResponseRecord
+from .context import (
+    ContextSelection,
+    ContextSelector,
+    ConversationLedger,
+    TraceableCompactor,
+)
 
 __all__ = [
     "ALLOWED_RUN_TRANSITIONS",
@@ -28,5 +34,9 @@ __all__ = [
     "ModelObservationRecord",
     "ModelRequestRecord",
     "ModelResponseRecord",
+    "ContextSelection",
+    "ContextSelector",
+    "ConversationLedger",
+    "TraceableCompactor",
     "validate_run_transition",
 ]

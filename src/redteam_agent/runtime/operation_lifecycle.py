@@ -242,6 +242,7 @@ class OperationLifecycleMixin:
         tokens: int = 0,
         time_seconds: float = 0.0,
         deadline: str = "",
+        acknowledge_missing_usage: bool = False,
     ) -> OperationResult:
         if actions < 0 or tokens < 0 or time_seconds < 0:
             raise ValueError("budget_delta_must_be_nonnegative")
@@ -255,7 +256,13 @@ class OperationLifecycleMixin:
             raise ValueError(f"operation_busy:{run_id}")
         try:
             state = self.store.load_operation(run_id) or initial
-            if state.budget.apply_delta(actions=actions, tokens=tokens, time_seconds=time_seconds, deadline=deadline):
+            if state.budget.apply_delta(
+                actions=actions,
+                tokens=tokens,
+                time_seconds=time_seconds,
+                deadline=deadline,
+                acknowledge_missing_usage=acknowledge_missing_usage,
+            ):
                 if state.status == "paused_budget" and not state.budget.exhaustion_reason():
                     state.status = "running"
                 self.store.save_operation(
@@ -263,7 +270,13 @@ class OperationLifecycleMixin:
                     expected_version=state.state_version,
                     lease_token=token,
                     event_type="budget_delta_applied",
-                    event={"actions": actions, "tokens": tokens, "time_seconds": time_seconds, "deadline": deadline},
+                    event={
+                        "actions": actions,
+                        "tokens": tokens,
+                        "time_seconds": time_seconds,
+                        "deadline": deadline,
+                        "acknowledge_missing_usage": acknowledge_missing_usage,
+                    },
                 )
             return self._result(state, self._workflow_for(state))
         finally:
@@ -278,6 +291,7 @@ class OperationLifecycleMixin:
         tokens: int = 0,
         time_seconds: float = 0.0,
         deadline: str = "",
+        acknowledge_missing_usage: bool = False,
     ) -> OperationResult:
         if actions < 0 or tokens < 0 or time_seconds < 0:
             raise ValueError("budget_delta_must_be_nonnegative")
@@ -299,6 +313,7 @@ class OperationLifecycleMixin:
                 tokens=tokens,
                 time_seconds=time_seconds,
                 deadline=deadline,
+                acknowledge_missing_usage=acknowledge_missing_usage,
                 idempotency_key=idempotency_key,
                 lease_token=token,
             )
@@ -314,6 +329,7 @@ class OperationLifecycleMixin:
         tokens: int = 0,
         time_seconds: float = 0.0,
         deadline: str = "",
+        acknowledge_missing_usage: bool = False,
     ) -> tuple[OperationState, ...]:
         """Acquire every operation fence before atomically changing a batch."""
 
@@ -341,10 +357,58 @@ class OperationLifecycleMixin:
                 tokens=tokens,
                 time_seconds=time_seconds,
                 deadline=deadline,
+                acknowledge_missing_usage=acknowledge_missing_usage,
             )
         finally:
             for lease in leases.values():
                 self.store.release_lease(lease)
+
+    def record_model_usage(
+        self,
+        run_id: str,
+        *,
+        request_id: str,
+        usage: Mapping[str, Any] | None,
+    ) -> OperationResult:
+        initial = self.store.load_operation(run_id)
+        if initial is None:
+            raise KeyError(f"operation_not_found:{run_id}")
+        token = self.store.acquire_lease(
+            run_id,
+            "__operation__",
+            f"{self.owner}:model-usage:{uuid4().hex}",
+            ttl_seconds=30,
+        )
+        if token is None:
+            raise ValueError(f"operation_busy:{run_id}")
+        try:
+            state = self.store.record_model_usage_once(
+                run_id,
+                request_id=request_id,
+                usage=usage,
+                lease_token=token,
+            )
+            return self._result(state, self._workflow_for(state))
+        finally:
+            self.store.release_lease(token)
+
+    def enforce_budget(self, run_id: str) -> OperationResult:
+        initial = self.store.load_operation(run_id)
+        if initial is None:
+            raise KeyError(f"operation_not_found:{run_id}")
+        token = self.store.acquire_lease(
+            run_id,
+            "__operation__",
+            f"{self.owner}:budget-enforce:{uuid4().hex}",
+            ttl_seconds=30,
+        )
+        if token is None:
+            raise ValueError(f"operation_busy:{run_id}")
+        try:
+            state = self.store.enforce_budget(run_id, lease_token=token)
+            return self._result(state, self._workflow_for(state))
+        finally:
+            self.store.release_lease(token)
 
     def _operation_lease_ttl(self, workflow: WorkflowSpec) -> float:
         return max((self._action_timeout(action) for action in workflow.actions), default=60.0) + 120.0
@@ -372,4 +436,3 @@ class OperationLifecycleMixin:
             state.budget.actions_used = used
             changed = True
         return changed
-

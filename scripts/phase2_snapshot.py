@@ -75,7 +75,11 @@ def generate_document() -> dict[str, Any]:
         },
         "contracts": {
             "start_request": request.to_dict(),
-            "budget_delta": delta.to_dict(),
+            "budget_delta": {
+                key: value
+                for key, value in delta.to_dict().items()
+                if key != "acknowledge_missing_usage"
+            },
             "observation": {
                 "action_id": observation.action_id,
                 "output": observation.output,

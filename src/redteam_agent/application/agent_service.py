@@ -22,6 +22,7 @@ from .contracts import (
 )
 from .lifecycle import validate_run_transition
 from .model_loop import ModelLoop
+from .context import ContextSelection, ContextSelector, ConversationLedger, TraceableCompactor
 
 
 class AgentService:
@@ -48,6 +49,9 @@ class AgentService:
         else:
             assert root is not None
             self.runtime = OperationRuntime(root=root)
+        self.conversation = ConversationLedger(self.runtime.store)
+        self.context_compactor = TraceableCompactor(self.runtime.store)
+        self.context_selector = ContextSelector(self, self.conversation, self.context_compactor)
         self.model_loop = (
             ModelLoop(
                 service=self,
@@ -117,6 +121,8 @@ class AgentService:
         }
         if len(batch_ids) > 1:
             raise ValueError("batch_identity_mismatch")
+        for view in views:
+            self.conversation.record_start(view, resolved)
         return AgentStartResult(runs=views, batch_id=next(iter(batch_ids), ""))
 
     def run(
@@ -136,6 +142,7 @@ class AgentService:
                 "tokens": delta.tokens,
                 "time_seconds": delta.time_seconds,
                 "deadline": delta.deadline,
+                "acknowledge_missing_usage": delta.acknowledge_missing_usage,
             }
             if delta.idempotency_key:
                 self.runtime.apply_budget_delta_once(
@@ -155,6 +162,27 @@ class AgentService:
             view = self._view(self.runtime.resume(run_id, max_actions=max_actions))
         except (StateVersionConflict, StoreConflictError) as exc:
             view = self._settle_control_conflict(run_id, exc)
+        return self._validate_result(before.run.status, view)
+
+    def _enforce_runtime_budget(self, run_id: str) -> AgentRunView:
+        before = self.status(run_id)
+        view = self._view(self.runtime.enforce_budget(run_id))
+        return self._validate_result(before.run.status, view)
+
+    def _record_model_usage(
+        self,
+        run_id: str,
+        request_id: str,
+        usage: Mapping[str, Any],
+    ) -> AgentRunView:
+        before = self.status(run_id)
+        view = self._view(
+            self.runtime.record_model_usage(
+                run_id,
+                request_id=request_id,
+                usage=usage,
+            )
+        )
         return self._validate_result(before.run.status, view)
 
     def submit_observation(
@@ -234,3 +262,16 @@ class AgentService:
                 limit=limit,
             )
         )
+
+    def transcript(self, run_id: str):
+        if self.runtime.store.load_operation(run_id) is None:
+            raise KeyError(f"operation_not_found:{run_id}")
+        return self.conversation.messages(run_id)
+
+    def select_context(self, run_id: str, *, max_messages: int = 32) -> ContextSelection:
+        return self.context_selector.select(self.status(run_id), max_messages=max_messages)
+
+    def compact_context(self, run_id: str, message_ids: tuple[str, ...] = ()):
+        if self.runtime.store.load_operation(run_id) is None:
+            raise KeyError(f"operation_not_found:{run_id}")
+        return self.context_compactor.compact(run_id, message_ids)

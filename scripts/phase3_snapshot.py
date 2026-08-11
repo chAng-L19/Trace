@@ -23,7 +23,6 @@ from redteam_agent.runtime.model_records import (  # noqa: E402
     ModelRequestRecord,
     ModelResponseRecord,
 )
-from redteam_agent.runtime.store_common import SCHEMA_VERSION  # noqa: E402
 
 
 SNAPSHOT_FILE = "model_loop.json"
@@ -33,6 +32,7 @@ MODEL_TABLES = (
     "model_stream_events",
     "model_observations",
 )
+PHASE3_SCHEMA_VERSION = 5
 
 
 def _parameters(owner: Any, name: str) -> list[str]:
@@ -64,7 +64,7 @@ def _model_schema() -> dict[str, Any]:
                     "AND name NOT LIKE 'sqlite_%' ORDER BY name"
                 ).fetchall()
             ]
-    return {"version": SCHEMA_VERSION, "tables": tables, "indexes": indexes}
+    return {"version": PHASE3_SCHEMA_VERSION, "tables": tables, "indexes": indexes}
 
 
 def generate_document() -> dict[str, Any]:

@@ -26,6 +26,7 @@ class ServiceStoreMixin:
         tokens: int,
         time_seconds: float,
         deadline: str,
+        acknowledge_missing_usage: bool,
         idempotency_key: str,
         lease_token: LeaseToken,
     ) -> OperationState:
@@ -39,6 +40,7 @@ class ServiceStoreMixin:
             "tokens": int(tokens),
             "time_seconds": float(time_seconds),
             "deadline": str(deadline or ""),
+            "acknowledge_missing_usage": bool(acknowledge_missing_usage),
         }
         canonical = json.dumps(
             request,

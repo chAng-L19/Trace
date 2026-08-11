@@ -24,7 +24,10 @@ NON_SECRET_TOKEN_KEYS = frozenset(
     {
         "token_limit",
         "token_usage_missing",
+        "token_usage_acknowledged",
         "tokens_used",
+        "input_tokens_used",
+        "output_tokens_used",
         "token_budget",
         "token_count",
         "input_tokens",

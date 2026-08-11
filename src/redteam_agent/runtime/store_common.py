@@ -5,7 +5,7 @@ from typing import Any
 
 from .security import redact_sensitive
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 MAX_HANDOFF_OBSERVATION_BYTES = 2 * 1024 * 1024
 
 class StoreConflictError(RuntimeError):

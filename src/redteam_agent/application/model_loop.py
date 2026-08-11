@@ -21,6 +21,7 @@ from ..core import (
 )
 from ..core.contracts import json_mapping, json_value
 from ..runtime.model_common import utc_now
+from ..runtime.conversation_records import DiagnosticArtifactRecord
 from .contracts import AgentRunView, Observation
 from ..runtime.model_records import ModelObservationRecord, ModelRequestRecord, ModelResponseRecord
 
@@ -72,17 +73,42 @@ class ModelLoop:
                 return self.service.cancel(run_id, reason="model_loop_cancelled")
             if view.run.status == "paused_budget":
                 return view
+            budget_view = self.service._enforce_runtime_budget(run_id)
+            if budget_view.run.status == "paused_budget":
+                return budget_view
             if view.run.status != "waiting_worker" or not view.next_action:
                 return view
 
             recovered = self._recover_pending_turn(view)
             if recovered is None:
                 response, request = self._model_turn(view)
-                if not response.tool_calls:
-                    return view
-                results = self._execute_tool_calls(view, request, response)
+                existing: Mapping[str, ToolResult] = {}
+                reconcile = False
             else:
-                response, request, results = recovered
+                response, request, existing = recovered
+                reconcile = True
+                self.service.conversation.record_model_response(run_id, response)
+            budget_view = self.service._record_model_usage(
+                run_id,
+                request.request_id,
+                response.usage,
+            )
+            if budget_view.run.status == "paused_budget":
+                return budget_view
+            if not response.tool_calls:
+                return budget_view
+            results = self._execute_tool_calls(
+                view,
+                request,
+                response,
+                existing=existing,
+                reconcile=reconcile,
+            )
+            self.service.conversation.record_tool_results(
+                request.request_id,
+                view.run.run_id,
+                results,
+            )
             successful = tuple(item for item in results if item.status == "success")
             if not successful:
                 return view
@@ -103,7 +129,7 @@ class ModelLoop:
                 action_id=view.next_action,
                 output=output,
                 tool="model-loop:" + ",".join(item.tool_name for item in successful),
-                usage=response.usage,
+                usage={"_accounted_request_id": request.request_id},
                 idempotency_key=contract_hash(
                     {
                         "run_id": run_id,
@@ -157,27 +183,7 @@ class ModelLoop:
     def _request(self, view: AgentRunView, *, attempt: int) -> ModelRequest:
         capabilities = self.model.capabilities()
         model_name = self.model_name or str(capabilities.metadata.get("model") or "")
-        messages = (
-            {
-                "role": "system",
-                "content": (
-                    "You are the tactical planner. The runtime owns state, evidence promotion, "
-                    "budgets, cleanup, and terminal decisions. Use native tool calls for the "
-                    "current action; never claim that model text is verified evidence."
-                ),
-            },
-            {
-                "role": "user",
-                "content": {
-                    "objective": view.goal.objective,
-                    "targets": list(view.goal.targets),
-                    "run_id": view.run.run_id,
-                    "action_id": view.next_action,
-                    "missing_capabilities": list(view.missing_capabilities),
-                    "evidence_refs": [item.evidence_id for item in view.evidence],
-                },
-            },
-        )
+        messages = self.service.context_selector.model_messages(view)
         definitions = self.tools.discover() if self.tools is not None else ()
         tools = tuple(
             {
@@ -221,6 +227,7 @@ class ModelLoop:
                 created_at=utc_now(),
             )
         )
+        self.service.conversation.record_model_request(request)
 
     def _invoke(self, request: ModelRequest) -> ModelResponse:
         capabilities = self.model.capabilities()
@@ -309,6 +316,7 @@ class ModelLoop:
             raise ModelIntegrityError("model_response_hash_mismatch")
         if normalized.status not in {"completed", "success"}:
             raise ModelLoopError(f"model_response_failed:{normalized.status}:{normalized.error}")
+        self.service.conversation.record_model_response(request.run_id, normalized)
         return replace(normalized, response_hash=authoritative_hash)
 
     def _save_failure_response(self, request: ModelRequest, error: BaseException) -> None:
@@ -317,13 +325,37 @@ class ModelLoop:
             for item in self.service.runtime.store.model_responses(request.run_id)
         ):
             return
+        partial_text = str(getattr(threading.current_thread(), "model_partial_text", ""))
+        diagnostic_id = ""
+        if partial_text:
+            payload = {
+                "request_id": request.request_id,
+                "partial_text": partial_text,
+                "error": str(error),
+                "promoted": False,
+            }
+            diagnostic_id = "diagnostic-" + contract_hash(
+                {"request_id": request.request_id, "type": "partial_model_stream"}
+            )[:32]
+            self.service.runtime.store.save_diagnostic_artifact(
+                DiagnosticArtifactRecord(
+                    artifact_id=diagnostic_id,
+                    run_id=request.run_id,
+                    artifact_type="partial_model_stream",
+                    source_id=request.request_id,
+                    content_hash=contract_hash(payload),
+                    payload=payload,
+                    created_at=utc_now(),
+                )
+            )
         response = ModelResponse(
             request_id=request.request_id,
             status="interrupted" if isinstance(error, ModelInterruptedError) else "failed",
             provider=type(self.model).__name__,
             model=request.model,
-            text=str(getattr(threading.current_thread(), "model_partial_text", "")),
+            text="",
             error=str(error),
+            metadata={"diagnostic_artifact_id": diagnostic_id} if diagnostic_id else {},
         )
         projection = response.to_dict()
         projection.pop("response_hash", None)
@@ -481,7 +513,7 @@ class ModelLoop:
     def _recover_pending_turn(
         self,
         view: AgentRunView,
-    ) -> tuple[ModelResponse, ModelRequest, tuple[ToolResult, ...]] | None:
+    ) -> tuple[ModelResponse, ModelRequest, Mapping[str, ToolResult]] | None:
         store = self.service.runtime.store
         requests = {item.request_id: item for item in store.model_requests(view.run.run_id)}
         observations = store.model_observations(view.run.run_id)
@@ -519,14 +551,7 @@ class ModelLoop:
                 raise ModelIntegrityError("model_response_record_hash_mismatch")
             if not response.tool_calls:
                 continue
-            results = self._execute_tool_calls(
-                view,
-                request,
-                response,
-                existing=by_request.get(request.request_id, {}),
-                reconcile=True,
-            )
-            return response, request, results
+            return response, request, by_request.get(request.request_id, {})
         return None
 
     @staticmethod

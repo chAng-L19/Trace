@@ -216,12 +216,60 @@ def _migration_5_model_loop_records(context: Any, connection: sqlite3.Connection
     )
 
 
+def _migration_6_conversation_context_budget(context: Any, connection: sqlite3.Connection) -> None:
+    del context
+    execute_sql_script(
+        connection,
+        """
+        CREATE TABLE IF NOT EXISTS conversation_messages (
+            message_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, sequence INTEGER NOT NULL,
+            role TEXT NOT NULL, content_hash TEXT NOT NULL, protected INTEGER NOT NULL,
+            source_type TEXT NOT NULL, source_id TEXT NOT NULL, message_json TEXT NOT NULL,
+            created_at TEXT NOT NULL, UNIQUE(run_id, sequence),
+            FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS context_summaries (
+            summary_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, source_hash TEXT NOT NULL,
+            summary_hash TEXT NOT NULL, source_ids_json TEXT NOT NULL, summary_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS context_snapshots (
+            snapshot_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, source_hash TEXT NOT NULL,
+            protected_hash TEXT NOT NULL, context_hash TEXT NOT NULL, context_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS diagnostic_artifacts (
+            artifact_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, artifact_type TEXT NOT NULL,
+            source_id TEXT NOT NULL, content_hash TEXT NOT NULL, artifact_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS model_budget_usage (
+            request_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, usage_hash TEXT NOT NULL,
+            input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER,
+            usage_missing INTEGER NOT NULL, usage_json TEXT NOT NULL, created_at TEXT NOT NULL,
+            FOREIGN KEY(request_id) REFERENCES model_requests(request_id) ON DELETE CASCADE,
+            FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_conversation_run
+            ON conversation_messages(run_id, sequence);
+        CREATE INDEX IF NOT EXISTS idx_context_summary_run
+            ON context_summaries(run_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_diagnostic_run
+            ON diagnostic_artifacts(run_id, artifact_type, created_at);
+        """,
+    )
+
+
 MIGRATIONS = (
     Migration(1, "base_runtime_schema", _migration_1_base),
     Migration(2, "operation_cas_and_lease_fencing", _migration_2_cas_and_fencing),
     Migration(3, "evidence_identity_without_uniqueness_collapse", _migration_3_evidence_identity),
     Migration(4, "durable_handoff_and_query_indexes", _migration_4_handoff_and_indexes),
     Migration(5, "provider_agnostic_model_loop_records", _migration_5_model_loop_records),
+    Migration(6, "conversation_context_and_model_budget", _migration_6_conversation_context_budget),
 )
 
 

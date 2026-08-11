@@ -615,7 +615,12 @@ class ActionExecutor(ExecutorActionsMixin, ExecutorTrustMixin):
             resolved_usage = token_usage
             if resolved_usage is None and isinstance(result.output, Mapping) and isinstance(result.output.get("usage"), Mapping):
                 resolved_usage = result.output["usage"]
-            state.budget.record_token_usage(resolved_usage, required=True)
+            already_accounted = bool(
+                isinstance(resolved_usage, Mapping)
+                and resolved_usage.get("_accounted_request_id")
+            )
+            if not already_accounted:
+                state.budget.record_token_usage(resolved_usage, required=True)
         if decision.passed and descriptor.source == "host-receipt":
             return self._finish_host_assertion(
                 state=state,

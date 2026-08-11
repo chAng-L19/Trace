@@ -85,7 +85,10 @@ class RunBudget:
     time_limit_seconds: float | None = None
     actions_used: int = 0
     tokens_used: int | None = None
+    input_tokens_used: int | None = None
+    output_tokens_used: int | None = None
     token_usage_missing: int = 0
+    token_usage_acknowledged: int = 0
     started_at: str = field(default_factory=utc_now)
     deadline: str = ""
     pause_reason: str = ""
@@ -140,6 +143,8 @@ class RunBudget:
         raw_token_limit = payload.get("token_limit")
         raw_time_limit = payload.get("time_limit_seconds")
         raw_tokens_used = payload.get("tokens_used")
+        raw_input_used = payload.get("input_tokens_used")
+        raw_output_used = payload.get("output_tokens_used")
         budget = cls.create(
             action_limit=_safe_int(payload.get("action_limit"), fallback_action_limit),
             token_limit=(None if raw_token_limit in (None, "") else _safe_int(raw_token_limit, 0)),
@@ -149,7 +154,20 @@ class RunBudget:
         )
         budget.actions_used = max(0, _safe_int(payload.get("actions_used"), fallback_actions_used))
         budget.tokens_used = None if raw_tokens_used in (None, "") else max(0, _safe_int(raw_tokens_used, 0))
+        budget.input_tokens_used = (
+            None if raw_input_used in (None, "") else max(0, _safe_int(raw_input_used, 0))
+        )
+        budget.output_tokens_used = (
+            None if raw_output_used in (None, "") else max(0, _safe_int(raw_output_used, 0))
+        )
         budget.token_usage_missing = max(0, _safe_int(payload.get("token_usage_missing"), 0))
+        budget.token_usage_acknowledged = max(
+            0,
+            min(
+                budget.token_usage_missing,
+                _safe_int(payload.get("token_usage_acknowledged"), 0),
+            ),
+        )
         budget.pause_reason = str(payload.get("pause_reason") or "")
         budget.paused_at = str(payload.get("paused_at") or "")
         return budget
@@ -160,23 +178,50 @@ class RunBudget:
     def record_action(self) -> None:
         self.actions_used += 1
 
-    def record_token_usage(self, usage: Mapping[str, Any] | None, *, required: bool = False) -> None:
-        raw: Any = None
-        if isinstance(usage, Mapping):
-            raw = usage.get("total_tokens")
-            if raw is None and isinstance(usage.get("usage"), Mapping):
-                raw = usage["usage"].get("total_tokens")
-            if raw is None:
-                raw = usage.get("tokens")
-        try:
-            count = int(raw) if raw is not None else None
-        except (TypeError, ValueError, OverflowError):
-            count = None
-        if count is None or count < 0:
+    @staticmethod
+    def normalized_token_usage(
+        usage: Mapping[str, Any] | None,
+    ) -> tuple[int | None, int | None, int | None]:
+        source = usage if isinstance(usage, Mapping) else {}
+        if isinstance(source.get("usage"), Mapping):
+            source = source["usage"]
+
+        def count(name: str) -> int | None:
+            raw = source.get(name)
+            if isinstance(raw, bool) or raw is None:
+                return None
+            try:
+                value = int(raw)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            return value if value >= 0 and value == raw else None
+
+        input_tokens = count("input_tokens")
+        output_tokens = count("output_tokens")
+        total_tokens = count("total_tokens")
+        if total_tokens is None:
+            total_tokens = count("tokens")
+        if total_tokens is None and input_tokens is not None and output_tokens is not None:
+            total_tokens = input_tokens + output_tokens
+        return input_tokens, output_tokens, total_tokens
+
+    def record_token_usage(
+        self,
+        usage: Mapping[str, Any] | None,
+        *,
+        required: bool = False,
+    ) -> tuple[int | None, int | None, int | None]:
+        input_tokens, output_tokens, total_tokens = self.normalized_token_usage(usage)
+        if input_tokens is not None:
+            self.input_tokens_used = (self.input_tokens_used or 0) + input_tokens
+        if output_tokens is not None:
+            self.output_tokens_used = (self.output_tokens_used or 0) + output_tokens
+        if total_tokens is None:
             if required:
                 self.token_usage_missing += 1
-            return
-        self.tokens_used = (self.tokens_used or 0) + count
+            return input_tokens, output_tokens, None
+        self.tokens_used = (self.tokens_used or 0) + total_tokens
+        return input_tokens, output_tokens, total_tokens
 
     def extend(
         self,
@@ -225,6 +270,7 @@ class RunBudget:
         tokens: int = 0,
         time_seconds: float = 0.0,
         deadline: str = "",
+        acknowledge_missing_usage: bool = False,
     ) -> bool:
         action_delta = max(0, int(actions))
         token_delta = max(0, int(tokens))
@@ -232,7 +278,7 @@ class RunBudget:
         if not math.isfinite(raw_time_delta):
             raise ValueError("budget_time_delta_must_be_finite")
         time_delta = max(0.0, raw_time_delta)
-        if not any((action_delta, token_delta, time_delta, deadline)):
+        if not any((action_delta, token_delta, time_delta, deadline, acknowledge_missing_usage)):
             return False
         if action_delta:
             self.action_limit = min(4096, self.action_limit + action_delta)
@@ -249,6 +295,8 @@ class RunBudget:
         current_deadline = _utc_datetime(self.deadline)
         if explicit_deadline is not None and (current_deadline is None or explicit_deadline > current_deadline):
             self.deadline = explicit_deadline.replace(microsecond=0).isoformat()
+        if acknowledge_missing_usage:
+            self.token_usage_acknowledged = self.token_usage_missing
         self.resume()
         return True
 
@@ -256,7 +304,7 @@ class RunBudget:
         if self.actions_used >= self.action_limit:
             return "action_limit_exhausted"
         if self.token_limit is not None:
-            if self.token_usage_missing:
+            if self.token_usage_missing > self.token_usage_acknowledged:
                 return "token_usage_unknown"
             if self.tokens_used is not None and self.tokens_used >= self.token_limit:
                 return "token_limit_exhausted"

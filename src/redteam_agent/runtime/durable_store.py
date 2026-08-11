@@ -25,6 +25,8 @@ from .store_schema import StoreSchemaMixin
 from .store_migrations import MigrationReport, SchemaMigrationError
 from .service_store import ServiceStoreMixin
 from .model_store import ModelStoreMixin
+from .conversation_store import ConversationStoreMixin
+from .budget_store import BudgetStoreMixin
 
 __all__ = [
     "DurableStore",
@@ -44,6 +46,8 @@ class DurableStore(
     DurableRecordStoreMixin,
     ServiceStoreMixin,
     ModelStoreMixin,
+    ConversationStoreMixin,
+    BudgetStoreMixin,
     StoreSchemaMixin,
 ):
     def __init__(self, root: Path) -> None:
@@ -235,6 +239,7 @@ class DurableStore(
         tokens: int = 0,
         time_seconds: float = 0.0,
         deadline: str = "",
+        acknowledge_missing_usage: bool = False,
     ) -> tuple[OperationState, ...]:
         """Apply one budget delta to every run in a single SQLite transaction."""
 
@@ -271,6 +276,7 @@ class DurableStore(
                     tokens=tokens,
                     time_seconds=time_seconds,
                     deadline=deadline,
+                    acknowledge_missing_usage=acknowledge_missing_usage,
                 )
                 if not changed:
                     states.append(state)
@@ -310,6 +316,7 @@ class DurableStore(
                         "tokens": tokens,
                         "time_seconds": time_seconds,
                         "deadline": deadline,
+                        "acknowledge_missing_usage": acknowledge_missing_usage,
                         "state_version": next_version,
                         "state_snapshot": snapshot,
                     },
