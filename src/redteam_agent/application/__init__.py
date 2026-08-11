@@ -8,6 +8,8 @@ from .contracts import (
     StartRequest,
 )
 from .lifecycle import ALLOWED_RUN_TRANSITIONS, CANONICAL_RUN_STATUSES, validate_run_transition
+from .model_loop import ModelIntegrityError, ModelInterruptedError, ModelLoop, ModelLoopError
+from .model_records import ModelObservationRecord, ModelRequestRecord, ModelResponseRecord
 
 __all__ = [
     "ALLOWED_RUN_TRANSITIONS",
@@ -19,5 +21,12 @@ __all__ = [
     "CANONICAL_RUN_STATUSES",
     "Observation",
     "StartRequest",
+    "ModelIntegrityError",
+    "ModelInterruptedError",
+    "ModelLoop",
+    "ModelLoopError",
+    "ModelObservationRecord",
+    "ModelRequestRecord",
+    "ModelResponseRecord",
     "validate_run_transition",
 ]

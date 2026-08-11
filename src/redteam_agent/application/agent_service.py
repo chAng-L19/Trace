@@ -9,7 +9,7 @@ from ..adapters.runtime_mapping import (
     run_from_runtime,
     terminal_from_runtime,
 )
-from ..core import Event
+from ..core import Event, ModelPort, ToolPort
 from ..runtime.durable_store import StateVersionConflict, StoreConflictError
 from ..runtime.operation_result import OperationResult
 from ..runtime.operation_runtime import OperationRuntime
@@ -21,6 +21,7 @@ from .contracts import (
     StartRequest,
 )
 from .lifecycle import validate_run_transition
+from .model_loop import ModelLoop
 
 
 class AgentService:
@@ -31,6 +32,12 @@ class AgentService:
         *,
         root: Path | None = None,
         runtime: OperationRuntime | None = None,
+        model_port: ModelPort | None = None,
+        tool_port: ToolPort | None = None,
+        model_name: str = "",
+        model_streaming: bool = False,
+        model_max_retries: int = 2,
+        model_max_turns: int = 8,
     ) -> None:
         if runtime is None and root is None:
             raise ValueError("agent_service_root_required")
@@ -41,6 +48,19 @@ class AgentService:
         else:
             assert root is not None
             self.runtime = OperationRuntime(root=root)
+        self.model_loop = (
+            ModelLoop(
+                service=self,
+                model=model_port,
+                tools=tool_port,
+                model_name=model_name,
+                streaming=model_streaming,
+                max_retries=model_max_retries,
+                max_turns=model_max_turns,
+            )
+            if model_port is not None
+            else None
+        )
 
     @staticmethod
     def _view(result: OperationResult) -> AgentRunView:
@@ -125,6 +145,12 @@ class AgentService:
                 )
             else:
                 self.runtime.apply_budget_delta(run_id, **arguments)
+        if self.model_loop is not None:
+            return self.model_loop.run(run_id, max_actions=max_actions)
+        return self._resume_runtime(run_id, max_actions=max_actions)
+
+    def _resume_runtime(self, run_id: str, *, max_actions: int | None = None) -> AgentRunView:
+        before = self.status(run_id)
         try:
             view = self._view(self.runtime.resume(run_id, max_actions=max_actions))
         except (StateVersionConflict, StoreConflictError) as exc:
@@ -136,8 +162,14 @@ class AgentService:
         run_id: str,
         observation: Observation | Mapping[str, Any],
     ) -> AgentRunView:
+        return self._submit_runtime_observation(run_id, Observation.from_value(observation))
+
+    def _submit_runtime_observation(
+        self,
+        run_id: str,
+        resolved: Observation,
+    ) -> AgentRunView:
         before = self.status(run_id)
-        resolved = Observation.from_value(observation)
         arguments = {
             "run_id": run_id,
             "action_id": resolved.action_id,
@@ -171,6 +203,8 @@ class AgentService:
 
     def cancel(self, run_id: str, reason: str = "user_requested") -> AgentRunView:
         before = self.status(run_id)
+        if self.model_loop is not None:
+            self.model_loop.cancel(run_id)
         try:
             view = self._view(self.runtime.cancel(run_id, reason=reason))
         except (StateVersionConflict, StoreConflictError) as exc:

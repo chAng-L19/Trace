@@ -33,10 +33,10 @@ def test_new_database_records_migration_history_and_reopen_is_idempotent(tmp_pat
     first_history = first.migration_history()
 
     assert first.migration_report.detected_version == 0
-    assert first.migration_report.applied == (1, 2, 3, 4)
-    assert first.migration_report.verified == (1, 2, 3, 4)
+    assert first.migration_report.applied == tuple(range(1, SCHEMA_VERSION + 1))
+    assert first.migration_report.verified == tuple(range(1, SCHEMA_VERSION + 1))
     assert first.schema_version() == SCHEMA_VERSION
-    assert tuple(version for version, _ in first_history) == (1, 2, 3, 4)
+    assert tuple(version for version, _ in first_history) == tuple(range(1, SCHEMA_VERSION + 1))
 
     second = DurableStore(root)
 
@@ -128,7 +128,7 @@ def test_legacy_schema_migration_preserves_evidence_rows(tmp_path: Path) -> None
     assert "UNIQUE(run_id" not in evidence_sql
     assert "version" in operation_columns
     assert "fencing_token" in lease_columns
-    assert store.migration_report.applied == (1, 2, 3, 4)
+    assert store.migration_report.applied == tuple(range(1, SCHEMA_VERSION + 1))
 
 
 def test_database_from_newer_runtime_is_not_rewritten(tmp_path: Path) -> None:
@@ -156,7 +156,10 @@ def test_migration_failure_rolls_back_all_schema_changes(tmp_path: Path, monkeyp
         del context, connection
         raise RuntimeError("injected_migration_failure")
 
-    migrations = (*MIGRATIONS[:-1], Migration(4, MIGRATIONS[-1].name, fail_migration))
+    migrations = (
+        *MIGRATIONS[:-1],
+        Migration(SCHEMA_VERSION, MIGRATIONS[-1].name, fail_migration),
+    )
     monkeypatch.setattr(store_migrations, "MIGRATIONS", migrations)
 
     with pytest.raises(RuntimeError, match="injected_migration_failure"):

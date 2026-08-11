@@ -175,11 +175,53 @@ def _migration_4_handoff_and_indexes(context: Any, connection: sqlite3.Connectio
     )
 
 
+def _migration_5_model_loop_records(context: Any, connection: sqlite3.Connection) -> None:
+    del context
+    execute_sql_script(
+        connection,
+        """
+        CREATE TABLE IF NOT EXISTS model_requests (
+            request_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, prompt_hash TEXT NOT NULL,
+            provider TEXT NOT NULL, model TEXT NOT NULL, capabilities_json TEXT NOT NULL,
+            request_json TEXT NOT NULL, created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS model_responses (
+            request_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, status TEXT NOT NULL,
+            provider TEXT NOT NULL, model TEXT NOT NULL, response_hash TEXT NOT NULL,
+            claimed_response_hash TEXT NOT NULL, usage_json TEXT NOT NULL,
+            response_json TEXT NOT NULL, created_at TEXT NOT NULL,
+            FOREIGN KEY(request_id) REFERENCES model_requests(request_id) ON DELETE CASCADE,
+            FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS model_stream_events (
+            request_id TEXT NOT NULL, sequence INTEGER NOT NULL, event_type TEXT NOT NULL,
+            event_json TEXT NOT NULL, PRIMARY KEY(request_id, sequence),
+            FOREIGN KEY(request_id) REFERENCES model_requests(request_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS model_observations (
+            observation_id TEXT PRIMARY KEY, request_id TEXT NOT NULL, run_id TEXT NOT NULL,
+            action_id TEXT NOT NULL, call_id TEXT NOT NULL, tool_name TEXT NOT NULL,
+            status TEXT NOT NULL, input_hash TEXT NOT NULL, output_hash TEXT NOT NULL,
+            observation_json TEXT NOT NULL, created_at TEXT NOT NULL,
+            UNIQUE(request_id, call_id),
+            FOREIGN KEY(request_id) REFERENCES model_requests(request_id) ON DELETE CASCADE,
+            FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_model_requests_run
+            ON model_requests(run_id, created_at, request_id);
+        CREATE INDEX IF NOT EXISTS idx_model_observations_run
+            ON model_observations(run_id, action_id, created_at);
+        """,
+    )
+
+
 MIGRATIONS = (
     Migration(1, "base_runtime_schema", _migration_1_base),
     Migration(2, "operation_cas_and_lease_fencing", _migration_2_cas_and_fencing),
     Migration(3, "evidence_identity_without_uniqueness_collapse", _migration_3_evidence_identity),
     Migration(4, "durable_handoff_and_query_indexes", _migration_4_handoff_and_indexes),
+    Migration(5, "provider_agnostic_model_loop_records", _migration_5_model_loop_records),
 )
 
 

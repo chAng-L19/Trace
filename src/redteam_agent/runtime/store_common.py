@@ -5,7 +5,7 @@ from typing import Any
 
 from .security import redact_sensitive
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 MAX_HANDOFF_OBSERVATION_BYTES = 2 * 1024 * 1024
 
 class StoreConflictError(RuntimeError):
@@ -34,4 +34,3 @@ def _load(value: Any, default: Any = None) -> Any:
         return json.loads(str(value))
     except (json.JSONDecodeError, TypeError, ValueError):
         return default
-

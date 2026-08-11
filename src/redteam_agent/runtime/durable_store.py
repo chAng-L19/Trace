@@ -24,6 +24,7 @@ from .store_records import DurableRecordStoreMixin
 from .store_schema import StoreSchemaMixin
 from .store_migrations import MigrationReport, SchemaMigrationError
 from .service_store import ServiceStoreMixin
+from .model_store import ModelStoreMixin
 
 __all__ = [
     "DurableStore",
@@ -42,6 +43,7 @@ class DurableStore(
     HandoffStoreMixin,
     DurableRecordStoreMixin,
     ServiceStoreMixin,
+    ModelStoreMixin,
     StoreSchemaMixin,
 ):
     def __init__(self, root: Path) -> None:

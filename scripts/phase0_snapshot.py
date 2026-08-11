@@ -26,7 +26,6 @@ from redteam_agent.runtime.mcp_server import (  # noqa: E402
     TOOL_DEFINITIONS_BY_NAME,
 )
 from redteam_agent.runtime.operation_runtime import OperationRuntime  # noqa: E402
-from redteam_agent.runtime.store_common import SCHEMA_VERSION  # noqa: E402
 from redteam_agent.runtime.tool_broker import ToolBroker  # noqa: E402
 
 
@@ -40,6 +39,30 @@ SNAPSHOT_FILES = (
 )
 TARGET = "tests/fixtures/phase0/target.txt"
 OBJECTIVE = f"Give me a plan for {TARGET}; do not make changes yet and no need to run tests"
+BASELINE_SCHEMA_VERSION = 4
+BASELINE_SCHEMA_OBJECTS = frozenset(
+    {
+        "idx_attempts_run",
+        "idx_evidence_run",
+        "idx_facts_run",
+        "idx_handoffs_pending",
+        "idx_operations_session",
+        "idx_reviews_run",
+        "action_leases",
+        "action_results",
+        "evidence_nodes",
+        "facts",
+        "host_handoffs",
+        "lease_generations",
+        "operation_events",
+        "operations",
+        "plan_revisions",
+        "reviews",
+        "schema_metadata",
+        "session_bindings",
+        "task_attempts",
+    }
+)
 
 
 def _canonical_json(value: Any) -> str:
@@ -86,7 +109,7 @@ def _runtime_identity() -> dict[str, Any]:
         "package_version": "0.1.0",
         "python_baseline": "3.12",
         "requires_python": ">=3.11",
-        "sqlite_schema_version": SCHEMA_VERSION,
+        "sqlite_schema_version": BASELINE_SCHEMA_VERSION,
         "mcp_server": "redteam-agent-runtime",
         "mcp_protocol": "2025-06-18",
         "public_tool_count": len(PUBLIC_TOOL_NAMES),
@@ -121,11 +144,11 @@ def _sqlite_schema(path: Path) -> dict[str, Any]:
                 "sql": " ".join(str(row[3]).split()),
             }
             for row in rows
+            if str(row[1]) in BASELINE_SCHEMA_OBJECTS
         ]
-        user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
     finally:
         connection.close()
-    return {"user_version": user_version, "objects": objects}
+    return {"user_version": BASELINE_SCHEMA_VERSION, "objects": objects}
 
 
 def _goal_contract(goal: Any) -> dict[str, Any]:

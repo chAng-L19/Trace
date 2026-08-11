@@ -24,6 +24,7 @@ from redteam_agent.runtime.durable_store import (
     StateVersionConflict,
     StoreConflictError,
 )
+from redteam_agent.runtime.store_common import SCHEMA_VERSION
 from redteam_agent.runtime.facts import FactLedger, FactValidationError
 from redteam_agent.runtime.goal_compiler import GoalCompiler
 from redteam_agent.runtime.models import EvidenceNode, EvidenceProvenance, OperationState, TaskAttempt, utc_now
@@ -313,7 +314,7 @@ def test_schema_migrates_legacy_cas_fencing_and_evidence_identity(tmp_path: Path
     assert "version" in operation_columns
     assert "fencing_token" in lease_columns
     assert "UNIQUE(run_id" not in evidence_sql
-    assert schema_version == "4"
+    assert schema_version == str(SCHEMA_VERSION)
 
 
 def test_host_handoff_receipt_is_hashed_bound_and_single_use(tmp_path: Path) -> None:

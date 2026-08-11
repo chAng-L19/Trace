@@ -1,0 +1,385 @@
+{
+  "capabilities": {
+    "kind": "model_capabilities",
+    "max_context_tokens": 128000,
+    "metadata": {
+      "model": "fixture-primary",
+      "provider": "fixture"
+    },
+    "modalities": [
+      "text"
+    ],
+    "native_system_role": true,
+    "native_tool_calls": true,
+    "parallel_tool_calls": true,
+    "schema_version": 1,
+    "streaming": true,
+    "structured_output": true,
+    "usage_reporting": true
+  },
+  "invariants": [
+    "runtime_drives_model_loop",
+    "provider_is_protocol_adapter_only",
+    "runtime_computes_prompt_and_response_hashes",
+    "tool_results_enter_model_observations_before_evidence",
+    "model_text_cannot_write_evidence_or_terminal_state"
+  ],
+  "model_loop": {
+    "constructor": [
+      "service",
+      "model",
+      "tools",
+      "model_name",
+      "streaming",
+      "max_retries",
+      "max_turns"
+    ],
+    "methods": {
+      "cancel": [
+        "run_id"
+      ],
+      "run": [
+        "run_id",
+        "max_actions"
+      ]
+    }
+  },
+  "records": {
+    "observation": {
+      "action_id": "map-surface",
+      "call_id": "call-phase3",
+      "created_at": "2026-08-11T00:00:02+00:00",
+      "input_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "metadata": {},
+      "observation": {
+        "tool_result": {
+          "output": {
+            "target": "fixture://phase3"
+          },
+          "status": "success"
+        }
+      },
+      "observation_id": "model-observation-phase3",
+      "output_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "request_id": "model-request-phase3",
+      "run_id": "run-phase3",
+      "status": "success",
+      "tool_name": "fixture:inspect"
+    },
+    "request": {
+      "capabilities": {
+        "kind": "model_capabilities",
+        "max_context_tokens": 128000,
+        "metadata": {
+          "model": "fixture-primary",
+          "provider": "fixture"
+        },
+        "modalities": [
+          "text"
+        ],
+        "native_system_role": true,
+        "native_tool_calls": true,
+        "parallel_tool_calls": true,
+        "schema_version": 1,
+        "streaming": true,
+        "structured_output": true,
+        "usage_reporting": true
+      },
+      "created_at": "2026-08-11T00:00:00+00:00",
+      "model": "fixture-primary",
+      "prompt_hash": "1b7ab06300bf986e7dea55f13934a5034297257aba27b1d96f9c9cd62916eae9",
+      "provider": "fixture",
+      "request": {
+        "allow_parallel_tools": true,
+        "kind": "model_request",
+        "messages": [
+          {
+            "content": "Runtime owns evidence and terminal decisions.",
+            "role": "system"
+          },
+          {
+            "content": {
+              "action_id": "map-surface"
+            },
+            "role": "user"
+          }
+        ],
+        "metadata": {},
+        "model": "fixture-primary",
+        "request_id": "model-request-phase3",
+        "response_schema": {
+          "type": "object"
+        },
+        "run_id": "run-phase3",
+        "schema_version": 1,
+        "tools": [
+          {
+            "input_schema": {
+              "type": "object"
+            },
+            "name": "fixture:inspect",
+            "type": "function"
+          }
+        ]
+      },
+      "request_id": "model-request-phase3",
+      "run_id": "run-phase3"
+    },
+    "response": {
+      "claimed_response_hash": "",
+      "created_at": "2026-08-11T00:00:01+00:00",
+      "model": "fixture-primary",
+      "provider": "fixture",
+      "request_id": "model-request-phase3",
+      "response": {
+        "error": "",
+        "finish_reason": "tool_calls",
+        "kind": "model_response",
+        "metadata": {},
+        "model": "fixture-primary",
+        "provider": "fixture",
+        "request_id": "model-request-phase3",
+        "response_hash": "",
+        "schema_version": 1,
+        "status": "completed",
+        "structured_output": {},
+        "text": "",
+        "tool_calls": [
+          {
+            "arguments": {},
+            "id": "call-phase3",
+            "name": "fixture:inspect"
+          }
+        ],
+        "usage": {
+          "input_tokens": 20,
+          "output_tokens": 8,
+          "total_tokens": 28
+        }
+      },
+      "response_hash": "94b0bc36cdac70f72645c11c1469128a8b20bccbfb08e742f0bb25bb1c225e3a",
+      "run_id": "run-phase3",
+      "status": "completed",
+      "usage": {
+        "input_tokens": 20,
+        "output_tokens": 8,
+        "total_tokens": 28
+      }
+    }
+  },
+  "schema": {
+    "indexes": [
+      "idx_model_observations_run",
+      "idx_model_requests_run"
+    ],
+    "tables": {
+      "model_observations": [
+        {
+          "name": "observation_id",
+          "not_null": false,
+          "primary_key": 1,
+          "type": "TEXT"
+        },
+        {
+          "name": "request_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "run_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "action_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "call_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "tool_name",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "status",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "input_hash",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "output_hash",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "observation_json",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        }
+      ],
+      "model_requests": [
+        {
+          "name": "request_id",
+          "not_null": false,
+          "primary_key": 1,
+          "type": "TEXT"
+        },
+        {
+          "name": "run_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "prompt_hash",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "provider",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "model",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "capabilities_json",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "request_json",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        }
+      ],
+      "model_responses": [
+        {
+          "name": "request_id",
+          "not_null": false,
+          "primary_key": 1,
+          "type": "TEXT"
+        },
+        {
+          "name": "run_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "status",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "provider",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "model",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "response_hash",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "claimed_response_hash",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "usage_json",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "response_json",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        }
+      ],
+      "model_stream_events": [
+        {
+          "name": "request_id",
+          "not_null": true,
+          "primary_key": 1,
+          "type": "TEXT"
+        },
+        {
+          "name": "sequence",
+          "not_null": true,
+          "primary_key": 2,
+          "type": "INTEGER"
+        },
+        {
+          "name": "event_type",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "event_json",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        }
+      ]
+    },
+    "version": 5
+  }
+}
