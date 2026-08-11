@@ -23,6 +23,7 @@ from .store_handoff import HandoffStoreMixin
 from .store_records import DurableRecordStoreMixin
 from .store_schema import StoreSchemaMixin
 from .store_migrations import MigrationReport, SchemaMigrationError
+from .service_store import ServiceStoreMixin
 
 __all__ = [
     "DurableStore",
@@ -37,7 +38,12 @@ __all__ = [
 ]
 
 
-class DurableStore(HandoffStoreMixin, DurableRecordStoreMixin, StoreSchemaMixin):
+class DurableStore(
+    HandoffStoreMixin,
+    DurableRecordStoreMixin,
+    ServiceStoreMixin,
+    StoreSchemaMixin,
+):
     def __init__(self, root: Path) -> None:
         self.root = root
         secure_directory(self.root)
@@ -468,4 +474,3 @@ class DurableStore(HandoffStoreMixin, DurableRecordStoreMixin, StoreSchemaMixin)
                     (run_id, action_id, owner, int(fencing_token)),
                 )
             return cursor.rowcount == 1
-

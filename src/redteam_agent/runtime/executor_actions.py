@@ -132,9 +132,13 @@ class ExecutorActionsMixin:
                 claimed.idempotency_key,
                 action_id=action.action_id,
             )
-            host_attempt = claimed.tool in {"host:handoff", "host:agent-observation"}
+            host_attempt = claimed.tool in {
+                "host:handoff",
+                "host:agent-observation",
+                "host:external-observation",
+            }
             if descriptor is None and host_attempt and cached is not None:
-                host_name = "handoff" if claimed.tool == "host:handoff" else "agent-observation"
+                host_name = claimed.tool.removeprefix("host:")
                 descriptor = ToolDescriptor(
                     server="host",
                     name=host_name,
@@ -459,6 +463,7 @@ class ExecutorActionsMixin:
         output: Any,
         tool: str = "host-agent",
         usage: Mapping[str, Any] | None = None,
+        idempotency_key: str = "",
         timeout: float = 120.0,
     ) -> ExecutionOutcome:
         """Compatibility path for callers that predate one-time handoff receipts."""
@@ -497,17 +502,66 @@ class ExecutorActionsMixin:
                     "output_hash": output_hash,
                 }
             )
-            idempotency_key = hashlib.sha256(
-                f"external\0{state.run_id}\0{state.branch_id}\0{state.plan_revision}\0{action.action_id}\0{input_hash}".encode(
-                    "utf-8"
-                )
+            client_key = idempotency_key.strip()
+            resolved_idempotency_key = hashlib.sha256(
+                (
+                    f"external-client\0{state.run_id}\0{state.branch_id}\0{state.plan_revision}\0"
+                    f"{action.action_id}\0{client_key}"
+                    if client_key
+                    else (
+                        f"external\0{state.run_id}\0{state.branch_id}\0{state.plan_revision}\0"
+                        f"{action.action_id}\0{input_hash}"
+                    )
+                ).encode("utf-8")
             ).hexdigest()
+            existing = next(
+                (
+                    item
+                    for item in self.store.task_attempts(
+                        state.run_id,
+                        action_id=action.action_id,
+                    )
+                    if item.branch_id == state.branch_id
+                    and item.plan_revision == state.plan_revision
+                    and item.idempotency_key == resolved_idempotency_key
+                ),
+                None,
+            )
+            if existing is not None:
+                if existing.input_hash != input_hash:
+                    raise ValueError(
+                        f"external_observation_idempotency_conflict:{action.action_id}"
+                    )
+                if existing.status in {
+                    "prepared",
+                    "running",
+                    "uncertain",
+                    "reconciling",
+                    "consumed",
+                }:
+                    return self.reconcile_attempt(
+                        state,
+                        workflow,
+                        existing,
+                        timeout=timeout,
+                    )
+                return ExecutionOutcome(
+                    False,
+                    "observation_already_recorded",
+                    "observation_idempotent_replay",
+                )
+            if state.action_status.get(action.action_id) in {"completed", "skipped"}:
+                return ExecutionOutcome(
+                    False,
+                    f"action_already_terminal:{action.action_id}",
+                    "action_already_terminal",
+                )
             attempt = self._begin_attempt(
                 state,
                 action,
                 descriptor,
                 input_hash=input_hash,
-                idempotency_key=idempotency_key,
+                idempotency_key=resolved_idempotency_key,
                 lease_token=lease_token,
             )
             result = ToolCallResult(
@@ -523,7 +577,7 @@ class ExecutorActionsMixin:
             self.store.cache_action_result(
                 state.run_id,
                 action.action_id,
-                idempotency_key,
+                resolved_idempotency_key,
                 result,
                 lease_token=lease_token,
             )

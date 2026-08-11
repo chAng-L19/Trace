@@ -269,6 +269,43 @@ class OperationLifecycleMixin:
         finally:
             self.store.release_lease(token)
 
+    def apply_budget_delta_once(
+        self,
+        run_id: str,
+        *,
+        idempotency_key: str,
+        actions: int = 0,
+        tokens: int = 0,
+        time_seconds: float = 0.0,
+        deadline: str = "",
+    ) -> OperationResult:
+        if actions < 0 or tokens < 0 or time_seconds < 0:
+            raise ValueError("budget_delta_must_be_nonnegative")
+        initial = self.store.load_operation(run_id)
+        if initial is None:
+            raise KeyError(f"operation_not_found:{run_id}")
+        token = self.store.acquire_lease(
+            run_id,
+            "__operation__",
+            f"{self.owner}:budget-delta-once:{uuid4().hex}",
+            ttl_seconds=30,
+        )
+        if token is None:
+            raise ValueError(f"operation_busy:{run_id}")
+        try:
+            state = self.store.apply_budget_delta_once(
+                run_id,
+                actions=actions,
+                tokens=tokens,
+                time_seconds=time_seconds,
+                deadline=deadline,
+                idempotency_key=idempotency_key,
+                lease_token=token,
+            )
+            return self._result(state, self._workflow_for(state))
+        finally:
+            self.store.release_lease(token)
+
     def apply_budget_delta_batch(
         self,
         run_ids: Sequence[str],
@@ -335,5 +372,4 @@ class OperationLifecycleMixin:
             state.budget.actions_used = used
             changed = True
         return changed
-
 

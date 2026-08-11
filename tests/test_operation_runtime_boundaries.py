@@ -28,6 +28,7 @@ def test_operation_runtime_facade_preserves_public_import_identity() -> None:
         "validate_handoff_observation",
         "submit_observation",
         "apply_budget_delta",
+        "apply_budget_delta_once",
         "apply_budget_delta_batch",
         "bind_credentials",
         "missing_credential_refs",

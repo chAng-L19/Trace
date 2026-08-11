@@ -313,6 +313,7 @@ class OperationHandoffMixin:
         output: Any,
         tool: str = "host-agent",
         usage: Mapping[str, Any] | None = None,
+        idempotency_key: str = "",
         continue_run: bool = True,
         max_actions: int | None = None,
     ) -> OperationResult:
@@ -335,7 +336,10 @@ class OperationHandoffMixin:
             if exhaustion:
                 raise ValueError(f"run_budget_exhausted:{exhaustion}")
             action = self._action_for_observation(state, workflow, action_id)
-            if state.action_status.get(action.action_id) in {"completed", "skipped"}:
+            if (
+                state.action_status.get(action.action_id) in {"completed", "skipped"}
+                and not idempotency_key.strip()
+            ):
                 raise ValueError(f"action_already_terminal:{action.action_id}")
             outcome = self.executor.accept_external_observation(
                 state,
@@ -344,11 +348,14 @@ class OperationHandoffMixin:
                 output=output,
                 tool=tool,
                 usage=usage,
+                idempotency_key=idempotency_key,
                 timeout=self._action_timeout(action) + 30.0,
             )
-            if not outcome.progressed and outcome.event_type != "action_lease_busy":
+            if not outcome.progressed and outcome.event_type not in {
+                "action_lease_busy",
+                "observation_idempotent_replay",
+            }:
                 raise ValueError(f"observation_verification_failed:{outcome.reason}")
         finally:
             self.store.release_lease(lease)
         return self.resume(run_id, max_actions=max_actions) if continue_run else self.status(run_id)
-

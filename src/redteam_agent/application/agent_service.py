@@ -1,0 +1,202 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Mapping
+
+from ..adapters.runtime_mapping import (
+    evidence_from_runtime,
+    goal_from_runtime,
+    run_from_runtime,
+    terminal_from_runtime,
+)
+from ..core import Event
+from ..runtime.durable_store import StateVersionConflict, StoreConflictError
+from ..runtime.operation_result import OperationResult
+from ..runtime.operation_runtime import OperationRuntime
+from .contracts import (
+    AgentRunView,
+    AgentStartResult,
+    BudgetDelta,
+    Observation,
+    StartRequest,
+)
+from .lifecycle import validate_run_transition
+
+
+class AgentService:
+    """The canonical application entry point for durable agent operations."""
+
+    def __init__(
+        self,
+        *,
+        root: Path | None = None,
+        runtime: OperationRuntime | None = None,
+    ) -> None:
+        if runtime is None and root is None:
+            raise ValueError("agent_service_root_required")
+        if runtime is not None and root is not None and runtime.root.resolve() != root.resolve():
+            raise ValueError("agent_service_runtime_root_mismatch")
+        if runtime is not None:
+            self.runtime = runtime
+        else:
+            assert root is not None
+            self.runtime = OperationRuntime(root=root)
+
+    @staticmethod
+    def _view(result: OperationResult) -> AgentRunView:
+        return AgentRunView(
+            run=run_from_runtime(result.state),
+            goal=goal_from_runtime(result.state.goal),
+            evidence=tuple(evidence_from_runtime(item) for item in result.evidence),
+            terminal=terminal_from_runtime(result.terminal),
+            next_action=result.next_action,
+            missing_capabilities=tuple(result.missing_capabilities),
+            handoff=dict(result.handoff),
+        )
+
+    def _settle_control_conflict(self, run_id: str, error: BaseException) -> AgentRunView:
+        text = str(error)
+        if not (
+            text.startswith("operation_cancel_requested:")
+            or text.startswith("state_version_conflict:")
+        ):
+            raise error
+        state = self.runtime.store.load_operation(run_id)
+        if state is None:
+            raise KeyError(f"operation_not_found:{run_id}")
+        if state.cancel_reason or state.status in {"cancelling", "cancelled"}:
+            try:
+                return self._view(
+                    self.runtime.cancel(run_id, reason=state.cancel_reason or "cancel_requested")
+                )
+            except ValueError as exc:
+                if not str(exc).startswith("operation_terminal:"):
+                    raise
+        return self._view(self.runtime.status(run_id))
+
+    @staticmethod
+    def _validate_result(previous: str, view: AgentRunView) -> AgentRunView:
+        validate_run_transition(previous, view.run.status)
+        if view.run.status in {"completed", "failed", "cancelled"} and not view.terminal.terminal:
+            raise ValueError(f"terminal_decision_missing:{view.run.status}")
+        if view.run.status == "completed" and not view.terminal.success:
+            raise ValueError("completed_run_requires_successful_terminal_decision")
+        return view
+
+    def start(self, request: StartRequest | Mapping[str, Any]) -> AgentStartResult:
+        resolved = StartRequest.from_value(request)
+        states = self.runtime.start_batch(**resolved.runtime_arguments())
+        views = tuple(
+            self._validate_result("created", self._view(self.runtime.status(state.run_id)))
+            for state in states
+        )
+        batch_ids = {
+            str(state.goal.starting_context.get("batch_session_id") or "")
+            for state in states
+            if state.goal.starting_context.get("batch_session_id")
+        }
+        if len(batch_ids) > 1:
+            raise ValueError("batch_identity_mismatch")
+        return AgentStartResult(runs=views, batch_id=next(iter(batch_ids), ""))
+
+    def run(
+        self,
+        run_id: str,
+        budget_delta: BudgetDelta | Mapping[str, Any] | None = None,
+        *,
+        max_actions: int | None = None,
+    ) -> AgentRunView:
+        before = self.status(run_id)
+        delta = BudgetDelta.from_value(budget_delta)
+        if delta.changes_budget and before.run.status in {"completed", "failed", "cancelled"}:
+            raise ValueError(f"operation_terminal:{before.run.status}")
+        if delta.changes_budget:
+            arguments = {
+                "actions": delta.actions,
+                "tokens": delta.tokens,
+                "time_seconds": delta.time_seconds,
+                "deadline": delta.deadline,
+            }
+            if delta.idempotency_key:
+                self.runtime.apply_budget_delta_once(
+                    run_id,
+                    idempotency_key=delta.idempotency_key,
+                    **arguments,
+                )
+            else:
+                self.runtime.apply_budget_delta(run_id, **arguments)
+        try:
+            view = self._view(self.runtime.resume(run_id, max_actions=max_actions))
+        except (StateVersionConflict, StoreConflictError) as exc:
+            view = self._settle_control_conflict(run_id, exc)
+        return self._validate_result(before.run.status, view)
+
+    def submit_observation(
+        self,
+        run_id: str,
+        observation: Observation | Mapping[str, Any],
+    ) -> AgentRunView:
+        before = self.status(run_id)
+        resolved = Observation.from_value(observation)
+        arguments = {
+            "run_id": run_id,
+            "action_id": resolved.action_id,
+            "output": resolved.output,
+            "tool": resolved.tool,
+            "usage": dict(resolved.usage),
+            "continue_run": resolved.continue_run,
+            "max_actions": resolved.max_actions,
+        }
+        try:
+            if resolved.has_handoff_receipt:
+                result = self.runtime.submit_handoff_observation(
+                    handoff_id=resolved.handoff_id,
+                    handoff_token=resolved.handoff_token,
+                    attempt_id=resolved.attempt_id,
+                    contract_hash=resolved.contract_hash,
+                    **arguments,
+                )
+            else:
+                result = self.runtime.submit_observation(
+                    idempotency_key=resolved.idempotency_key,
+                    **arguments,
+                )
+            view = self._view(result)
+        except (StateVersionConflict, StoreConflictError) as exc:
+            view = self._settle_control_conflict(run_id, exc)
+        return self._validate_result(before.run.status, view)
+
+    def status(self, run_id: str) -> AgentRunView:
+        return self._view(self.runtime.status(run_id))
+
+    def cancel(self, run_id: str, reason: str = "user_requested") -> AgentRunView:
+        before = self.status(run_id)
+        try:
+            view = self._view(self.runtime.cancel(run_id, reason=reason))
+        except (StateVersionConflict, StoreConflictError) as exc:
+            view = self._settle_control_conflict(run_id, exc)
+        return self._validate_result(before.run.status, view)
+
+    def events(
+        self,
+        run_id: str,
+        after_sequence: int = 0,
+        *,
+        limit: int = 200,
+    ) -> tuple[Event, ...]:
+        if self.runtime.store.load_operation(run_id) is None:
+            raise KeyError(f"operation_not_found:{run_id}")
+        return tuple(
+            Event(
+                run_id=run_id,
+                event_type=str(item["event_type"]),
+                payload=dict(item["payload"]),
+                sequence=int(item["event_id"]),
+                created_at=str(item["created_at"]),
+            )
+            for item in self.runtime.store.events(
+                run_id,
+                after_event_id=after_sequence,
+                limit=limit,
+            )
+        )

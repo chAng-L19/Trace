@@ -18,8 +18,10 @@ from ..runtime.models import (
 
 
 LEGACY_TO_CORE_STATUS = {
+    "waiting_goal_input": "waiting_worker",
     "waiting_host": "waiting_worker",
     "waiting_tools": "waiting_worker",
+    "waiting_dependency": "waiting_worker",
     "failed_integrity": "failed",
 }
 

@@ -243,6 +243,7 @@ class OperationRuntimeAdapter:
         output: Any,
         tool: str = "host-agent",
         usage: Mapping[str, Any] | None = None,
+        idempotency_key: str = "",
         continue_run: bool = True,
         max_actions: int | None = None,
     ) -> OperationView:
@@ -252,6 +253,7 @@ class OperationRuntimeAdapter:
             output=output,
             tool=tool,
             usage=usage,
+            idempotency_key=idempotency_key,
             continue_run=continue_run,
             max_actions=max_actions,
         )
