@@ -9,10 +9,19 @@ from ..adapters.runtime_mapping import (
     run_from_runtime,
     terminal_from_runtime,
 )
-from ..core import Event, ModelPort, ToolPort
+from ..core import Event, ModelPort, ToolPort, WorkerPort, WorkerResult, WorkerTask
 from ..runtime.durable_store import StateVersionConflict, StoreConflictError
+from ..runtime.worker_store import WorkerStore
 from ..runtime.operation_result import OperationResult
 from ..runtime.operation_runtime import OperationRuntime
+from ..workers import (
+    CodexHandoffWorker,
+    DockerWorkerAdapter,
+    LocalWorker,
+    McpWorker,
+    WorkerManager,
+    WorkspaceManager,
+)
 from .contracts import (
     AgentRunView,
     AgentStartResult,
@@ -35,6 +44,7 @@ class AgentService:
         runtime: OperationRuntime | None = None,
         model_port: ModelPort | None = None,
         tool_port: ToolPort | None = None,
+        worker_port: WorkerPort | None = None,
         model_name: str = "",
         model_streaming: bool = False,
         model_max_retries: int = 2,
@@ -49,9 +59,30 @@ class AgentService:
         else:
             assert root is not None
             self.runtime = OperationRuntime(root=root)
-        self.conversation = ConversationLedger(self.runtime.store)
+        self.conversation = ConversationLedger(self.runtime.store, self.runtime.artifacts)
         self.context_compactor = TraceableCompactor(self.runtime.store)
         self.context_selector = ContextSelector(self, self.conversation, self.context_compactor)
+        self.worker_records = WorkerStore(self.runtime.store)
+        self.workspaces = WorkspaceManager(self.runtime.root, self.runtime.store)
+        if worker_port is not None:
+            self.workers = worker_port
+        else:
+            workers: dict[str, WorkerPort] = {
+                "local": LocalWorker(
+                    workspaces=self.workspaces,
+                    artifacts=self.runtime.artifacts,
+                    records=self.worker_records,
+                ),
+                "codex_handoff": CodexHandoffWorker(records=self.worker_records),
+                "docker": DockerWorkerAdapter(records=self.worker_records),
+            }
+            if tool_port is not None:
+                workers["mcp"] = McpWorker(
+                    tools=tool_port,
+                    artifacts=self.runtime.artifacts,
+                    records=self.worker_records,
+                )
+            self.workers = WorkerManager(workers)
         self.model_loop = (
             ModelLoop(
                 service=self,
@@ -275,3 +306,42 @@ class AgentService:
         if self.runtime.store.load_operation(run_id) is None:
             raise KeyError(f"operation_not_found:{run_id}")
         return self.context_compactor.compact(run_id, message_ids)
+
+    def execute_worker(self, task: WorkerTask | Mapping[str, Any]) -> WorkerResult:
+        resolved = task if isinstance(task, WorkerTask) else WorkerTask.from_dict(task)
+        if self.runtime.store.load_operation(resolved.run_id) is None:
+            raise KeyError(f"operation_not_found:{resolved.run_id}")
+        for artifact_id in resolved.required_artifacts:
+            if self.runtime.artifacts.get_ref(artifact_id, run_id=resolved.run_id) is None:
+                raise ValueError(f"worker_required_artifact_missing:{artifact_id}")
+        return self.workers.execute(resolved)
+
+    def worker_status(self, task_id: str):
+        return self.worker_records.get(task_id)
+
+    def worker_results(self, run_id: str):
+        if self.runtime.store.load_operation(run_id) is None:
+            raise KeyError(f"operation_not_found:{run_id}")
+        return self.worker_records.records(run_id)
+
+    def cancel_worker(self, task_id: str) -> bool:
+        return self.workers.cancel(task_id)
+
+    def artifact(self, run_id: str, artifact_id: str):
+        ref = self.runtime.artifacts.get_ref(artifact_id, run_id=run_id)
+        if ref is None:
+            raise KeyError(f"artifact_not_found:{artifact_id}")
+        return ref
+
+    def read_artifact(self, run_id: str, artifact_id: str) -> bytes:
+        return self.runtime.artifacts.read(artifact_id, run_id=run_id)
+
+    def artifacts(self, run_id: str):
+        if self.runtime.store.load_operation(run_id) is None:
+            raise KeyError(f"operation_not_found:{run_id}")
+        return self.runtime.artifacts.refs(run_id)
+
+    def search_artifacts(self, run_id: str, query: str, *, limit: int = 20):
+        if self.runtime.store.load_operation(run_id) is None:
+            raise KeyError(f"operation_not_found:{run_id}")
+        return self.runtime.artifacts.search(run_id, query, limit=limit)

@@ -263,6 +263,64 @@ def _migration_6_conversation_context_budget(context: Any, connection: sqlite3.C
     )
 
 
+def _migration_7_artifact_cas(context: Any, connection: sqlite3.Connection) -> None:
+    del context
+    execute_sql_script(
+        connection,
+        """
+        CREATE TABLE IF NOT EXISTS artifact_blobs (
+            content_hash TEXT PRIMARY KEY, byte_count INTEGER NOT NULL,
+            storage_key TEXT NOT NULL, created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS artifact_refs (
+            artifact_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, content_hash TEXT NOT NULL,
+            byte_count INTEGER NOT NULL, media_type TEXT NOT NULL, artifact_type TEXT NOT NULL,
+            storage_key TEXT NOT NULL, preview_json TEXT NOT NULL, metadata_json TEXT NOT NULL,
+            artifact_json TEXT NOT NULL, created_at TEXT NOT NULL,
+            UNIQUE(artifact_id, run_id),
+            FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE,
+            FOREIGN KEY(content_hash) REFERENCES artifact_blobs(content_hash)
+        );
+        CREATE TABLE IF NOT EXISTS artifact_links (
+            artifact_id TEXT NOT NULL, parent_id TEXT NOT NULL, run_id TEXT NOT NULL,
+            PRIMARY KEY(artifact_id, parent_id),
+            FOREIGN KEY(artifact_id, run_id) REFERENCES artifact_refs(artifact_id, run_id) ON DELETE CASCADE,
+            FOREIGN KEY(parent_id, run_id) REFERENCES artifact_refs(artifact_id, run_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_artifacts_run ON artifact_refs(run_id, created_at, artifact_id);
+        CREATE INDEX IF NOT EXISTS idx_artifact_links_parent ON artifact_links(run_id, parent_id);
+        CREATE VIRTUAL TABLE IF NOT EXISTS artifact_fts USING fts5(
+            artifact_id UNINDEXED, run_id UNINDEXED, artifact_type, preview, metadata
+        );
+        """,
+    )
+
+
+def _migration_8_worker_plane(context: Any, connection: sqlite3.Connection) -> None:
+    del context
+    execute_sql_script(
+        connection,
+        """
+        CREATE TABLE IF NOT EXISTS run_workspaces (
+            run_id TEXT PRIMARY KEY, workspace_key TEXT NOT NULL,
+            manifest_hash TEXT NOT NULL, manifest_json TEXT NOT NULL,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS worker_tasks (
+            task_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, worker_kind TEXT NOT NULL,
+            capability TEXT NOT NULL, idempotency_key TEXT NOT NULL, input_hash TEXT NOT NULL,
+            status TEXT NOT NULL, task_json TEXT NOT NULL, result_json TEXT NOT NULL,
+            owner TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            UNIQUE(run_id, worker_kind, idempotency_key),
+            FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_worker_tasks_run
+            ON worker_tasks(run_id, status, created_at, task_id);
+        """,
+    )
+
+
 MIGRATIONS = (
     Migration(1, "base_runtime_schema", _migration_1_base),
     Migration(2, "operation_cas_and_lease_fencing", _migration_2_cas_and_fencing),
@@ -270,6 +328,8 @@ MIGRATIONS = (
     Migration(4, "durable_handoff_and_query_indexes", _migration_4_handoff_and_indexes),
     Migration(5, "provider_agnostic_model_loop_records", _migration_5_model_loop_records),
     Migration(6, "conversation_context_and_model_budget", _migration_6_conversation_context_budget),
+    Migration(7, "content_addressed_artifact_store", _migration_7_artifact_cas),
+    Migration(8, "isolated_worker_plane", _migration_8_worker_plane),
 )
 
 

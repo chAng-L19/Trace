@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
@@ -14,6 +15,8 @@ from ..runtime.conversation_records import (
 from ..runtime.model_common import utc_now
 from .contracts import AgentRunView, StartRequest
 
+MAX_INLINE_TOOL_RESULT_BYTES = 64 * 1024
+
 
 @dataclass(frozen=True, slots=True)
 class ContextSelection:
@@ -25,11 +28,20 @@ class ContextSelection:
     source_hash: str
     protected_hash: str
     context_hash: str
+    estimated_context_tokens: int = 0
+    provider_context_tokens: int | None = None
+    selected_tokens: int = 0
+    reserved_output_tokens: int = 0
+    projection_bytes: int = 0
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    context_overflow_tokens: int = 0
 
 
 class ConversationLedger:
-    def __init__(self, store: Any) -> None:
+    def __init__(self, store: Any, artifacts: Any | None = None) -> None:
         self.store = store
+        self.artifacts = artifacts
 
     def append(
         self,
@@ -108,15 +120,64 @@ class ConversationLedger:
 
     def record_tool_results(self, request_id: str, run_id: str, results: Sequence[ToolResult]) -> None:
         for result in results:
+            content = result.to_dict()
+            encoded = json.dumps(
+                content, ensure_ascii=False, sort_keys=True, default=str
+            ).encode("utf-8")
+            if self.artifacts is not None and len(encoded) > MAX_INLINE_TOOL_RESULT_BYTES:
+                preview = self._tool_result_preview(result)
+                artifact = self.artifacts.put_json(
+                    content,
+                    run_id=run_id,
+                    artifact_type="model_tool_result",
+                    preview=preview,
+                    metadata={
+                        "request_id": request_id,
+                        "call_id": result.call_id,
+                        "tool_name": result.tool_name,
+                        "output_hash": result.output_hash,
+                    },
+                )
+                content = {
+                    **content,
+                    "output": {
+                        "artifact": self.artifacts.project(artifact),
+                        "access": {
+                            "method": "AgentService.read_artifact",
+                            "run_id": run_id,
+                            "artifact_id": artifact.artifact_id,
+                        },
+                    },
+                    "metadata": {
+                        **dict(content.get("metadata") or {}),
+                        "complete_output_artifact": artifact.artifact_id,
+                    },
+                }
             self.append(
                 run_id=run_id,
                 role="tool",
-                content=result.to_dict(),
+                content=content,
                 protected=False,
                 source_type="tool_result",
                 source_id=f"{request_id}:{result.call_id}",
                 metadata={"request_id": request_id, "call_id": result.call_id},
             )
+
+    @staticmethod
+    def _tool_result_preview(result: ToolResult) -> Mapping[str, Any]:
+        rendered = json.dumps(
+            result.output, ensure_ascii=False, sort_keys=True, default=str
+        ).encode("utf-8")
+        edge = 16 * 1024
+        return {
+            "call_id": result.call_id,
+            "tool_name": result.tool_name,
+            "status": result.status,
+            "output_bytes": len(rendered),
+            "head": rendered[:edge].decode("utf-8", errors="replace"),
+            "tail": rendered[-edge:].decode("utf-8", errors="replace") if len(rendered) > edge else "",
+            "truncated": len(rendered) > edge * 2,
+        }
 
     def messages(self, run_id: str) -> tuple[ConversationMessageRecord, ...]:
         return self.store.conversation_messages(run_id)
@@ -188,14 +249,32 @@ class ContextSelector:
         *,
         default_max_messages: int = 32,
         compaction_threshold: int = 48,
+        fallback_bytes_per_token: int = 3,
     ) -> None:
         self.service = service
         self.ledger = ledger
         self.compactor = compactor
         self.default_max_messages = max(1, int(default_max_messages))
         self.compaction_threshold = max(2, int(compaction_threshold))
+        self.fallback_bytes_per_token = max(1, int(fallback_bytes_per_token))
 
-    def model_messages(self, view: AgentRunView) -> tuple[Mapping[str, Any], ...]:
+    def model_messages(
+        self,
+        view: AgentRunView,
+        *,
+        max_context_tokens: int = 0,
+    ) -> tuple[Mapping[str, Any], ...]:
+        return self.prepare_model_context(
+            view,
+            max_context_tokens=max_context_tokens,
+        ).messages
+
+    def prepare_model_context(
+        self,
+        view: AgentRunView,
+        *,
+        max_context_tokens: int = 0,
+    ) -> ContextSelection:
         run_id = view.run.run_id
         self.ledger.append(
             run_id=run_id,
@@ -224,13 +303,20 @@ class ContextSelector:
             source_type="action_prompt",
             source_id=f"{view.next_action}:{view.run.state_version}",
         )
-        return self.select(view).messages
+        return self.select(
+            view,
+            max_context_tokens=max_context_tokens,
+            stable_prefix=True,
+        )
 
     def select(
         self,
         view: AgentRunView,
         *,
         max_messages: int | None = None,
+        max_context_tokens: int = 0,
+        reserved_output_tokens: int | None = None,
+        stable_prefix: bool = False,
     ) -> ContextSelection:
         limit = self.default_max_messages if max_messages is None else max(0, int(max_messages))
         messages = self.ledger.messages(view.run.run_id)
@@ -239,52 +325,128 @@ class ContextSelector:
         )
         protected_messages = tuple(item for item in candidates if item.protected)
         unprotected = tuple(item for item in candidates if not item.protected)
-        if len(unprotected) > self.compaction_threshold:
-            compact_count = max(1, len(unprotected) - limit)
-            self.compactor.compact(
-                view.run.run_id,
-                [item.message_id for item in unprotected[:compact_count]],
-            )
-        summaries = self.store_summaries(view.run.run_id)
-        selected = unprotected[-limit:] if limit else ()
         protected_context = self._protected_context(view)
         protected_hash = contract_hash(protected_context)
+        usage = self._latest_usage(view.run.run_id)
+        window = max(0, int(max_context_tokens))
+        reserve = (
+            max(0, int(reserved_output_tokens))
+            if reserved_output_tokens is not None
+            else (max(1024, min(32768, window // 8)) if window else 0)
+        )
+        system_invariant = (
+            "You are the tactical planner. Runtime owns state, evidence promotion, "
+            "budgets, cleanup, and terminal decisions. Use native tool calls for the "
+            "current action; model text is never verified evidence."
+        )
+        fixed_projection = (
+            [
+                {"role": "system", "content": {"system_invariant": system_invariant}},
+                {"role": "system", "content": {"protected_context": protected_context}},
+            ]
+            if stable_prefix
+            else [
+                {
+                    "role": "system",
+                    "content": {
+                        "system_invariant": system_invariant,
+                        "protected_context": protected_context,
+                    },
+                }
+            ]
+        )
+        fixed_tokens = self._estimate_tokens(fixed_projection)
+        groups = self._atomic_groups(unprotected)
+        if max_messages is not None:
+            selected = unprotected[-limit:] if limit else ()
+        elif window:
+            available = max(0, window - reserve - fixed_tokens)
+            chosen: list[tuple[ConversationMessageRecord, ...]] = []
+            consumed = 0
+            for group in reversed(groups):
+                group_tokens = self._estimate_tokens(
+                    [{"role": item.role, "content": item.content} for item in group]
+                )
+                if chosen and consumed + group_tokens > available:
+                    break
+                chosen.append(group)
+                consumed += group_tokens
+            selected = tuple(item for group in reversed(chosen) for item in group)
+        else:
+            selected = unprotected[-limit:] if limit else ()
+        selected_ids = {item.message_id for item in selected}
+        excluded = tuple(item for item in unprotected if item.message_id not in selected_ids)
+        provider_context_tokens = usage.get("input_tokens")
+        should_compact = bool(excluded) and (
+            len(unprotected) > self.compaction_threshold
+            or (window and (self._estimate_tokens([{"role": item.role, "content": item.content} for item in unprotected]) + fixed_tokens + reserve > window))
+            or (window and isinstance(provider_context_tokens, int) and provider_context_tokens + reserve > window)
+        )
+        if should_compact:
+            self.compactor.compact(
+                view.run.run_id,
+                [item.message_id for item in excluded],
+            )
+        summaries = self.store_summaries(view.run.run_id)
+        chosen_summaries: tuple[ContextSummaryRecord, ...] = ()
         source_messages = (*protected_messages, *selected)
         source_projection: list[Mapping[str, Any]] = [
             {"message_id": item.message_id, "content_hash": item.content_hash}
             for item in source_messages
         ]
-        source_projection.extend(
-            {"summary_id": item.summary_id, "summary_hash": item.summary_hash}
-            for item in summaries[-1:]
-        )
-        source_hash = contract_hash(source_projection)
-        projected: list[Mapping[str, Any]] = [
-            {"role": "system", "content": {"protected_context": protected_context}}
-        ]
+        projected: list[Mapping[str, Any]] = list(fixed_projection)
         projected.extend(
             {"role": item.role, "content": item.content}
             for item in protected_messages
+            if item.source_type not in {"system_base", "original_goal"}
         )
         if summaries:
             latest = summaries[-1]
-            projected.append(
-                {
-                    "role": "system",
-                    "content": {
-                        "context_summary": dict(latest.summary),
-                        "summary_id": latest.summary_id,
-                        "source_hash": latest.source_hash,
-                    },
-                }
+            summary_message = {
+                "role": "system",
+                "content": {
+                    "context_summary": dict(latest.summary),
+                    "summary_id": latest.summary_id,
+                    "source_hash": latest.source_hash,
+                },
+            }
+            projected_with_summary = [*projected, summary_message]
+            projected_with_summary.extend(
+                {"role": item.role, "content": item.content} for item in selected
             )
+            if not window or self._estimate_tokens(projected_with_summary) + reserve <= window:
+                projected.append(summary_message)
+                chosen_summaries = (latest,)
         projected.extend({"role": item.role, "content": item.content} for item in selected)
+        source_projection.extend(
+            {"summary_id": item.summary_id, "summary_hash": item.summary_hash}
+            for item in chosen_summaries
+        )
+        source_hash = contract_hash(source_projection)
+        projection_bytes = len(
+            json.dumps(projected, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        )
+        estimated_tokens = self._estimate_tokens(projected)
+        overflow_tokens = max(0, estimated_tokens + reserve - window) if window else 0
+        selected_tokens = self._estimate_tokens(
+            [{"role": item.role, "content": item.content} for item in selected]
+        )
         context = {
             "messages": projected,
             "source_message_ids": [item.message_id for item in source_messages],
             "summary_ids": [item.summary_id for item in summaries[-1:]],
             "source_hash": source_hash,
             "protected_hash": protected_hash,
+            "token_projection": {
+                "estimated_context_tokens": estimated_tokens,
+                "provider_context_tokens": provider_context_tokens,
+                "selected_tokens": selected_tokens,
+                "reserved_output_tokens": reserve,
+                "projection_bytes": projection_bytes,
+                "cache_read_tokens": usage.get("cache_read_tokens"),
+                "cache_write_tokens": usage.get("cache_write_tokens"),
+                "context_overflow_tokens": overflow_tokens,
+            },
         }
         context_hash = contract_hash(context)
         snapshot_id = "context-" + context_hash[:32]
@@ -308,11 +470,64 @@ class ContextSelector:
             messages=tuple(projected),
             protected_context=protected_context,
             source_message_ids=tuple(item.message_id for item in source_messages),
-            summary_ids=tuple(item.summary_id for item in summaries[-1:]),
+            summary_ids=tuple(item.summary_id for item in chosen_summaries),
             source_hash=source_hash,
             protected_hash=protected_hash,
             context_hash=context_hash,
+            estimated_context_tokens=estimated_tokens,
+            provider_context_tokens=provider_context_tokens,
+            selected_tokens=selected_tokens,
+            reserved_output_tokens=reserve,
+            projection_bytes=projection_bytes,
+            cache_read_tokens=usage.get("cache_read_tokens"),
+            cache_write_tokens=usage.get("cache_write_tokens"),
+            context_overflow_tokens=overflow_tokens,
         )
+
+    def _estimate_tokens(self, value: Any) -> int:
+        raw = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        return max(1, math.ceil(len(raw) / self.fallback_bytes_per_token)) if raw else 0
+
+    @staticmethod
+    def _atomic_groups(
+        messages: Sequence[ConversationMessageRecord],
+    ) -> tuple[tuple[ConversationMessageRecord, ...], ...]:
+        groups: list[list[ConversationMessageRecord]] = []
+        keys: list[str] = []
+        for item in messages:
+            request_id = str(item.metadata.get("request_id") or "")
+            if not request_id and item.source_type == "model_response":
+                request_id = item.source_id
+            key = f"request:{request_id}" if request_id else f"message:{item.message_id}"
+            if groups and keys[-1] == key:
+                groups[-1].append(item)
+            else:
+                keys.append(key)
+                groups.append([item])
+        return tuple(tuple(group) for group in groups)
+
+    def _latest_usage(self, run_id: str) -> dict[str, int | None]:
+        result: dict[str, int | None] = {
+            "input_tokens": None,
+            "cache_read_tokens": None,
+            "cache_write_tokens": None,
+        }
+        responses = self.service.runtime.store.model_responses(run_id)
+        if not responses:
+            return result
+        usage = responses[-1].usage
+        aliases = {
+            "input_tokens": ("input_tokens", "prompt_tokens"),
+            "cache_read_tokens": ("cache_read_tokens", "cached_input_tokens"),
+            "cache_write_tokens": ("cache_write_tokens",),
+        }
+        for target, names in aliases.items():
+            for name in names:
+                value = usage.get(name)
+                if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                    result[target] = value
+                    break
+        return result
 
     def store_summaries(self, run_id: str) -> tuple[ContextSummaryRecord, ...]:
         return self.service.runtime.store.context_summaries(run_id)

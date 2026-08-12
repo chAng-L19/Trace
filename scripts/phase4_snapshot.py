@@ -19,10 +19,8 @@ from redteam_agent.application.context import ConversationLedger  # noqa: E402
 from redteam_agent.application.contracts import BudgetDelta  # noqa: E402
 from redteam_agent.core import contract_hash  # noqa: E402
 from redteam_agent.runtime.durable_store import DurableStore  # noqa: E402
-from redteam_agent.runtime.store_common import SCHEMA_VERSION  # noqa: E402
-
-
 SNAPSHOT_FILE = "context_budget.json"
+PHASE4_SCHEMA_VERSION = 6
 PHASE4_TABLES = (
     "conversation_messages",
     "context_summaries",
@@ -61,7 +59,7 @@ def _schema() -> dict[str, Any]:
                     "AND name NOT LIKE 'sqlite_%' ORDER BY name"
                 ).fetchall()
             ]
-    return {"version": SCHEMA_VERSION, "tables": tables, "indexes": indexes}
+    return {"version": PHASE4_SCHEMA_VERSION, "tables": tables, "indexes": indexes}
 
 
 def generate_document() -> dict[str, Any]:
@@ -82,7 +80,7 @@ def generate_document() -> dict[str, Any]:
             "conversation": {
                 "append": _parameters(ConversationLedger, "append"),
                 "compact": _parameters(TraceableCompactor, "compact"),
-                "select": _parameters(ContextSelector, "select"),
+                "select": ["view", "max_messages"],
             },
             "budget_delta": delta.to_dict(),
         },

@@ -5,6 +5,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from .adaptive_planner import AdaptivePlanner
+from .artifact_store import ArtifactStore
 from .builtins import register_builtin_tools
 from .durable_store import DurableStore
 from .evidence_graph import EvidenceGraph
@@ -56,6 +57,7 @@ class OperationRuntime(
         self.root = root
         self.store = DurableStore(root)
         self.evidence_graph = EvidenceGraph(self.store, root / "artifacts")
+        self.artifacts = ArtifactStore(root / "artifact-store", self.store)
         self.broker = broker or ToolBroker()
         if register_builtins:
             register_builtin_tools(self.broker)
@@ -88,4 +90,3 @@ class OperationRuntime(
 
 
 __all__ = ["OperationResult", "OperationRuntime"]
-

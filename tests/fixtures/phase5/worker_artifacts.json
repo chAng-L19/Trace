@@ -1,0 +1,463 @@
+{
+  "contracts": {
+    "agent_service": {
+      "artifact": [
+        "run_id",
+        "artifact_id"
+      ],
+      "artifacts": [
+        "run_id"
+      ],
+      "cancel_worker": [
+        "task_id"
+      ],
+      "execute_worker": [
+        "task"
+      ],
+      "read_artifact": [
+        "run_id",
+        "artifact_id"
+      ],
+      "search_artifacts": [
+        "run_id",
+        "query",
+        "limit"
+      ],
+      "worker_results": [
+        "run_id"
+      ],
+      "worker_status": [
+        "task_id"
+      ]
+    },
+    "artifact_store": {
+      "get_ref": [
+        "artifact_id",
+        "run_id"
+      ],
+      "project": [
+        "ref",
+        "max_preview_bytes"
+      ],
+      "put_bytes": [
+        "data",
+        "run_id",
+        "artifact_type",
+        "media_type",
+        "preview",
+        "metadata",
+        "parents"
+      ],
+      "put_file": [
+        "source",
+        "run_id",
+        "artifact_type",
+        "media_type",
+        "preview",
+        "metadata",
+        "parents"
+      ],
+      "put_json": [
+        "value",
+        "run_id",
+        "artifact_type",
+        "preview",
+        "metadata",
+        "parents"
+      ],
+      "read": [
+        "artifact_id",
+        "run_id"
+      ],
+      "refs": [
+        "run_id"
+      ],
+      "search": [
+        "run_id",
+        "query",
+        "limit"
+      ],
+      "verify": [
+        "artifact_id",
+        "run_id"
+      ]
+    },
+    "context_selector": {
+      "metrics": [
+        "estimated_context_tokens",
+        "provider_context_tokens",
+        "selected_tokens",
+        "reserved_output_tokens",
+        "projection_bytes",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "context_overflow_tokens"
+      ],
+      "prepare_model_context": [
+        "view",
+        "max_context_tokens"
+      ],
+      "select": [
+        "view",
+        "max_messages",
+        "max_context_tokens",
+        "reserved_output_tokens",
+        "stable_prefix"
+      ]
+    },
+    "worker_adapters": {
+      "CodexHandoffWorker": {
+        "cancel": [
+          "task_id"
+        ],
+        "capabilities": [],
+        "execute": [
+          "task"
+        ],
+        "reconcile": [
+          "idempotency_key"
+        ]
+      },
+      "DockerWorkerAdapter": {
+        "cancel": [
+          "task_id"
+        ],
+        "capabilities": [],
+        "execute": [
+          "task"
+        ],
+        "reconcile": [
+          "idempotency_key"
+        ]
+      },
+      "LocalWorker": {
+        "cancel": [
+          "task_id"
+        ],
+        "capabilities": [],
+        "execute": [
+          "task"
+        ],
+        "reconcile": [
+          "idempotency_key"
+        ]
+      },
+      "McpWorker": {
+        "cancel": [
+          "task_id"
+        ],
+        "capabilities": [],
+        "execute": [
+          "task"
+        ],
+        "reconcile": [
+          "idempotency_key"
+        ]
+      }
+    },
+    "worker_manager": {
+      "cancel": [
+        "task_id"
+      ],
+      "capabilities": [],
+      "execute": [
+        "task"
+      ],
+      "reconcile": [
+        "idempotency_key"
+      ]
+    }
+  },
+  "invariants": [
+    "complete_bytes_live_in_sha256_cas",
+    "sqlite_stores_bounded_projection_and_lineage",
+    "artifact_references_are_run_bound",
+    "workspace_paths_and_environment_are_run_isolated",
+    "worker_idempotency_is_payload_bound_and_restart_recoverable",
+    "timeout_and_cancel_propagate_to_process_tree",
+    "tool_call_and_tool_result_are_atomic_context_groups",
+    "token_optimization_never_deletes_source_messages_or_evidence",
+    "protected_context_has_precedence_over_window_fit",
+    "stable_system_and_tool_prefix_supports_provider_cache"
+  ],
+  "schema": {
+    "indexes": [
+      "idx_artifact_links_parent",
+      "idx_artifacts_run",
+      "idx_worker_tasks_run"
+    ],
+    "tables": {
+      "artifact_blobs": [
+        {
+          "name": "content_hash",
+          "not_null": false,
+          "primary_key": 1,
+          "type": "TEXT"
+        },
+        {
+          "name": "byte_count",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "INTEGER"
+        },
+        {
+          "name": "storage_key",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        }
+      ],
+      "artifact_fts": [
+        {
+          "name": "artifact_id",
+          "not_null": false,
+          "primary_key": 0,
+          "type": ""
+        },
+        {
+          "name": "run_id",
+          "not_null": false,
+          "primary_key": 0,
+          "type": ""
+        },
+        {
+          "name": "artifact_type",
+          "not_null": false,
+          "primary_key": 0,
+          "type": ""
+        },
+        {
+          "name": "preview",
+          "not_null": false,
+          "primary_key": 0,
+          "type": ""
+        },
+        {
+          "name": "metadata",
+          "not_null": false,
+          "primary_key": 0,
+          "type": ""
+        }
+      ],
+      "artifact_links": [
+        {
+          "name": "artifact_id",
+          "not_null": true,
+          "primary_key": 1,
+          "type": "TEXT"
+        },
+        {
+          "name": "parent_id",
+          "not_null": true,
+          "primary_key": 2,
+          "type": "TEXT"
+        },
+        {
+          "name": "run_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        }
+      ],
+      "artifact_refs": [
+        {
+          "name": "artifact_id",
+          "not_null": false,
+          "primary_key": 1,
+          "type": "TEXT"
+        },
+        {
+          "name": "run_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "content_hash",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "byte_count",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "INTEGER"
+        },
+        {
+          "name": "media_type",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "artifact_type",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "storage_key",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "preview_json",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "metadata_json",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "artifact_json",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        }
+      ],
+      "run_workspaces": [
+        {
+          "name": "run_id",
+          "not_null": false,
+          "primary_key": 1,
+          "type": "TEXT"
+        },
+        {
+          "name": "workspace_key",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "manifest_hash",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "manifest_json",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "updated_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        }
+      ],
+      "worker_tasks": [
+        {
+          "name": "task_id",
+          "not_null": false,
+          "primary_key": 1,
+          "type": "TEXT"
+        },
+        {
+          "name": "run_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "worker_kind",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "capability",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "idempotency_key",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "input_hash",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "status",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "task_json",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "result_json",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "owner",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "updated_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        }
+      ]
+    },
+    "version": 8
+  },
+  "vertical_fixture": {
+    "artifact_count": 2,
+    "artifact_types": [
+      "worker_stderr",
+      "worker_stdout"
+    ],
+    "replay_equal": true,
+    "sqlite_result_is_bounded_projection": true,
+    "status": "completed",
+    "stdout_verified": "phase5-worker",
+    "workspace_key_length": 64
+  }
+}

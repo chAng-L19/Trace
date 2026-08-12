@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import threading
 from collections.abc import Mapping, Sequence
@@ -19,11 +20,13 @@ from ..core import (
     ToolResult,
     contract_hash,
 )
-from ..core.contracts import json_mapping, json_value
+from ..core.contracts import ContractError, json_mapping, json_value
 from ..runtime.model_common import utc_now
 from ..runtime.conversation_records import DiagnosticArtifactRecord
 from .contracts import AgentRunView, Observation
 from ..runtime.model_records import ModelObservationRecord, ModelRequestRecord, ModelResponseRecord
+
+MAX_INLINE_MODEL_OBSERVATION_BYTES = 64 * 1024
 
 
 class ModelLoopError(RuntimeError):
@@ -183,8 +186,16 @@ class ModelLoop:
     def _request(self, view: AgentRunView, *, attempt: int) -> ModelRequest:
         capabilities = self.model.capabilities()
         model_name = self.model_name or str(capabilities.metadata.get("model") or "")
-        messages = self.service.context_selector.model_messages(view)
-        definitions = self.tools.discover() if self.tools is not None else ()
+        selection = self.service.context_selector.prepare_model_context(
+            view,
+            max_context_tokens=capabilities.max_context_tokens,
+        )
+        messages = selection.messages
+        definitions = (
+            tuple(sorted(self.tools.discover(), key=lambda item: item.qualified_name))
+            if self.tools is not None
+            else ()
+        )
         tools = tuple(
             {
                 "type": "function",
@@ -209,7 +220,19 @@ class ModelLoop:
             },
             model=model_name,
             allow_parallel_tools=capabilities.parallel_tool_calls,
-            metadata={"action_id": view.next_action, "attempt": attempt},
+            metadata={
+                "action_id": view.next_action,
+                "attempt": attempt,
+                "context_hash": selection.context_hash,
+                "estimated_context_tokens": selection.estimated_context_tokens,
+                "provider_context_tokens": selection.provider_context_tokens,
+                "selected_tokens": selection.selected_tokens,
+                "reserved_output_tokens": selection.reserved_output_tokens,
+                "projection_bytes": selection.projection_bytes,
+                "cache_read_tokens": selection.cache_read_tokens,
+                "cache_write_tokens": selection.cache_write_tokens,
+                "context_overflow_tokens": selection.context_overflow_tokens,
+            },
         )
 
     def _save_request(self, request: ModelRequest) -> None:
@@ -378,14 +401,25 @@ class ModelLoop:
 
     @staticmethod
     def _normalize_usage(usage: Mapping[str, Any]) -> dict[str, Any]:
-        normalized = json_mapping(usage, field="model_response.usage")
-        for key in ("input_tokens", "output_tokens", "total_tokens"):
-            if key not in normalized:
+        try:
+            normalized = json_mapping(usage, field="model_response.usage")
+        except ContractError as exc:
+            raise ModelIntegrityError(f"model_usage_invalid:{exc}") from exc
+        for key, value in tuple(normalized.items()):
+            normalized_key = key.casefold()
+            if not (
+                normalized_key.endswith("_tokens")
+                or normalized_key in {"prompt_tokens", "completion_tokens"}
+            ):
                 continue
-            value = normalized[key]
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ModelIntegrityError(f"model_usage_invalid:{key}")
-            if not math.isfinite(float(value)) or int(value) != value or value < 0:
+            if (
+                not math.isfinite(float(value))
+                or int(value) != value
+                or value < 0
+                or value > 2**63 - 1
+            ):
                 raise ModelIntegrityError(f"model_usage_invalid:{key}")
             normalized[key] = int(value)
         return normalized
@@ -487,6 +521,30 @@ class ModelLoop:
         observation_id = "model-observation-" + contract_hash(
             {"request_id": request.request_id, "call_id": call.call_id}
         )[:32]
+        durable_observation = {"tool_result": normalized.to_dict()}
+        encoded = json.dumps(
+            durable_observation, ensure_ascii=False, sort_keys=True, default=str
+        ).encode("utf-8")
+        artifact_id = ""
+        if len(encoded) > MAX_INLINE_MODEL_OBSERVATION_BYTES:
+            artifact = self.service.runtime.artifacts.put_json(
+                normalized.to_dict(),
+                run_id=view.run.run_id,
+                artifact_type="model_observation_tool_result",
+                preview={
+                    "request_id": request.request_id,
+                    "call_id": call.call_id,
+                    "tool_name": call.tool_name,
+                    "status": normalized.status,
+                    "output_hash": output_hash,
+                    "byte_count": len(encoded),
+                },
+                metadata={"action_id": view.next_action},
+            )
+            artifact_id = artifact.artifact_id
+            durable_observation = {
+                "tool_result_artifact": self.service.runtime.artifacts.project(artifact)
+            }
         self.service.runtime.store.save_model_observation(
             ModelObservationRecord(
                 observation_id=observation_id,
@@ -498,11 +556,12 @@ class ModelLoop:
                 status="integrity_error" if mismatch else result.status,
                 input_hash=input_hash,
                 output_hash=output_hash,
-                observation={"tool_result": normalized.to_dict()},
+                observation=durable_observation,
                 created_at=utc_now(),
                 metadata={
                     "claimed_input_hash": result.input_hash,
                     "claimed_output_hash": result.output_hash,
+                    "complete_result_artifact": artifact_id,
                 },
             )
         )
@@ -522,6 +581,18 @@ class ModelLoop:
             if record.action_id != view.next_action or record.status != "success":
                 continue
             raw = record.observation.get("tool_result")
+            if not isinstance(raw, Mapping):
+                artifact = record.observation.get("tool_result_artifact")
+                if isinstance(artifact, Mapping):
+                    artifact_id = str(artifact.get("artifact_ref") or "")
+                    try:
+                        loaded = self.service.runtime.artifacts.read_json(
+                            artifact_id,
+                            run_id=view.run.run_id,
+                        )
+                    except (KeyError, ValueError) as exc:
+                        raise ModelIntegrityError("model_observation_artifact_invalid") from exc
+                    raw = loaded if isinstance(loaded, Mapping) else None
             if not isinstance(raw, Mapping):
                 raise ModelIntegrityError("model_observation_tool_result_missing")
             result = ToolResult.from_dict(raw)
