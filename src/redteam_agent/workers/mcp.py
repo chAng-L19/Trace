@@ -21,13 +21,22 @@ class McpWorker:
         prepared = self.records.prepare(task, worker_kind=self.kind, owner="mcp-worker")
         if prepared.result is not None and prepared.status in WORKER_TERMINAL_STATUSES:
             return prepared.result
-        if prepared.status not in {"prepared", "unknown"}:
+        recovering = prepared.status == "running"
+        if prepared.status == "unknown":
+            return prepared.result or WorkerResult(
+                task_id=task.task_id,
+                status="unknown",
+                error="worker_interrupted_requires_reconcile",
+                retryable=True,
+            )
+        if prepared.status not in {"prepared", "running"}:
             raise RuntimeError(f"worker_task_already_active:{task.task_id}:{prepared.status}")
-        self.records.transition(
-            task.task_id,
-            expected_statuses=(prepared.status,),
-            status="running",
-        )
+        if not recovering:
+            self.records.transition(
+                task.task_id,
+                expected_statuses=(prepared.status,),
+                status="running",
+            )
         tool_name = str(task.payload.get("tool_name") or task.capability.removeprefix("mcp.")).strip()
         arguments = task.payload.get("arguments")
         if not isinstance(arguments, dict):
@@ -44,6 +53,9 @@ class McpWorker:
         )
         try:
             tool_result = self.tools.reconcile(call)
+            if tool_result is None and recovering:
+                unknown = self.records.mark_interrupted_unknown(task.task_id, owner="mcp-worker")
+                return unknown.result  # type: ignore[return-value]
             if tool_result is None:
                 tool_result = self.tools.invoke(call)
         except Exception as exc:

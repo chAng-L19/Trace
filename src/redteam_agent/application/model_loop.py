@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import threading
+import tempfile
+from pathlib import Path
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -22,11 +25,56 @@ from ..core import (
 )
 from ..core.contracts import ContractError, json_mapping, json_value
 from ..runtime.model_common import utc_now
+from ..runtime.artifact_store import ArtifactIntegrityError
+from ..runtime.security import safe_error_text
 from ..runtime.conversation_records import DiagnosticArtifactRecord
 from .contracts import AgentRunView, Observation
 from ..runtime.model_records import ModelObservationRecord, ModelRequestRecord, ModelResponseRecord
 
 MAX_INLINE_MODEL_OBSERVATION_BYTES = 64 * 1024
+MAX_INLINE_MODEL_STREAM_BYTES = 64 * 1024
+
+
+class _StreamTextAccumulator:
+    def __init__(self) -> None:
+        handle = tempfile.NamedTemporaryFile(prefix="redteam-model-stream-", suffix=".txt", delete=False)
+        self.path = Path(handle.name)
+        self._handle = handle
+        self.byte_count = 0
+        self._head = bytearray()
+        self._tail = bytearray()
+
+    def append(self, value: Any) -> None:
+        raw = str(value).encode("utf-8", errors="replace")
+        self._handle.write(raw)
+        self.byte_count += len(raw)
+        edge = 16 * 1024
+        if len(self._head) < edge:
+            self._head.extend(raw[: edge - len(self._head)])
+        self._tail.extend(raw)
+        if len(self._tail) > edge:
+            del self._tail[:-edge]
+
+    def close(self) -> None:
+        if not self._handle.closed:
+            self._handle.flush()
+            self._handle.close()
+
+    def inline_text(self) -> str:
+        self.close()
+        return self.path.read_text(encoding="utf-8", errors="replace")
+
+    def preview(self) -> dict[str, Any]:
+        return {
+            "byte_count": self.byte_count,
+            "head": bytes(self._head).decode("utf-8", errors="replace"),
+            "tail": bytes(self._tail).decode("utf-8", errors="replace"),
+            "truncated": self.byte_count > len(self._head) + len(self._tail),
+        }
+
+    def discard(self) -> None:
+        self.close()
+        self.path.unlink(missing_ok=True)
 
 
 class ModelLoopError(RuntimeError):
@@ -261,7 +309,7 @@ class ModelLoop:
         return self.model.complete(request)
 
     def _invoke_stream(self, request: ModelRequest) -> ModelResponse:
-        text_parts: list[str] = []
+        accumulator = _StreamTextAccumulator()
         tool_calls: list[Mapping[str, Any]] = []
         usage: Mapping[str, Any] = {}
         structured: Mapping[str, Any] = {}
@@ -277,11 +325,22 @@ class ModelLoop:
                         f"model_stream_sequence_mismatch:{event.sequence}:{expected_sequence}"
                     )
                 expected_sequence += 1
-                self.service.runtime.store.save_model_stream_event(event)
                 payload = dict(event.payload)
                 if event.event_type in {"text", "text_delta"}:
-                    text_parts.append(str(payload.get("delta") or payload.get("text") or ""))
-                elif event.event_type == "tool_call":
+                    text_delta = str(payload.get("delta") or payload.get("text") or "")
+                    accumulator.append(text_delta)
+                    raw_delta = text_delta.encode("utf-8", errors="replace")
+                    event = replace(
+                        event,
+                        payload={
+                            "projected": True,
+                            "byte_count": len(raw_delta),
+                            "content_hash": hashlib.sha256(raw_delta).hexdigest(),
+                            "preview": raw_delta[:1024].decode("utf-8", errors="replace"),
+                        },
+                    )
+                self.service.runtime.store.save_model_stream_event(event)
+                if event.event_type == "tool_call":
                     tool_calls.append(payload)
                 elif event.event_type == "usage":
                     usage = json_mapping(payload, field="model_stream.usage")
@@ -299,17 +358,39 @@ class ModelLoop:
             if not completed:
                 raise ModelInterruptedError("model_stream_incomplete")
         except BaseException:
-            if text_parts:
-                setattr(threading.current_thread(), "model_partial_text", "".join(text_parts))
+            accumulator.close()
+            if accumulator.byte_count:
+                setattr(threading.current_thread(), "model_partial_stream", accumulator)
+            else:
+                accumulator.discard()
             raise
+        metadata: dict[str, Any] = {}
+        if accumulator.byte_count <= MAX_INLINE_MODEL_STREAM_BYTES:
+            text = accumulator.inline_text()
+            accumulator.discard()
+        else:
+            accumulator.close()
+            artifact = self.service.runtime.artifacts.put_file(
+                accumulator.path,
+                run_id=request.run_id,
+                artifact_type="model_stream_text",
+                media_type="text/plain; charset=utf-8",
+                preview=accumulator.preview(),
+                metadata={"request_id": request.request_id, "complete": True},
+            )
+            accumulator.discard()
+            projection = self.service.runtime.artifacts.project(artifact)
+            text = json.dumps({"complete_text_artifact": projection}, ensure_ascii=False, sort_keys=True)
+            metadata["complete_text_artifact"] = artifact.artifact_id
         return ModelResponse(
             request_id=request.request_id,
             status="completed",
-            text="".join(text_parts),
+            text=text,
             structured_output=structured,
             tool_calls=tuple(tool_calls),
             usage=usage,
             finish_reason=finish_reason,
+            metadata=metadata,
         )
 
     def _validate_response(self, request: ModelRequest, response: ModelResponse) -> ModelResponse:
@@ -348,13 +429,32 @@ class ModelLoop:
             for item in self.service.runtime.store.model_responses(request.run_id)
         ):
             return
-        partial_text = str(getattr(threading.current_thread(), "model_partial_text", ""))
+        accumulator = getattr(threading.current_thread(), "model_partial_stream", None)
+        partial_text = ""
+        partial_artifact: Mapping[str, Any] = {}
+        if isinstance(accumulator, _StreamTextAccumulator):
+            if accumulator.byte_count <= MAX_INLINE_MODEL_STREAM_BYTES:
+                partial_text = accumulator.inline_text()
+            else:
+                accumulator.close()
+                artifact = self.service.runtime.artifacts.put_file(
+                    accumulator.path,
+                    run_id=request.run_id,
+                    artifact_type="partial_model_stream",
+                    media_type="text/plain; charset=utf-8",
+                    preview=accumulator.preview(),
+                    metadata={"request_id": request.request_id, "complete": False},
+                )
+                partial_artifact = self.service.runtime.artifacts.project(artifact)
+            accumulator.discard()
         diagnostic_id = ""
-        if partial_text:
+        safe_error = safe_error_text(error)
+        if partial_text or partial_artifact:
             payload = {
                 "request_id": request.request_id,
                 "partial_text": partial_text,
-                "error": str(error),
+                "partial_artifact": dict(partial_artifact),
+                "error": safe_error,
                 "promoted": False,
             }
             diagnostic_id = "diagnostic-" + contract_hash(
@@ -377,7 +477,7 @@ class ModelLoop:
             provider=type(self.model).__name__,
             model=request.model,
             text="",
-            error=str(error),
+            error=safe_error,
             metadata={"diagnostic_artifact_id": diagnostic_id} if diagnostic_id else {},
         )
         projection = response.to_dict()
@@ -396,8 +496,8 @@ class ModelLoop:
                 created_at=utc_now(),
             )
         )
-        if hasattr(threading.current_thread(), "model_partial_text"):
-            delattr(threading.current_thread(), "model_partial_text")
+        if hasattr(threading.current_thread(), "model_partial_stream"):
+            delattr(threading.current_thread(), "model_partial_stream")
 
     @staticmethod
     def _normalize_usage(usage: Mapping[str, Any]) -> dict[str, Any]:
@@ -590,7 +690,7 @@ class ModelLoop:
                             artifact_id,
                             run_id=view.run.run_id,
                         )
-                    except (KeyError, ValueError) as exc:
+                    except (ArtifactIntegrityError, KeyError, ValueError) as exc:
                         raise ModelIntegrityError("model_observation_artifact_invalid") from exc
                     raw = loaded if isinstance(loaded, Mapping) else None
             if not isinstance(raw, Mapping):

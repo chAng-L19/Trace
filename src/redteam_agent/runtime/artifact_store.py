@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
@@ -156,14 +155,11 @@ class ArtifactStore:
                 os.fsync(stream.fileno())
             secure_file(temporary)
             try:
-                os.replace(temporary, path)
-            except OSError:
-                if not path.exists():
-                    raise
+                os.link(temporary, path)
+            except FileExistsError:
+                pass
             secure_file(path)
-            stored = path.read_bytes()
-            if len(stored) != len(raw) or self._digest(stored) != digest:
-                raise ArtifactIntegrityError("artifact_write_verification_failed")
+            self._verify_path(path, digest=digest, byte_count=len(raw))
         finally:
             if descriptor >= 0:
                 os.close(descriptor)
@@ -253,40 +249,35 @@ class ArtifactStore:
             raise KeyError(f"operation_not_found:{run_id}")
         if not source_path.is_file() or source_path.is_symlink():
             raise ArtifactIntegrityError("artifact_source_invalid")
+        staging = self.root / f".artifact-stage-{os.getpid()}-{uuid.uuid4().hex}.tmp"
         digest_builder = hashlib.sha256()
         byte_count = 0
-        with source_path.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest_builder.update(chunk)
-                byte_count += len(chunk)
-        digest = digest_builder.hexdigest()
-        path = self._path(digest)
-        secure_directory(path.parent)
-        if path.is_symlink() or path.parent.is_symlink():
-            raise ArtifactIntegrityError("artifact_path_symlink")
-        if not path.exists():
-            temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.file.tmp")
-            try:
-                with source_path.open("rb") as source_stream, temporary.open("xb") as target_stream:
-                    shutil.copyfileobj(source_stream, target_stream, length=1024 * 1024)
-                    target_stream.flush()
-                    os.fsync(target_stream.fileno())
-                secure_file(temporary)
+        try:
+            with source_path.open("rb") as source_stream, staging.open("xb") as target_stream:
+                for chunk in iter(lambda: source_stream.read(1024 * 1024), b""):
+                    digest_builder.update(chunk)
+                    byte_count += len(chunk)
+                    target_stream.write(chunk)
+                target_stream.flush()
+                os.fsync(target_stream.fileno())
+            secure_file(staging)
+            digest = digest_builder.hexdigest()
+            path = self._path(digest)
+            secure_directory(path.parent)
+            if path.is_symlink() or path.parent.is_symlink():
+                raise ArtifactIntegrityError("artifact_path_symlink")
+            if path.exists():
+                self._verify_path(path, digest=digest, byte_count=byte_count)
+            else:
                 try:
-                    os.replace(temporary, path)
-                except OSError:
-                    if not path.exists():
-                        raise
-            finally:
-                temporary.unlink(missing_ok=True)
-        stored_hash = hashlib.sha256()
-        stored_count = 0
-        with path.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                stored_hash.update(chunk)
-                stored_count += len(chunk)
-        if stored_count != byte_count or stored_hash.hexdigest() != digest:
-            raise ArtifactIntegrityError("artifact_write_verification_failed")
+                    # A hard link publishes without replacing an existing immutable CAS path.
+                    os.link(staging, path)
+                except FileExistsError:
+                    self._verify_path(path, digest=digest, byte_count=byte_count)
+                secure_file(path)
+                self._verify_path(path, digest=digest, byte_count=byte_count)
+        finally:
+            staging.unlink(missing_ok=True)
         parent_ids = tuple(dict.fromkeys(str(item) for item in parents if str(item)))
         durable_preview = self._bounded_projection(preview, max_bytes=DEFAULT_INLINE_BYTES)
         durable_metadata = self._bounded_projection(
@@ -313,6 +304,20 @@ class ArtifactStore:
             created_at=utc_now(),
         )
         return self._save_ref(ref, parent_ids)
+
+    @staticmethod
+    def _verify_path(path: Path, *, digest: str, byte_count: int) -> None:
+        stored_hash = hashlib.sha256()
+        stored_count = 0
+        try:
+            with path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    stored_hash.update(chunk)
+                    stored_count += len(chunk)
+        except OSError as exc:
+            raise ArtifactIntegrityError("artifact_write_verification_failed") from exc
+        if stored_count != byte_count or stored_hash.hexdigest() != digest:
+            raise ArtifactIntegrityError("artifact_write_verification_failed")
 
     def _save_ref(self, ref: ArtifactRef, parents: Sequence[str]) -> ArtifactRef:
         serialized = _dump(ref.to_dict())
@@ -393,11 +398,61 @@ class ArtifactStore:
     def get_ref(self, artifact_id: str, *, run_id: str) -> ArtifactRef | None:
         with self.store.connection() as connection:
             row = connection.execute(
-                "SELECT artifact_json FROM artifact_refs WHERE artifact_id=? AND run_id=?",
+                "SELECT * FROM artifact_refs WHERE artifact_id=? AND run_id=?",
                 (artifact_id, run_id),
             ).fetchone()
-        payload = _load(row["artifact_json"], None) if row else None
-        return ArtifactRef(**payload) if isinstance(payload, Mapping) else None
+        if row is None:
+            return None
+        payload = _load(row["artifact_json"], None)
+        if not isinstance(payload, Mapping):
+            raise ArtifactIntegrityError(f"artifact_reference_corrupt:{artifact_id}")
+        try:
+            ref = ArtifactRef(**payload)
+        except (TypeError, ValueError) as exc:
+            raise ArtifactIntegrityError(f"artifact_reference_corrupt:{artifact_id}") from exc
+        if (
+            ref.artifact_id != str(row["artifact_id"])
+            or ref.run_id != str(row["run_id"])
+            or ref.content_hash != str(row["content_hash"])
+            or ref.byte_count != int(row["byte_count"])
+            or ref.media_type != str(row["media_type"])
+            or ref.artifact_type != str(row["artifact_type"])
+            or ref.storage_key != str(row["storage_key"])
+            or _dump(ref.preview) != str(row["preview_json"])
+            or _dump(dict(ref.metadata)) != str(row["metadata_json"])
+            or ref.created_at != str(row["created_at"])
+        ):
+            raise ArtifactIntegrityError(f"artifact_reference_integrity:{artifact_id}")
+        with self.store.connection() as connection:
+            blob = connection.execute(
+                "SELECT byte_count, storage_key FROM artifact_blobs WHERE content_hash=?",
+                (ref.content_hash,),
+            ).fetchone()
+            links = tuple(
+                str(item["parent_id"])
+                for item in connection.execute(
+                    "SELECT parent_id FROM artifact_links WHERE artifact_id=? AND run_id=? ORDER BY parent_id",
+                    (artifact_id, run_id),
+                ).fetchall()
+            )
+        if (
+            blob is None
+            or int(blob["byte_count"]) != ref.byte_count
+            or str(blob["storage_key"]) != ref.storage_key
+        ):
+            raise ArtifactIntegrityError(f"artifact_blob_integrity:{artifact_id}")
+        expected_id = self._reference_id(
+            run_id=ref.run_id,
+            content_hash=ref.content_hash,
+            artifact_type=ref.artifact_type,
+            media_type=ref.media_type,
+            preview=ref.preview,
+            metadata=ref.metadata,
+            parents=links,
+        )
+        if expected_id != artifact_id:
+            raise ArtifactIntegrityError(f"artifact_lineage_integrity:{artifact_id}")
+        return ref
 
     def read(self, artifact_id: str, *, run_id: str) -> bytes:
         ref = self.get_ref(artifact_id, run_id=run_id)
@@ -422,13 +477,15 @@ class ArtifactStore:
     def refs(self, run_id: str) -> tuple[ArtifactRef, ...]:
         with self.store.connection() as connection:
             rows = connection.execute(
-                "SELECT artifact_json FROM artifact_refs WHERE run_id=? ORDER BY created_at, artifact_id", (run_id,)
+                "SELECT artifact_id FROM artifact_refs WHERE run_id=? ORDER BY created_at, artifact_id", (run_id,)
             ).fetchall()
-        return tuple(
-            ArtifactRef(**payload)
-            for row in rows
-            if isinstance((payload := _load(row["artifact_json"], None)), Mapping)
-        )
+        return tuple(self._required_ref(str(row["artifact_id"]), run_id=run_id) for row in rows)
+
+    def _required_ref(self, artifact_id: str, *, run_id: str) -> ArtifactRef:
+        ref = self.get_ref(artifact_id, run_id=run_id)
+        if ref is None:
+            raise ArtifactIntegrityError(f"artifact_reference_missing:{artifact_id}")
+        return ref
 
     def search(self, run_id: str, query: str, *, limit: int = 20) -> tuple[ArtifactRef, ...]:
         bounded = max(1, min(100, int(limit)))
@@ -438,15 +495,23 @@ class ArtifactStore:
         literal = '"' + phrase.replace('"', '""') + '"'
         with self.store.connection() as connection:
             rows = connection.execute(
-                "SELECT a.artifact_json FROM artifact_fts f JOIN artifact_refs a ON a.artifact_id=f.artifact_id "
-                "WHERE f.run_id=? AND artifact_fts MATCH ? ORDER BY a.created_at LIMIT ?",
-                (run_id, literal, bounded),
+                "SELECT a.artifact_id, f.artifact_type AS fts_type, f.preview AS fts_preview, "
+                "f.metadata AS fts_metadata FROM artifact_fts f "
+                "JOIN artifact_refs a ON a.artifact_id=f.artifact_id "
+                "WHERE f.run_id=? AND a.run_id=? AND artifact_fts MATCH ? ORDER BY a.created_at LIMIT ?",
+                (run_id, run_id, literal, bounded),
             ).fetchall()
-        return tuple(
-            ArtifactRef(**payload)
-            for row in rows
-            if isinstance((payload := _load(row["artifact_json"], None)), Mapping)
-        )
+        results: list[ArtifactRef] = []
+        for row in rows:
+            ref = self._required_ref(str(row["artifact_id"]), run_id=run_id)
+            if (
+                str(row["fts_type"]) != ref.artifact_type
+                or str(row["fts_preview"]) != _dump(ref.preview)
+                or str(row["fts_metadata"]) != _dump(dict(ref.metadata))
+            ):
+                raise ArtifactIntegrityError(f"artifact_fts_integrity:{ref.artifact_id}")
+            results.append(ref)
+        return tuple(results)
 
     @staticmethod
     def project(ref: ArtifactRef, *, max_preview_bytes: int = DEFAULT_INLINE_BYTES) -> dict[str, Any]:

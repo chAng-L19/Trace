@@ -84,7 +84,7 @@ def test_worker_timeout_terminates_process_and_records_terminal_result(tmp_path:
 
     assert result.status == "timed_out"
     assert time.monotonic() - started < 15
-    assert service.worker_status(task.task_id).status == "timed_out"
+    assert service.worker_status(run_id, task.task_id).status == "timed_out"
     assert b"started" in service.read_artifact(run_id, result.artifact_refs[0])
 
 
@@ -96,11 +96,14 @@ def test_worker_cancel_propagates_to_active_process(tmp_path: Path) -> None:
     thread.start()
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
-        record = service.worker_status(task.task_id)
+        try:
+            record = service.worker_status(run_id, task.task_id)
+        except KeyError:
+            record = None
         if record is not None and record.status == "running":
             break
         time.sleep(0.02)
-    assert service.cancel_worker(task.task_id) is True
+    assert service.cancel_worker(run_id, task.task_id) is True
     thread.join(timeout=15)
 
     assert thread.is_alive() is False

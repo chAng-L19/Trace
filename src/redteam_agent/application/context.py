@@ -358,7 +358,17 @@ class ContextSelector:
         fixed_tokens = self._estimate_tokens(fixed_projection)
         groups = self._atomic_groups(unprotected)
         if max_messages is not None:
-            selected = unprotected[-limit:] if limit else ()
+            if not limit:
+                selected = ()
+            else:
+                chosen_groups: list[tuple[ConversationMessageRecord, ...]] = []
+                count = 0
+                for group in reversed(groups):
+                    if chosen_groups and count + len(group) > limit:
+                        break
+                    chosen_groups.append(group)
+                    count += len(group)
+                selected = tuple(item for group in reversed(chosen_groups) for item in group)
         elif window:
             available = max(0, window - reserve - fixed_tokens)
             chosen: list[tuple[ConversationMessageRecord, ...]] = []
@@ -557,6 +567,7 @@ class ContextSelector:
                 "branch_id": state.branch_id,
                 "current_action_id": state.current_action_id,
                 "snapshot": dict(state.plan_snapshot),
+                "retained_tactical_state": self._retained_tactical_state(view.run.run_id),
             },
             "critical_evidence_refs": verified_refs,
             "irreversible_state": {
@@ -572,4 +583,47 @@ class ContextSelector:
                 "cancel_reason": state.cancel_reason,
                 "terminal_reason": state.terminal_reason,
             },
+        }
+
+    def _retained_tactical_state(self, run_id: str) -> dict[str, Any]:
+        hypotheses: list[Mapping[str, Any]] = []
+        evidence_refs: list[str] = []
+        artifact_refs: list[str] = []
+        seen_hypotheses: set[str] = set()
+
+        def visit(value: Any, key: str = "") -> None:
+            if isinstance(value, Mapping):
+                if key == "hypotheses":
+                    for item in value.values():
+                        visit(item, "hypotheses")
+                for item_key, item_value in value.items():
+                    normalized = str(item_key)
+                    if normalized in {"evidence_ref", "evidence_id"} and isinstance(item_value, str):
+                        evidence_refs.append(item_value)
+                    elif normalized == "artifact_ref" and isinstance(item_value, str):
+                        artifact_refs.append(item_value)
+                    elif normalized == "hypotheses" and isinstance(item_value, Sequence) and not isinstance(item_value, (str, bytes)):
+                        for hypothesis in item_value:
+                            if isinstance(hypothesis, Mapping):
+                                digest = contract_hash(hypothesis)
+                                if digest not in seen_hypotheses:
+                                    seen_hypotheses.add(digest)
+                                    hypotheses.append(dict(hypothesis))
+                    visit(item_value, normalized)
+            elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+                for item in value:
+                    if key == "evidence_refs" and isinstance(item, str):
+                        evidence_refs.append(item)
+                    elif key == "artifact_refs" and isinstance(item, str):
+                        artifact_refs.append(item)
+                    else:
+                        visit(item, key)
+
+        for message in self.ledger.messages(run_id):
+            if message.source_type != "model_request_projection":
+                visit(message.content)
+        return {
+            "unverified_hypotheses": hypotheses,
+            "referenced_evidence": list(dict.fromkeys(evidence_refs)),
+            "referenced_artifacts": list(dict.fromkeys(artifact_refs)),
         }

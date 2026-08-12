@@ -9,6 +9,7 @@
         "run_id"
       ],
       "cancel_worker": [
+        "run_id",
         "task_id"
       ],
       "execute_worker": [
@@ -27,6 +28,7 @@
         "run_id"
       ],
       "worker_status": [
+        "run_id",
         "task_id"
       ]
     },
@@ -157,7 +159,8 @@
     },
     "worker_manager": {
       "cancel": [
-        "task_id"
+        "task_id",
+        "run_id"
       ],
       "capabilities": [],
       "execute": [

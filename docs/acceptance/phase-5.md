@@ -109,6 +109,13 @@ context_overflow_tokens
 | Complete large result remains readable | `test_large_tool_result_is_projected_but_complete_cas_remains_readable` | pass |
 | Stable prefix and projection metrics | `test_model_request_records_context_projection_metrics_and_stable_prefix` | pass |
 | Adversarial usage rejected | `test_adversarial_provider_usage_is_rejected` | pass |
+| SQLite, Blob, lineage and FTS tampering | `test_artifact_sqlite_column_tampering_is_detected`; `test_artifact_blob_lineage_and_fts_tampering_are_detected` | pass |
+| Worker record and crashed-execution recovery | `test_worker_record_tampering_is_detected_before_replay`; `test_crashed_running_local_worker_becomes_unknown_without_reexecution` | pass |
+| Worker Artifact truth and scoped cancellation | `test_worker_required_and_replayed_artifacts_require_valid_cas_bytes`; `test_worker_cancel_routes_only_to_the_owning_adapter`; `test_worker_status_and_cancel_reject_cross_run_task_access` | pass |
+| Malicious task ID containment | `test_malicious_task_id_cannot_control_workspace_paths` | pass |
+| Unverified tactical state retention | `test_old_unverified_hypothesis_survives_extreme_context_pressure` | pass |
+| Complete and interrupted stream floods | `test_stream_flood_is_content_addressed_and_sqlite_events_are_bounded`; `test_interrupted_stream_flood_is_diagnostic_only_and_content_addressed` | pass |
+| Tampered model-observation CAS recovery | `test_tampered_cas_model_observation_blocks_recovery` | pass |
 
 The directory-symlink escape test is skipped on the current Windows session
 because directory symlink creation is unavailable. The same containment path is
@@ -133,10 +140,11 @@ historical snapshots continue to pass.
 | Gate | Result |
 |---|---|
 | Development/build baseline | Python 3.12.13 |
-| Complete regression suite | 239 passed, 1 environment-only symlink skip |
+| Complete regression suite | 256 passed, 1 environment-only symlink skip |
+| Phase 5 adversarial suite | 17 passed |
 | `compileall` (`src`, `scripts`, `tests`) | pass |
 | Phase 0/1/2/3/4/5 snapshots | pass; Phase 5 checked twice |
-| Wheel build | pass; SHA-256 `c931d9de895848a1ed286ca792d192fd41ce77e8648bff66e389e3def8f3c1f5` |
+| Wheel build | pass; SHA-256 `1168b5bc5e3e825af0f91940bbb6e7e30312847d163dcd92e283af00f20c1a03` |
 | Isolated wheel installation | pass on Python 3.12.13 |
 | Installed-package self-test | `completed`; terminal success |
 | MCP initialize | `redteam-agent-runtime`, protocol `2025-06-18` |

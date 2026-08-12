@@ -62,7 +62,7 @@ class WorkspaceManager:
         key = self._key(run_id)
         path = self._path(key)
         secure_directory(path)
-        if path.is_symlink():
+        if path.is_symlink() or path.parent.is_symlink():
             raise ValueError("workspace_path_symlink")
         now = utc_now()
         manifest = {

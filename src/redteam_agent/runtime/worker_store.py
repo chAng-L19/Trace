@@ -9,6 +9,9 @@ from .store_common import ImmutableRecordError, StoreConflictError, _dump, _load
 
 
 WORKER_TERMINAL_STATUSES = frozenset({"completed", "failed", "timed_out", "cancelled", "unavailable"})
+WORKER_STATUSES = WORKER_TERMINAL_STATUSES | frozenset(
+    {"prepared", "running", "unknown", "waiting_worker"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,7 +32,8 @@ class WorkerStore:
 
     @staticmethod
     def input_hash(task: WorkerTask) -> str:
-        return contract_hash(task.to_dict())
+        normalized = WorkerTask.from_dict(task.to_dict())
+        return contract_hash(normalized.to_dict())
 
     def prepare(self, task: WorkerTask, *, worker_kind: str, owner: str) -> WorkerTaskRecord:
         input_hash = self.input_hash(task)
@@ -127,6 +131,29 @@ class WorkerStore:
             row = connection.execute("SELECT * FROM worker_tasks WHERE task_id=?", (task_id,)).fetchone()
         return self._from_row(row) if row is not None else None
 
+    def get_for_run(self, task_id: str, run_id: str) -> WorkerTaskRecord | None:
+        with self.store.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM worker_tasks WHERE task_id=? AND run_id=?", (task_id, run_id)
+            ).fetchone()
+        return self._from_row(row) if row is not None else None
+
+    def mark_interrupted_unknown(self, task_id: str, *, owner: str) -> WorkerTaskRecord:
+        result = WorkerResult(
+            task_id=task_id,
+            status="unknown",
+            error="worker_interrupted_requires_reconcile",
+            retryable=True,
+            metadata={"owner": owner},
+        )
+        return self.transition(
+            task_id,
+            expected_statuses=("running",),
+            status="unknown",
+            result=result,
+            owner=owner,
+        )
+
     def reconcile(self, run_id: str, worker_kind: str, idempotency_key: str) -> WorkerTaskRecord | None:
         with self.store.connection() as connection:
             row = connection.execute(
@@ -144,13 +171,32 @@ class WorkerStore:
 
     @staticmethod
     def _from_row(row: Mapping[str, Any]) -> WorkerTaskRecord:
-        task = WorkerTask.from_dict(_load(row["task_json"], {}))
+        try:
+            task = WorkerTask.from_dict(_load(row["task_json"], {}))
+        except (TypeError, ValueError) as exc:
+            raise ImmutableRecordError(f"worker_task_record_corrupt:{row['task_id']}") from exc
         payload = _load(row["result_json"], None)
-        result = WorkerResult.from_dict(payload) if isinstance(payload, Mapping) else None
+        try:
+            result = WorkerResult.from_dict(payload) if isinstance(payload, Mapping) else None
+        except (TypeError, ValueError) as exc:
+            raise ImmutableRecordError(f"worker_result_record_corrupt:{row['task_id']}") from exc
+        input_hash = WorkerStore.input_hash(task)
+        if (
+            task.task_id != str(row["task_id"])
+            or task.run_id != str(row["run_id"])
+            or task.capability != str(row["capability"])
+            or task.idempotency_key != str(row["idempotency_key"])
+            or input_hash != str(row["input_hash"])
+            or str(row["status"]) not in WORKER_STATUSES
+            or (result is not None and result.task_id != task.task_id)
+            or (result is not None and result.status != str(row["status"]))
+            or (result is None and str(row["status"]) not in {"prepared", "running"})
+        ):
+            raise ImmutableRecordError(f"worker_record_integrity:{row['task_id']}")
         return WorkerTaskRecord(
             task=task,
             worker_kind=str(row["worker_kind"]),
-            input_hash=str(row["input_hash"]),
+            input_hash=input_hash,
             status=str(row["status"]),
             result=result,
             owner=str(row["owner"]),
@@ -159,4 +205,4 @@ class WorkerStore:
         )
 
 
-__all__ = ["WORKER_TERMINAL_STATUSES", "WorkerStore", "WorkerTaskRecord"]
+__all__ = ["WORKER_STATUSES", "WORKER_TERMINAL_STATUSES", "WorkerStore", "WorkerTaskRecord"]

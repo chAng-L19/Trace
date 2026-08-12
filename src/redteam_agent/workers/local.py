@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import hashlib
 import signal
 import subprocess
 import threading
@@ -12,6 +13,7 @@ from typing import Any
 from ..core import WorkerResult, WorkerTask
 from ..runtime.artifact_store import ArtifactStore
 from ..runtime.worker_store import WORKER_TERMINAL_STATUSES, WorkerStore
+from ..runtime.security import safe_error_text
 from .workspace import WorkspaceManager
 
 
@@ -68,7 +70,21 @@ class LocalWorker:
         prepared = self.records.prepare(task, worker_kind=self.kind, owner=self.owner)
         if prepared.result is not None and prepared.status in WORKER_TERMINAL_STATUSES:
             return prepared.result
-        if prepared.status not in {"prepared", "unknown"}:
+        if prepared.status == "running":
+            with self._lock:
+                active = self._active.get(task.task_id)
+            if active is not None and active.poll() is None:
+                raise RuntimeError(f"worker_task_already_active:{task.task_id}:running")
+            prepared = self.records.mark_interrupted_unknown(task.task_id, owner=self.owner)
+            return prepared.result  # type: ignore[return-value]
+        if prepared.status == "unknown":
+            return prepared.result or WorkerResult(
+                task_id=task.task_id,
+                status="unknown",
+                error="worker_interrupted_requires_reconcile",
+                retryable=True,
+            )
+        if prepared.status != "prepared":
             raise RuntimeError(f"worker_task_already_active:{task.task_id}:{prepared.status}")
         self.records.transition(
             task.task_id,
@@ -112,9 +128,17 @@ class LocalWorker:
                     error=f"local_worker_setup_error:{exc}",
                 ),
             )
-        stdout_path = self.workspaces.resolve(workspace, f".worker/{task.task_id}.stdout")
-        stderr_path = self.workspaces.resolve(workspace, f".worker/{task.task_id}.stderr")
-        stdout_path.parent.mkdir(parents=True, exist_ok=True)
+        task_key = hashlib.sha256(task.task_id.encode("utf-8")).hexdigest()
+        try:
+            stdout_path = self.workspaces.resolve(workspace, f".worker/{task_key}.stdout")
+            stderr_path = self.workspaces.resolve(workspace, f".worker/{task_key}.stderr")
+            stdout_path.parent.mkdir(parents=True, exist_ok=True)
+        except (OSError, ValueError) as exc:
+            return self._finish(
+                task,
+                "failed",
+                WorkerResult(task_id=task.task_id, status="failed", error=f"local_worker_path_error:{exc}"),
+            )
         timeout = task.timeout_seconds
         process: subprocess.Popen[bytes] | None = None
         timed_out = False
@@ -162,7 +186,7 @@ class LocalWorker:
             result = WorkerResult(
                 task_id=task.task_id,
                 status="failed",
-                error=f"local_worker_error:{type(exc).__name__}:{exc}",
+                error=f"local_worker_error:{type(exc).__name__}:{safe_error_text(exc)}",
                 retryable=True,
             )
             return self._finish(task, "failed", result)
@@ -173,22 +197,34 @@ class LocalWorker:
                 self._cancel_requested.discard(task.task_id)
                 self._cancel_events.pop(task.task_id, None)
 
-        stdout_ref = self.artifacts.put_file(
-            stdout_path,
-            run_id=task.run_id,
-            artifact_type="worker_stdout",
-            media_type="text/plain; charset=utf-8",
-            preview=_bounded_file_preview(stdout_path),
-            metadata={"task_id": task.task_id, "worker_kind": self.kind},
-        )
-        stderr_ref = self.artifacts.put_file(
-            stderr_path,
-            run_id=task.run_id,
-            artifact_type="worker_stderr",
-            media_type="text/plain; charset=utf-8",
-            preview=_bounded_file_preview(stderr_path),
-            metadata={"task_id": task.task_id, "worker_kind": self.kind},
-        )
+        try:
+            stdout_ref = self.artifacts.put_file(
+                stdout_path,
+                run_id=task.run_id,
+                artifact_type="worker_stdout",
+                media_type="text/plain; charset=utf-8",
+                preview=_bounded_file_preview(stdout_path),
+                metadata={"task_id": task.task_id, "worker_kind": self.kind},
+            )
+            stderr_ref = self.artifacts.put_file(
+                stderr_path,
+                run_id=task.run_id,
+                artifact_type="worker_stderr",
+                media_type="text/plain; charset=utf-8",
+                preview=_bounded_file_preview(stderr_path),
+                metadata={"task_id": task.task_id, "worker_kind": self.kind},
+            )
+        except BaseException as exc:
+            return self._finish(
+                task,
+                "failed",
+                WorkerResult(
+                    task_id=task.task_id,
+                    status="failed",
+                    error=f"local_worker_artifact_error:{type(exc).__name__}:{safe_error_text(exc)}",
+                    retryable=True,
+                ),
+            )
         status = (
             "timed_out"
             if timed_out

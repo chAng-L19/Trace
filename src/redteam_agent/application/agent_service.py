@@ -82,7 +82,7 @@ class AgentService:
                     artifacts=self.runtime.artifacts,
                     records=self.worker_records,
                 )
-            self.workers = WorkerManager(workers)
+            self.workers = WorkerManager(workers, records=self.worker_records)
         self.model_loop = (
             ModelLoop(
                 service=self,
@@ -312,19 +312,31 @@ class AgentService:
         if self.runtime.store.load_operation(resolved.run_id) is None:
             raise KeyError(f"operation_not_found:{resolved.run_id}")
         for artifact_id in resolved.required_artifacts:
-            if self.runtime.artifacts.get_ref(artifact_id, run_id=resolved.run_id) is None:
+            try:
+                self.runtime.artifacts.verify(artifact_id, run_id=resolved.run_id)
+            except KeyError:
                 raise ValueError(f"worker_required_artifact_missing:{artifact_id}")
-        return self.workers.execute(resolved)
+        result = self.workers.execute(resolved)
+        for artifact_id in result.artifact_refs:
+            self.runtime.artifacts.verify(artifact_id, run_id=resolved.run_id)
+        return result
 
-    def worker_status(self, task_id: str):
-        return self.worker_records.get(task_id)
+    def worker_status(self, run_id: str, task_id: str):
+        record = self.worker_records.get_for_run(task_id, run_id)
+        if record is None:
+            raise KeyError(f"worker_task_not_found:{run_id}:{task_id}")
+        return record
 
     def worker_results(self, run_id: str):
         if self.runtime.store.load_operation(run_id) is None:
             raise KeyError(f"operation_not_found:{run_id}")
         return self.worker_records.records(run_id)
 
-    def cancel_worker(self, task_id: str) -> bool:
+    def cancel_worker(self, run_id: str, task_id: str) -> bool:
+        if self.worker_records.get_for_run(task_id, run_id) is None:
+            raise KeyError(f"worker_task_not_found:{run_id}:{task_id}")
+        if isinstance(self.workers, WorkerManager):
+            return self.workers.cancel(task_id, run_id)
         return self.workers.cancel(task_id)
 
     def artifact(self, run_id: str, artifact_id: str):

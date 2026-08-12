@@ -89,7 +89,7 @@ def test_mcp_worker_exception_becomes_durable_failed_result(tmp_path: Path) -> N
     assert result.status == "failed"
     assert result.retryable is True
     assert "super-secret-value" not in result.error
-    assert service.worker_status(task.task_id).status == "failed"
+    assert service.worker_status(run_id, task.task_id).status == "failed"
 
 
 def test_codex_handoff_replay_and_cancel_are_persistent(tmp_path: Path) -> None:
@@ -109,8 +109,8 @@ def test_codex_handoff_replay_and_cancel_are_persistent(tmp_path: Path) -> None:
 
     assert first == second
     assert first.status == "waiting_worker"
-    assert service.cancel_worker(task.task_id) is True
-    assert service.worker_status(task.task_id).status == "cancelled"
+    assert service.cancel_worker(run_id, task.task_id) is True
+    assert service.worker_status(run_id, task.task_id).status == "cancelled"
 
 
 def test_docker_adapter_reports_configured_capability_gap_without_success(tmp_path: Path) -> None:
@@ -129,7 +129,7 @@ def test_docker_adapter_reports_configured_capability_gap_without_success(tmp_pa
 
     assert result.status == "unavailable"
     assert result.retryable is True
-    assert service.worker_status(task.task_id).status == "unavailable"
+    assert service.worker_status(run_id, task.task_id).status == "unavailable"
 
 
 def test_worker_task_id_cannot_be_rebound_to_another_run(tmp_path: Path) -> None:
@@ -156,4 +156,3 @@ def test_worker_task_id_cannot_be_rebound_to_another_run(tmp_path: Path) -> None
 
     with pytest.raises(ImmutableRecordError, match="worker_task_identity_conflict"):
         service.execute_worker(second)
-
