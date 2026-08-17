@@ -14,6 +14,7 @@ from ..runtime.conversation_records import (
 )
 from ..runtime.model_common import utc_now
 from .contracts import AgentRunView, StartRequest
+from .tool_projection import ToolObservationProjector
 
 MAX_INLINE_TOOL_RESULT_BYTES = 64 * 1024
 
@@ -39,9 +40,15 @@ class ContextSelection:
 
 
 class ConversationLedger:
-    def __init__(self, store: Any, artifacts: Any | None = None) -> None:
+    def __init__(
+        self,
+        store: Any,
+        artifacts: Any | None = None,
+        projector: ToolObservationProjector | None = None,
+    ) -> None:
         self.store = store
         self.artifacts = artifacts
+        self.projector = projector or ToolObservationProjector()
 
     def append(
         self,
@@ -118,13 +125,19 @@ class ConversationLedger:
             metadata={"provider": response.provider, "model": response.model},
         )
 
-    def record_tool_results(self, request_id: str, run_id: str, results: Sequence[ToolResult]) -> None:
+    def record_tool_results(
+        self,
+        request_id: str,
+        run_id: str,
+        results: Sequence[ToolResult],
+    ) -> Mapping[str, str]:
+        artifact_ids: dict[str, str] = {}
         for result in results:
             content = result.to_dict()
             encoded = json.dumps(
                 content, ensure_ascii=False, sort_keys=True, default=str
             ).encode("utf-8")
-            if self.artifacts is not None and len(encoded) > MAX_INLINE_TOOL_RESULT_BYTES:
+            if self.artifacts is not None:
                 preview = self._tool_result_preview(result)
                 artifact = self.artifacts.put_json(
                     content,
@@ -138,21 +151,24 @@ class ConversationLedger:
                         "output_hash": result.output_hash,
                     },
                 )
-                content = {
-                    **content,
-                    "output": {
-                        "artifact": self.artifacts.project(artifact),
-                        "access": {
-                            "method": "AgentService.read_artifact",
-                            "run_id": run_id,
-                            "artifact_id": artifact.artifact_id,
-                        },
-                    },
-                    "metadata": {
-                        **dict(content.get("metadata") or {}),
-                        "complete_output_artifact": artifact.artifact_id,
-                    },
+                artifact_projection = self.artifacts.project(artifact)
+                raw_reference = {
+                    key: artifact_projection[key]
+                    for key in (
+                        "artifact_ref",
+                        "content_hash",
+                        "byte_count",
+                        "media_type",
+                        "artifact_type",
+                    )
+                    if key in artifact_projection
                 }
+                projection = self.projector.project(
+                    result,
+                    raw_artifact=raw_reference,
+                )
+                content = dict(projection.content)
+                artifact_ids[result.call_id] = artifact.artifact_id
             self.append(
                 run_id=run_id,
                 role="tool",
@@ -162,6 +178,7 @@ class ConversationLedger:
                 source_id=f"{request_id}:{result.call_id}",
                 metadata={"request_id": request_id, "call_id": result.call_id},
             )
+        return artifact_ids
 
     @staticmethod
     def _tool_result_preview(result: ToolResult) -> Mapping[str, Any]:
@@ -280,13 +297,16 @@ class ContextSelector:
             run_id=run_id,
             role="system",
             content=(
-                "You are the tactical planner. Runtime owns state, evidence promotion, "
-                "budgets, cleanup, and terminal decisions. Use native tool calls for the "
-                "current action; model text is never verified evidence."
+                "You are the primary tactical agent. Runtime owns deterministic invariants, "
+                "evidence promotion, budgets, cleanup, and terminal decisions. The current "
+                "action is a quality gate, not a prescribed tactic. Generate and prioritize "
+                "search nodes yourself, use native tool calls, preserve uncertainty, and "
+                "reopen prior directions when new evidence or capability appears. Model text "
+                "and exploration records are never verified evidence."
             ),
             protected=True,
             source_type="system_base",
-            source_id="model-loop-v1",
+            source_id="model-loop-v2",
         )
         self.ledger.append(
             run_id=run_id,
@@ -335,9 +355,12 @@ class ContextSelector:
             else (max(1024, min(32768, window // 8)) if window else 0)
         )
         system_invariant = (
-            "You are the tactical planner. Runtime owns state, evidence promotion, "
-            "budgets, cleanup, and terminal decisions. Use native tool calls for the "
-            "current action; model text is never verified evidence."
+            "You are the primary tactical agent. Runtime owns deterministic invariants, "
+            "evidence promotion, budgets, cleanup, and terminal decisions. The current "
+            "action is a quality gate, not a prescribed tactic. Generate and prioritize "
+            "search nodes yourself, use native tool calls, preserve uncertainty, and reopen "
+            "prior directions when new evidence or capability appears. Model text and "
+            "exploration records are never verified evidence."
         )
         fixed_projection = (
             [
@@ -396,6 +419,10 @@ class ContextSelector:
             self.compactor.compact(
                 view.run.run_id,
                 [item.message_id for item in excluded],
+            )
+            self.service.exploration.build_recon_digest(
+                view.run.run_id,
+                source_message_ids=tuple(item.message_id for item in excluded),
             )
         summaries = self.store_summaries(view.run.run_id)
         chosen_summaries: tuple[ContextSummaryRecord, ...] = ()
@@ -568,6 +595,12 @@ class ContextSelector:
                 "current_action_id": state.current_action_id,
                 "snapshot": dict(state.plan_snapshot),
                 "retained_tactical_state": self._retained_tactical_state(view.run.run_id),
+                "tactical_ledger": self.service.exploration.projection(view.run.run_id),
+                "latest_recon_digest": (
+                    dict(self.service.runtime.store.recon_digests(view.run.run_id)[-1].digest)
+                    if self.service.runtime.store.recon_digests(view.run.run_id)
+                    else {}
+                ),
             },
             "critical_evidence_refs": verified_refs,
             "irreversible_state": {

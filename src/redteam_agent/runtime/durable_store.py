@@ -27,6 +27,7 @@ from .service_store import ServiceStoreMixin
 from .model_store import ModelStoreMixin
 from .conversation_store import ConversationStoreMixin
 from .budget_store import BudgetStoreMixin
+from .exploration_store import ExplorationStoreMixin
 
 __all__ = [
     "DurableStore",
@@ -48,6 +49,7 @@ class DurableStore(
     ModelStoreMixin,
     ConversationStoreMixin,
     BudgetStoreMixin,
+    ExplorationStoreMixin,
     StoreSchemaMixin,
 ):
     def __init__(self, root: Path) -> None:

@@ -15,7 +15,7 @@ def _self_test(root: Path | None = None) -> int:
     runtime = OperationRuntime(root=root)
     state = runtime.start(
         session_id="self-test",
-        objective=f"先给我针对 {root} 的方案，暂不修改文件，不用执行测试",
+        objective=f"Give me a plan for {root}; do not make changes yet and no need to run tests",
         targets=(str(root),),
         max_actions=16,
     )

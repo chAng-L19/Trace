@@ -431,7 +431,10 @@ class OperationLifecycleMixin:
                 changed = True
         # The budget is run-wide, while action counters are branch-local.  Count
         # every durable attempt so a fork cannot reset the global action budget.
-        used = max(sum(state.action_attempts.values()), len(attempts))
+        used = max(
+            sum(state.action_attempts.values()),
+            len(attempts) + len(self.store.tactical_attempts(state.run_id)),
+        )
         if state.budget.actions_used < used:
             state.budget.actions_used = used
             changed = True

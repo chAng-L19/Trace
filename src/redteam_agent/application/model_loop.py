@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import hashlib
-import math
 import threading
 import tempfile
 from pathlib import Path
@@ -23,13 +22,15 @@ from ..core import (
     ToolResult,
     contract_hash,
 )
-from ..core.contracts import ContractError, json_mapping, json_value
+from ..core.contracts import json_mapping
 from ..runtime.model_common import utc_now
 from ..runtime.artifact_store import ArtifactIntegrityError
 from ..runtime.security import safe_error_text
 from ..runtime.conversation_records import DiagnosticArtifactRecord
 from .contracts import AgentRunView, Observation
 from ..runtime.model_records import ModelObservationRecord, ModelRequestRecord, ModelResponseRecord
+from .tactical_loop import TacticalLoopMixin
+from .model_integrity import ModelIntegrityMixin
 
 MAX_INLINE_MODEL_OBSERVATION_BYTES = 64 * 1024
 MAX_INLINE_MODEL_STREAM_BYTES = 64 * 1024
@@ -89,7 +90,7 @@ class ModelInterruptedError(ModelLoopError):
     pass
 
 
-class ModelLoop:
+class ModelLoop(TacticalLoopMixin, ModelIntegrityMixin):
     """Runtime-owned model orchestration with durable provider boundaries."""
 
     def __init__(
@@ -139,6 +140,7 @@ class ModelLoop:
                 response, request, existing = recovered
                 reconcile = True
                 self.service.conversation.record_model_response(run_id, response)
+            tactical_update = self._record_tactical_update(view, request, response)
             budget_view = self.service._record_model_usage(
                 run_id,
                 request.request_id,
@@ -155,14 +157,28 @@ class ModelLoop:
                 existing=existing,
                 reconcile=reconcile,
             )
-            self.service.conversation.record_tool_results(
+            artifact_ids = self.service.conversation.record_tool_results(
                 request.request_id,
                 view.run.run_id,
                 results,
             )
+            self._record_tactical_attempts(
+                view,
+                request,
+                response,
+                results,
+                artifact_ids=artifact_ids,
+                tactical_update=tactical_update,
+            )
             successful = tuple(item for item in results if item.status == "success")
             if not successful:
                 return view
+
+            if tactical_update is not None and not bool(
+                response.structured_output.get("commit_lifecycle_gate", False)
+            ):
+                view = self.service.status(run_id)
+                continue
 
             if view.next_action == "provide_target":
                 target = self._target_from_results(successful)
@@ -263,6 +279,15 @@ class ModelLoop:
                 "properties": {
                     "decision": {"type": "string"},
                     "reason": {"type": "string"},
+                    "commit_lifecycle_gate": {"type": "boolean"},
+                    "tactical_update": {
+                        "type": "object",
+                        "properties": {
+                            "active_hypothesis_id": {"type": "string"},
+                            "records": {"type": "array", "items": {"type": "object"}},
+                        },
+                        "additionalProperties": True,
+                    },
                 },
                 "additionalProperties": True,
             },
@@ -499,31 +524,6 @@ class ModelLoop:
         if hasattr(threading.current_thread(), "model_partial_stream"):
             delattr(threading.current_thread(), "model_partial_stream")
 
-    @staticmethod
-    def _normalize_usage(usage: Mapping[str, Any]) -> dict[str, Any]:
-        try:
-            normalized = json_mapping(usage, field="model_response.usage")
-        except ContractError as exc:
-            raise ModelIntegrityError(f"model_usage_invalid:{exc}") from exc
-        for key, value in tuple(normalized.items()):
-            normalized_key = key.casefold()
-            if not (
-                normalized_key.endswith("_tokens")
-                or normalized_key in {"prompt_tokens", "completion_tokens"}
-            ):
-                continue
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise ModelIntegrityError(f"model_usage_invalid:{key}")
-            if (
-                not math.isfinite(float(value))
-                or int(value) != value
-                or value < 0
-                or value > 2**63 - 1
-            ):
-                raise ModelIntegrityError(f"model_usage_invalid:{key}")
-            normalized[key] = int(value)
-        return normalized
-
     def _execute_tool_calls(
         self,
         view: AgentRunView,
@@ -722,37 +722,25 @@ class ModelLoop:
                 raise ModelIntegrityError("model_response_record_hash_mismatch")
             if not response.tool_calls:
                 continue
+            tactical_update = response.structured_output.get("tactical_update")
+            if (
+                isinstance(tactical_update, Mapping)
+                and not bool(response.structured_output.get("commit_lifecycle_gate", False))
+            ):
+                call_ids = {
+                    str(item.get("call_id") or item.get("id") or f"call-{index}")
+                    for index, item in enumerate(response.tool_calls)
+                    if isinstance(item, Mapping)
+                }
+                completed_ids = {
+                    item.call_id
+                    for item in store.tactical_attempts(view.run.run_id)
+                    if item.request_id == request.request_id
+                }
+                if call_ids and call_ids.issubset(completed_ids):
+                    continue
             return response, request, by_request.get(request.request_id, {})
         return None
-
-    @staticmethod
-    def _prompt_projection(request: ModelRequest) -> dict[str, Any]:
-        return {
-            "messages": [dict(item) for item in request.messages],
-            "tools": [dict(item) for item in request.tools],
-            "response_schema": dict(request.response_schema),
-            "model": request.model,
-            "allow_parallel_tools": request.allow_parallel_tools,
-        }
-
-    @staticmethod
-    def _response_projection(response: ModelResponse) -> dict[str, Any]:
-        projection = response.to_dict()
-        projection.pop("response_hash", None)
-        return projection
-
-    @staticmethod
-    def _tool_output_hash(result: ToolResult) -> str:
-        return contract_hash(
-            {
-                "call_id": result.call_id,
-                "status": result.status,
-                "tool_name": result.tool_name,
-                "output": json_value(result.output, field="tool_result.output"),
-                "error": result.error,
-                "retryable": result.retryable,
-            }
-        )
 
     @staticmethod
     def _target_from_results(results: Sequence[ToolResult]) -> str:

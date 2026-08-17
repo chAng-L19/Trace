@@ -30,6 +30,7 @@ from .terminal_judge import TerminalJudge
 from .tool_broker import ToolBroker
 from .verifier import SemanticVerifier
 from .workflow_registry import WorkflowRegistry
+from .exploration_records import TacticalAttemptRecord
 
 
 class OperationRuntime(
@@ -87,6 +88,49 @@ class OperationRuntime(
             credential_resolver=self._credential_vault.resolve,
             credential_projector=self._credential_vault.project,
         )
+
+    def record_tactical_attempt(
+        self,
+        record: TacticalAttemptRecord,
+    ) -> TacticalAttemptRecord:
+        """Persist one model-selected tool action and account for it once."""
+
+        initial = self.store.load_operation(record.run_id)
+        if initial is None:
+            raise KeyError(f"operation_not_found:{record.run_id}")
+        token = self.store.acquire_lease(
+            record.run_id,
+            "__operation__",
+            f"{self.owner}:tactical-attempt:{record.attempt_id}",
+            ttl_seconds=30.0,
+        )
+        if token is None:
+            raise ValueError(f"operation_busy:{record.run_id}")
+        try:
+            saved, created = self.store.save_tactical_attempt(record)
+            state = self.store.load_operation(record.run_id) or initial
+            total_attempts = len(self.store.task_attempts(record.run_id)) + len(
+                self.store.tactical_attempts(record.run_id)
+            )
+            if state.budget.actions_used < total_attempts:
+                state.budget.actions_used = total_attempts
+                self.store.save_operation(
+                    state,
+                    expected_version=state.state_version,
+                    lease_token=token,
+                    event_type="tactical_attempt_recorded" if created else "tactical_attempt_reconciled",
+                    event={
+                        "attempt_id": saved.attempt_id,
+                        "request_id": saved.request_id,
+                        "call_id": saved.call_id,
+                        "lifecycle_action_id": saved.lifecycle_action_id,
+                        "action_fingerprint": saved.action_fingerprint,
+                        "actions_used": total_attempts,
+                    },
+                )
+            return saved
+        finally:
+            self.store.release_lease(token)
 
 
 __all__ = ["OperationResult", "OperationRuntime"]

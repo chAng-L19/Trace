@@ -16,6 +16,7 @@ from .context import (
     ConversationLedger,
     TraceableCompactor,
 )
+from .tool_projection import ToolObservationProjection, ToolObservationProjector
 
 __all__ = [
     "ALLOWED_RUN_TRANSITIONS",
@@ -38,5 +39,7 @@ __all__ = [
     "ContextSelector",
     "ConversationLedger",
     "TraceableCompactor",
+    "ToolObservationProjection",
+    "ToolObservationProjector",
     "validate_run_transition",
 ]

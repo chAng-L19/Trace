@@ -19,7 +19,6 @@ from redteam_agent.application import ContextSelector  # noqa: E402
 from redteam_agent.core import WorkerTask  # noqa: E402
 from redteam_agent.runtime.artifact_store import ArtifactStore  # noqa: E402
 from redteam_agent.runtime.durable_store import DurableStore  # noqa: E402
-from redteam_agent.runtime.store_common import SCHEMA_VERSION  # noqa: E402
 from redteam_agent.workers import (  # noqa: E402
     CodexHandoffWorker,
     DockerWorkerAdapter,
@@ -30,6 +29,7 @@ from redteam_agent.workers import (  # noqa: E402
 
 
 SNAPSHOT_FILE = "worker_artifacts.json"
+PHASE5_SCHEMA_VERSION = 8
 PHASE5_TABLES = (
     "artifact_blobs",
     "artifact_refs",
@@ -68,7 +68,7 @@ def _schema() -> dict[str, Any]:
                     "AND name NOT LIKE 'sqlite_%' ORDER BY name"
                 ).fetchall()
             ]
-    return {"version": SCHEMA_VERSION, "tables": tables, "indexes": indexes}
+    return {"version": PHASE5_SCHEMA_VERSION, "tables": tables, "indexes": indexes}
 
 
 def _vertical_fixture() -> dict[str, Any]:

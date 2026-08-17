@@ -94,6 +94,23 @@ def bounded_int(value: Any, *, default: int, minimum: int, maximum: int, field: 
     return result
 
 
+def bounded_float(
+    value: Any,
+    *,
+    default: float,
+    minimum: float,
+    maximum: float,
+    field: str,
+) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
+        result = default
+    if not math.isfinite(result) or result < minimum or result > maximum:
+        raise ContractError(f"{field}_out_of_range:{minimum}:{maximum}")
+    return result
+
+
 def optional_nonnegative_int(value: Any, *, field: str) -> int | None:
     if value in (None, ""):
         return None

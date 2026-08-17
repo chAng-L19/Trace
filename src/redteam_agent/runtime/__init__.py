@@ -7,6 +7,8 @@ from .durable_store import (
     StoreConflictError,
 )
 from .evidence_graph import EvidenceGraph
+from .exploration import ExplorationLedger, ExplorationValidationError
+from .exploration_records import ReconDigestRecord, TacticalAttemptRecord
 from .facts import FactLedger, FactValidationError
 from .goal_compiler import GoalCompiler
 from .intent_rewriter import PromptRewrite, REWRITE_VERSION, rewrite_objective
@@ -43,6 +45,8 @@ __all__ = [
     "AdaptivePlanner",
     "DurableStore",
     "EvidenceGraph",
+    "ExplorationLedger",
+    "ExplorationValidationError",
     "EvidenceNode",
     "EvidenceProvenance",
     "FactLedger",
@@ -70,6 +74,7 @@ __all__ = [
     "PlanRevision",
     "PlanValidationError",
     "ReviewEngine",
+    "ReconDigestRecord",
     "ReviewRecord",
     "SchemaMigrationError",
     "SemanticVerifier",
@@ -77,6 +82,7 @@ __all__ = [
     "StoreConflictError",
     "SuccessPredicate",
     "TaskAttempt",
+    "TacticalAttemptRecord",
     "TerminalDecision",
     "TerminalJudge",
     "ToolBroker",

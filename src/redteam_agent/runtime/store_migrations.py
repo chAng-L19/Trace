@@ -321,6 +321,56 @@ def _migration_8_worker_plane(context: Any, connection: sqlite3.Connection) -> N
     )
 
 
+def _migration_9_tactical_exploration(context: Any, connection: sqlite3.Connection) -> None:
+    execute_sql_script(
+        connection,
+        """
+        CREATE TABLE IF NOT EXISTS exploration_records (
+            record_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, hypothesis_id TEXT NOT NULL,
+            kind TEXT NOT NULL, status TEXT NOT NULL, record_hash TEXT NOT NULL,
+            record_json TEXT NOT NULL, created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_exploration_run
+            ON exploration_records(run_id, hypothesis_id, created_at, record_id);
+        CREATE INDEX IF NOT EXISTS idx_exploration_fingerprint
+            ON exploration_records(run_id, kind, record_hash);
+        CREATE TABLE IF NOT EXISTS recon_digests (
+            digest_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, source_hash TEXT NOT NULL,
+            digest_hash TEXT NOT NULL, source_ids_json TEXT NOT NULL,
+            digest_json TEXT NOT NULL, created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_recon_digest_run
+            ON recon_digests(run_id, created_at, digest_id);
+        CREATE TABLE IF NOT EXISTS tactical_attempts (
+            attempt_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, request_id TEXT NOT NULL,
+            call_id TEXT NOT NULL, lifecycle_action_id TEXT NOT NULL,
+            action_fingerprint TEXT NOT NULL, status TEXT NOT NULL,
+            attempt_hash TEXT NOT NULL, attempt_json TEXT NOT NULL, created_at TEXT NOT NULL,
+            UNIQUE(run_id, request_id, call_id),
+            FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_tactical_attempt_run
+            ON tactical_attempts(run_id, action_fingerprint, created_at, attempt_id);
+        """,
+    )
+    if "attempt_hash" not in context._columns(connection, "tactical_attempts"):
+        from ..core import contract_hash
+        from .store_common import _load
+
+        connection.execute(
+            "ALTER TABLE tactical_attempts ADD COLUMN attempt_hash TEXT NOT NULL DEFAULT ''"
+        )
+        for row in connection.execute(
+            "SELECT attempt_id, attempt_json FROM tactical_attempts"
+        ).fetchall():
+            connection.execute(
+                "UPDATE tactical_attempts SET attempt_hash=? WHERE attempt_id=?",
+                (contract_hash(_load(row["attempt_json"], {})), row["attempt_id"]),
+            )
+
+
 MIGRATIONS = (
     Migration(1, "base_runtime_schema", _migration_1_base),
     Migration(2, "operation_cas_and_lease_fencing", _migration_2_cas_and_fencing),
@@ -330,6 +380,7 @@ MIGRATIONS = (
     Migration(6, "conversation_context_and_model_budget", _migration_6_conversation_context_budget),
     Migration(7, "content_addressed_artifact_store", _migration_7_artifact_cas),
     Migration(8, "isolated_worker_plane", _migration_8_worker_plane),
+    Migration(9, "thin_tactical_exploration_ledger", _migration_9_tactical_exploration),
 )
 
 

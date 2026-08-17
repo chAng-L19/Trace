@@ -1,0 +1,385 @@
+{
+  "contracts": {
+    "agent_service": {
+      "exploration_records": [
+        "run_id"
+      ],
+      "exploration_state": [
+        "run_id"
+      ],
+      "recon_digest": [
+        "run_id",
+        "source_message_ids"
+      ],
+      "recon_digests": [
+        "run_id"
+      ],
+      "record_exploration": [
+        "run_id",
+        "record"
+      ]
+    },
+    "exploration_ledger": {
+      "build_recon_digest": [
+        "run_id",
+        "source_message_ids"
+      ],
+      "current": [
+        "run_id"
+      ],
+      "projection": [
+        "run_id",
+        "limit"
+      ],
+      "record": [
+        "value"
+      ],
+      "record_model_update": [
+        "run_id",
+        "request_id",
+        "update"
+      ],
+      "repeated_actions": [
+        "run_id"
+      ]
+    },
+    "exploration_record": {
+      "action_fingerprint": "",
+      "artifact_refs": [
+        "artifact-phase6"
+      ],
+      "capabilities": [],
+      "confidence": 0.0,
+      "coverage": {
+        "paths_tested": 1,
+        "recursive": false
+      },
+      "created_at": "2026-08-17T00:00:00+00:00",
+      "evidence_refs": [],
+      "hypothesis_id": "hidden-route",
+      "kind": "exploration_record",
+      "metadata": {},
+      "observations": {
+        "status_code": 404
+      },
+      "parent_record_ids": [],
+      "record_id": "exploration-phase6",
+      "record_kind": "observed_miss",
+      "reopen_triggers": [
+        "capability:schema_discovery"
+      ],
+      "run_id": "run-phase6",
+      "schema_version": 1,
+      "statement": "The exact GET /admin request returned 404",
+      "status": "suspended",
+      "target": "fixture://phase6",
+      "tested_domain": {
+        "method": "GET",
+        "paths": [
+          "/admin"
+        ]
+      },
+      "tool": "",
+      "uncertainty": "Nested and generated routes remain untested"
+    },
+    "tool_projector": {
+      "project": [
+        "result",
+        "raw_artifact"
+      ]
+    }
+  },
+  "invariants": [
+    "model_owns_tactical_node_generation_and_priority",
+    "runtime_quality_gate_does_not_prescribe_tool_actions",
+    "observed_miss_never_closes_a_global_direction",
+    "verified_negative_requires_scoped_coverage_sources_and_reopen_triggers",
+    "new_capability_or_evidence_can_reopen_a_branch",
+    "exploration_records_never_promote_themselves_to_evidence",
+    "complete_tool_results_live_in_cas_with_bounded_model_projections",
+    "repeated_actions_emit_diagnostics_without_forced_termination",
+    "recon_digest_is_a_traceable_navigation_projection"
+  ],
+  "schema": {
+    "indexes": [
+      "idx_exploration_fingerprint",
+      "idx_exploration_run",
+      "idx_recon_digest_run",
+      "idx_tactical_attempt_run"
+    ],
+    "tables": {
+      "exploration_records": [
+        {
+          "name": "record_id",
+          "not_null": false,
+          "primary_key": 1,
+          "type": "TEXT"
+        },
+        {
+          "name": "run_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "hypothesis_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "kind",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "status",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "record_hash",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "record_json",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        }
+      ],
+      "recon_digests": [
+        {
+          "name": "digest_id",
+          "not_null": false,
+          "primary_key": 1,
+          "type": "TEXT"
+        },
+        {
+          "name": "run_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "source_hash",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "digest_hash",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "source_ids_json",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "digest_json",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        }
+      ],
+      "tactical_attempts": [
+        {
+          "name": "attempt_id",
+          "not_null": false,
+          "primary_key": 1,
+          "type": "TEXT"
+        },
+        {
+          "name": "run_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "request_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "call_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "lifecycle_action_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "action_fingerprint",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "status",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "attempt_hash",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "attempt_json",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        }
+      ]
+    },
+    "version": 9
+  },
+  "tool_projection": {
+    "content": {
+      "call_id": "phase6-http",
+      "error": "",
+      "input_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "metadata": {
+        "complete_output_artifact": "artifact-http",
+        "projection_kind": "ai_friendly_tool_observation_v1"
+      },
+      "output": {
+        "artifact": {
+          "artifact_ref": "artifact-http",
+          "artifact_type": "model_tool_result",
+          "byte_count": 512,
+          "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "media_type": "application/json"
+        }
+      },
+      "output_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "projection": {
+        "body": {
+          "byte_count": 6,
+          "preview": "denied",
+          "sha256": "62d6c2330036f64bcf71b95791743d6c77c38e0d7c8cbedcbc525c77c57cf0ee",
+          "truncated": false
+        },
+        "comparison": {
+          "baseline": {
+            "status": 403
+          },
+          "changed_fields": [
+            "status"
+          ],
+          "different": true,
+          "observed": {
+            "status": 200
+          }
+        },
+        "enumeration": {
+          "coverage": {
+            "complete": true,
+            "source": "schema"
+          },
+          "routes": {
+            "complete": true,
+            "count": 2,
+            "sample": [
+              "/",
+              "/admin/info"
+            ]
+          }
+        },
+        "headers": {
+          "content-type": "application/json"
+        },
+        "status_code": 403,
+        "structured_summary": {
+          "baseline": {
+            "status": 403
+          },
+          "body": "denied",
+          "coverage": {
+            "complete": true,
+            "source": "schema"
+          },
+          "headers": {
+            "content-type": "application/json"
+          },
+          "observed": {
+            "status": 200
+          },
+          "routes": [
+            "/",
+            "/admin/info"
+          ],
+          "status_code": 403
+        }
+      },
+      "raw": {
+        "artifact": {
+          "artifact_ref": "artifact-http",
+          "artifact_type": "model_tool_result",
+          "byte_count": 512,
+          "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "media_type": "application/json"
+        },
+        "authority": "complete_tool_result",
+        "byte_count": 512,
+        "output_byte_count": 229,
+        "output_sha256": "2a2a0e1d1781156a9719ba0753071b17eb705c9a2173a3e5b97785afe42a3595",
+        "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "retryable": false,
+      "status": "success",
+      "tool_name": "fixture:http"
+    },
+    "raw_bytes": 229,
+    "semantic_fields": [
+      "status_code",
+      "headers",
+      "body",
+      "comparison",
+      "enumeration",
+      "structured_summary"
+    ]
+  },
+  "vertical_fixture": {
+    "automatic_reopen": true,
+    "digest_authority": "navigation_only_sources_remain_authoritative",
+    "digest_has_reopen_trigger": true,
+    "evidence_count": 0,
+    "hidden_route_kind": "reopen",
+    "hidden_route_state": "reopened",
+    "record_count": 3
+  }
+}

@@ -14,6 +14,7 @@ from ..runtime.durable_store import StateVersionConflict, StoreConflictError
 from ..runtime.worker_store import WorkerStore
 from ..runtime.operation_result import OperationResult
 from ..runtime.operation_runtime import OperationRuntime
+from ..runtime.exploration import ExplorationLedger
 from ..workers import (
     CodexHandoffWorker,
     DockerWorkerAdapter,
@@ -59,6 +60,11 @@ class AgentService:
         else:
             assert root is not None
             self.runtime = OperationRuntime(root=root)
+        self.exploration = ExplorationLedger(
+            self.runtime.store,
+            self.runtime.artifacts,
+            self.runtime.evidence_graph,
+        )
         self.conversation = ConversationLedger(self.runtime.store, self.runtime.artifacts)
         self.context_compactor = TraceableCompactor(self.runtime.store)
         self.context_selector = ContextSelector(self, self.conversation, self.context_compactor)
@@ -357,3 +363,30 @@ class AgentService:
         if self.runtime.store.load_operation(run_id) is None:
             raise KeyError(f"operation_not_found:{run_id}")
         return self.runtime.artifacts.search(run_id, query, limit=limit)
+
+    def record_exploration(self, run_id: str, record: Mapping[str, Any]):
+        if self.runtime.store.load_operation(run_id) is None:
+            raise KeyError(f"operation_not_found:{run_id}")
+        payload = {**dict(record), "run_id": run_id}
+        return self.exploration.record(payload)
+
+    def exploration_records(self, run_id: str):
+        if self.runtime.store.load_operation(run_id) is None:
+            raise KeyError(f"operation_not_found:{run_id}")
+        return self.runtime.store.exploration_records(run_id)
+
+    def exploration_state(self, run_id: str):
+        if self.runtime.store.load_operation(run_id) is None:
+            raise KeyError(f"operation_not_found:{run_id}")
+        return self.exploration.projection(run_id)
+
+    def recon_digest(self, run_id: str, *, source_message_ids: tuple[str, ...] = ()):
+        return self.exploration.build_recon_digest(
+            run_id,
+            source_message_ids=source_message_ids,
+        )
+
+    def recon_digests(self, run_id: str):
+        if self.runtime.store.load_operation(run_id) is None:
+            raise KeyError(f"operation_not_found:{run_id}")
+        return self.runtime.store.recon_digests(run_id)
