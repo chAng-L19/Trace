@@ -193,7 +193,12 @@ class ExecutorActionsMixin:
             allow_retry = not descriptor.side_effecting
             if result is None and prior_status == "prepared":
                 result = self._with_durable_input_hash(
-                    self.broker.call(descriptor, arguments, timeout=timeout), claimed.input_hash
+                    self.broker.call(
+                        descriptor,
+                        arguments,
+                        timeout=timeout,
+                        run_id=state.run_id,
+                    ), claimed.input_hash
                 )
                 allow_retry = not descriptor.side_effecting
             elif result is None and descriptor.supports_reconcile:
@@ -208,7 +213,12 @@ class ExecutorActionsMixin:
                 allow_retry = False
             elif result is None and not descriptor.side_effecting:
                 result = self._with_durable_input_hash(
-                    self.broker.call(descriptor, arguments, timeout=timeout), claimed.input_hash
+                    self.broker.call(
+                        descriptor,
+                        arguments,
+                        timeout=timeout,
+                        run_id=state.run_id,
+                    ), claimed.input_hash
                 )
             if result is None:
                 return self._defer_reconcile_to_host(
@@ -296,7 +306,12 @@ class ExecutorActionsMixin:
             )
             if result is None:
                 result = self._with_durable_input_hash(
-                    self.broker.call(descriptor, arguments, timeout=timeout), input_hash
+                    self.broker.call(
+                        descriptor,
+                        arguments,
+                        timeout=timeout,
+                        run_id=state.run_id,
+                    ), input_hash
                 )
                 if result.status == "success":
                     self.store.cache_action_result(

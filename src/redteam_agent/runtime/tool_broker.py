@@ -3,31 +3,22 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import os
 import re
-import shlex
-import queue
-import subprocess
 import threading
 import time
-import tomllib
-import urllib.error
-import urllib.request
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 from .models import ToolCallResult, ToolDescriptor, utc_now
+from .mcp_broker import McpBrokerMixin
+from .mcp_config import McpServerSpec
 from .security import redact_sensitive, safe_error_text
 
 
 TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
-MAX_MCP_RESPONSE_BYTES = 8 * 1024 * 1024
-MAX_MCP_PENDING_RESPONSES = 2048
 MAX_TOOL_OUTPUT_BYTES = 16 * 1024 * 1024
-MCP_READ_CHUNK_BYTES = 64 * 1024
-MAX_ERROR_TEXT_BYTES = 1024
 
 from .mcp_clients import (
     Adapter,
@@ -38,7 +29,7 @@ from .mcp_clients import (
     ToolHealthState,
 )
 
-class ToolBroker:
+class ToolBroker(McpBrokerMixin):
     def __init__(self, *, tool_priority: Sequence[str] = ()) -> None:
         self.tool_priority = tuple(
             (re.sub(r"[^a-z0-9]+", "", name.casefold()), index)
@@ -49,8 +40,13 @@ class ToolBroker:
         self._adapters: dict[str, Adapter] = {}
         self._reconcilers: dict[str, Adapter] = {}
         self._clients: dict[str, StdioMcpClient | HttpMcpClient] = {}
-        self._server_configs: dict[str, tuple[str, tuple[Any, ...]]] = {}
+        self._run_clients: dict[tuple[str, str], StdioMcpClient | HttpMcpClient] = {}
+        self._run_resources: dict[tuple[str, str], set[str]] = {}
+        self._active_call_clients: dict[str, StdioMcpClient | HttpMcpClient] = {}
+        self._server_configs: dict[str, McpServerSpec] = {}
+        self._server_status: dict[str, dict[str, Any]] = {}
         self._config_paths: list[Path] = []
+        self._workspace_root: Path | None = None
         self._last_refresh = 0.0
         self._lifecycle_lock = threading.RLock()
         self._active_calls = 0
@@ -221,177 +217,6 @@ class ToolBroker:
             raise error
         return result.get("output")
 
-    def discover_from_configs(self, paths: Sequence[Path]) -> tuple[ToolDescriptor, ...]:
-        with self._lifecycle_lock:
-            return self._discover_from_configs_locked(paths)
-
-    def _discover_from_configs_locked(self, paths: Sequence[Path]) -> tuple[ToolDescriptor, ...]:
-        for path in paths:
-            resolved_path = path.expanduser().resolve(strict=False)
-            if resolved_path not in self._config_paths:
-                self._config_paths.append(resolved_path)
-            if not path.is_file():
-                continue
-            try:
-                config = tomllib.loads(path.read_text(encoding="utf-8-sig"))
-            except (OSError, tomllib.TOMLDecodeError) as exc:
-                self._record_discovery_error(f"config:{path}", exc)
-                continue
-            automation = config.get("automation") if isinstance(config.get("automation"), Mapping) else {}
-            raw_overrides = automation.get("tool_capabilities")
-            if isinstance(raw_overrides, Mapping):
-                for tool_name, raw_capabilities in raw_overrides.items():
-                    if not isinstance(raw_capabilities, list):
-                        continue
-                    capabilities = tuple(
-                        dict.fromkeys(
-                            str(item).strip().casefold().replace("-", "_")
-                            for item in raw_capabilities
-                            if str(item).strip()
-                        )
-                    )
-                    if capabilities:
-                        self._capability_overrides.setdefault(str(tool_name).casefold(), capabilities)
-            servers = config.get("mcp_servers") or config.get("mcpServers") or {}
-            if not isinstance(servers, Mapping):
-                continue
-            for server_name, raw_server in servers.items():
-                if not isinstance(raw_server, Mapping) or raw_server.get("enabled") is False or raw_server.get("disabled") is True:
-                    continue
-                if str(server_name).casefold() in {
-                    "codex-redteam-orchestrator",
-                    "codex-redteam-runtime",
-                    "redteam-agent-runtime",
-                }:
-                    continue
-                command = raw_server.get("command")
-                url = raw_server.get("url") or raw_server.get("http_url")
-                if isinstance(command, str) and command.strip():
-                    raw_args = raw_server.get("args", ())
-                    args = tuple(str(item) for item in raw_args) if isinstance(raw_args, list) else tuple(shlex.split(str(raw_args)))
-                    raw_env = raw_server.get("env", {})
-                    env = {str(key): str(value) for key, value in raw_env.items()} if isinstance(raw_env, Mapping) else {}
-                    self._server_configs[str(server_name)] = ("stdio", (command, args, env))
-                    self._discover_stdio(str(server_name), command, args, env)
-                elif isinstance(url, str) and url.strip():
-                    raw_headers = raw_server.get("headers", {})
-                    headers = {str(key): str(value) for key, value in raw_headers.items()} if isinstance(raw_headers, Mapping) else {}
-                    token_env = str(raw_server.get("bearer_token_env_var") or "").strip()
-                    if token_env and os.environ.get(token_env):
-                        headers.setdefault("Authorization", f"Bearer {os.environ[token_env]}")
-                    self._server_configs[str(server_name)] = ("http", (url.strip(), headers))
-                    self._discover_http(str(server_name), url.strip(), headers)
-                else:
-                    self._record_discovery_error(f"server:{server_name}", "unsupported_transport")
-        return self.descriptors()
-
-    def refresh(self, *, force: bool = False) -> tuple[ToolDescriptor, ...]:
-        with self._lifecycle_lock:
-            now = time.monotonic()
-            if self._active_calls or (not force and now - self._last_refresh < 10.0):
-                return self.descriptors()
-            self._last_refresh = now
-            for client in self._clients.values():
-                client.close()
-            self._clients.clear()
-            self._server_configs.clear()
-            self._capability_overrides.clear()
-            self._discovery_errors.clear()
-            for qualified in [
-                name
-                for name, descriptor in self._descriptors.items()
-                if descriptor.source.startswith("live-mcp")
-            ]:
-                self._descriptors.pop(qualified, None)
-            return self.discover_from_configs(tuple(self._config_paths))
-
-    def _discover_stdio(self, server_name: str, command: str, args: Sequence[str], env: Mapping[str, str]) -> None:
-        existing = self._clients.get(server_name)
-        if isinstance(existing, StdioMcpClient) and existing.process.poll() is None:
-            return
-        if existing is not None:
-            existing.close()
-            self._clients.pop(server_name, None)
-        try:
-            client = StdioMcpClient(server_name, command, args, env)
-            tools = client.list_tools()
-        except Exception as exc:
-            self._record_discovery_error(f"server:{server_name}", exc)
-            return
-        self._clients[server_name] = client
-        for item in tools:
-            name = str(item.get("name") or "").strip()
-            if not name:
-                continue
-            description = str(item.get("description") or "")
-            schema = item.get("inputSchema") if isinstance(item.get("inputSchema"), Mapping) else {"type": "object"}
-            capabilities = self._capabilities_for(server_name, name, description, schema)
-            descriptor = ToolDescriptor(
-                server=server_name,
-                name=name,
-                description=description,
-                input_schema=dict(schema),
-                capabilities=capabilities,
-                source="live-mcp",
-                healthy=True,
-                priority=self._priority_for(server_name, name, f"{server_name}:{name}"),
-                version=str(item.get("version") or self.canonical_hash({"description": description, "schema": schema})[:16]),
-                schema_hash=self.canonical_hash(schema),
-                side_effecting=True,
-                supports_reconcile=False,
-            )
-            self._descriptors[descriptor.qualified_name] = descriptor
-
-    def _discover_http(self, server_name: str, url: str, headers: Mapping[str, str]) -> None:
-        if server_name in self._clients:
-            return
-        try:
-            client = HttpMcpClient(server_name, url, headers)
-            tools = client.list_tools()
-        except Exception as exc:
-            self._record_discovery_error(f"server:{server_name}", exc)
-            return
-        self._clients[server_name] = client
-        for item in tools:
-            name = str(item.get("name") or "").strip()
-            if not name:
-                continue
-            description = str(item.get("description") or "")
-            schema = item.get("inputSchema") if isinstance(item.get("inputSchema"), Mapping) else {"type": "object"}
-            descriptor = ToolDescriptor(
-                server=server_name,
-                name=name,
-                description=description,
-                input_schema=dict(schema),
-                capabilities=self._capabilities_for(server_name, name, description, schema),
-                source="live-mcp-http",
-                healthy=True,
-                priority=self._priority_for(server_name, name, f"{server_name}:{name}"),
-                version=str(item.get("version") or self.canonical_hash({"description": description, "schema": schema})[:16]),
-                schema_hash=self.canonical_hash(schema),
-                side_effecting=True,
-                supports_reconcile=False,
-            )
-            self._descriptors[descriptor.qualified_name] = descriptor
-
-    def _restart_server(self, server_name: str) -> None:
-        with self._lifecycle_lock:
-            config = self._server_configs.get(server_name)
-            if config is None:
-                return
-            client = self._clients.pop(server_name, None)
-            if client is not None:
-                client.close()
-            for qualified in [name for name, item in self._descriptors.items() if item.server == server_name]:
-                self._descriptors.pop(qualified, None)
-            transport, values = config
-            if transport == "stdio":
-                command, args, env = values
-                self._discover_stdio(server_name, command, args, env)
-            else:
-                url, headers = values
-                self._discover_http(server_name, url, headers)
-
     def descriptors(self) -> tuple[ToolDescriptor, ...]:
         with self._lifecycle_lock:
             return tuple(sorted(self._descriptors.values(), key=lambda item: (item.priority, item.qualified_name.casefold())))
@@ -501,7 +326,15 @@ class ToolBroker:
             "candidates": candidates,
         }
 
-    def call(self, descriptor: ToolDescriptor, arguments: Mapping[str, Any], *, timeout: float = 60.0) -> ToolCallResult:
+    def call(
+        self,
+        descriptor: ToolDescriptor,
+        arguments: Mapping[str, Any],
+        *,
+        timeout: float = 60.0,
+        run_id: str = "",
+        external_call_id: str = "",
+    ) -> ToolCallResult:
         started_at = utc_now()
         started_clock = time.monotonic()
         qualified = descriptor.qualified_name
@@ -527,14 +360,42 @@ class ToolBroker:
                 output = self._invoke_adapter(adapter, arguments, timeout=timeout)
             else:
                 with self._lifecycle_lock:
-                    client = self._clients.get(descriptor.server)
-                if isinstance(client, StdioMcpClient) and client.process.poll() is not None:
+                    client = self._client_for(descriptor, run_id=run_id)
+                if (
+                    isinstance(client, StdioMcpClient)
+                    and client.process.poll() is not None
+                    and str(descriptor.metadata.get("mcp_scope") or "shared") == "shared"
+                ):
                     self._restart_server(descriptor.server)
                     with self._lifecycle_lock:
                         client = self._clients.get(descriptor.server)
                 if client is None:
                     raise RuntimeError(safe_error_text(f"mcp_client_missing:{descriptor.server}"))
-                output = client.call_tool(descriptor.name, arguments, timeout=timeout)
+                configured_timeout = descriptor.metadata.get("tool_timeout_seconds")
+                effective_timeout = timeout
+                if isinstance(configured_timeout, (int, float)) and configured_timeout > 0:
+                    effective_timeout = min(timeout, float(configured_timeout))
+                if external_call_id:
+                    with self._lifecycle_lock:
+                        self._active_call_clients[external_call_id] = client
+                if isinstance(client, StdioMcpClient):
+                    output = client.call_tool(
+                        descriptor.name,
+                        arguments,
+                        timeout=effective_timeout,
+                        cancellation_id=external_call_id,
+                    )
+                else:
+                    output = client.call_tool(descriptor.name, arguments, timeout=effective_timeout)
+                spec = self._server_configs.get(descriptor.server)
+                if spec is not None:
+                    self._track_run_resource(
+                        spec,
+                        run_id=run_id,
+                        tool_name=descriptor.name,
+                        arguments=arguments,
+                        output=output,
+                    )
             if isinstance(output, Mapping) and output.get("isError") is True:
                 self._record_result(qualified, success=False, latency_ms=(time.monotonic() - started_clock) * 1000, error="mcp_tool_error")
                 return ToolCallResult(
@@ -600,7 +461,16 @@ class ToolBroker:
             )
         finally:
             with self._lifecycle_lock:
+                if external_call_id:
+                    self._active_call_clients.pop(external_call_id, None)
                 self._active_calls = max(0, self._active_calls - 1)
+
+    def cancel(self, call_id: str) -> bool:
+        with self._lifecycle_lock:
+            client = self._active_call_clients.get(call_id)
+        if isinstance(client, StdioMcpClient):
+            return client.cancel_request(call_id)
+        return False
 
     def reconcile(
         self,
@@ -643,12 +513,6 @@ class ToolBroker:
             output_hash=self.canonical_hash(output),
             tool_version=descriptor.version,
         )
-
-    def close(self) -> None:
-        with self._lifecycle_lock:
-            for client in self._clients.values():
-                client.close()
-            self._clients.clear()
 
     def __enter__(self) -> "ToolBroker":
         return self

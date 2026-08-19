@@ -1,7 +1,7 @@
 # codex-redteam-agent 第一性原理演进计划
 
-> 权威路线文档。Phase 0–5 的已验收行为以 `docs/acceptance/phase-0.md` 至
-> `docs/acceptance/phase-5.md` 为准；旧版架构草案不再作为验收依据。
+> 权威路线文档。Phase 0–6 的已验收行为以 `docs/acceptance/phase-0.md` 至
+> `docs/acceptance/phase-6.md` 为准；旧版架构草案不再作为验收依据。
 
 ## 定位与第一性原理
 
@@ -42,38 +42,47 @@ Runtime 驱动模型循环，记录 Prompt/Response hash、Provider、Capabiliti
 
 实现 Local/MCP/Codex/Docker Worker 边界、隔离 workspace、取消/reconcile、SHA-256 CAS、FTS5 和大输出有界投影。
 
-## 修订后的后续阶段
-
 ### Phase 6：Thin Tactical Loop、工具可见性与反误判语义
 
-Phase 6 不建设由 Runtime 主导的复杂 Planner。生命周期仅作为质量 Gate；模型在每个 Gate 内自由生成和排序战术动作。
+已完成模型主导的薄战术循环、append-only ExplorationLedger、ObservedMiss/VerifiedNegative
+语义分离、分支重开、ReconDigest、完整 Artifact 与有界模型投影。
 
-#### 6A：Model-led Tactical Loop
+## 修订后的后续阶段
 
-- 当前生命周期 Gate 只约束所需证据和清理义务，不预先规定工具动作。
-- 模型可以创建、暂停、否定、重开和合并 Intent/Hypothesis。
-- 每次工具调用都记录为 `ExplorationRecord`，不自动晋升为 Fact 或 Evidence。
-- 引入 `ObservedMiss`、`CoverageClaim`、`HypothesisState`、`VerifiedNegative` 四种不同语义。
-- 未完成探索不得关闭整个攻击方向；重开条件必须持久化。
-- 重复动作只产生诊断信号，不由 Runtime 擅自终止模型搜索。
+### Phase 6.1：Stateful MCP Capability Plane（Phase 7 基础）
 
-#### 6B：AI-Friendly Tool Projection
+在不改变 Phase 7 Evidence 目标的前提下，先补齐有状态专业工具平面。该层参考
+OpenCode 的 MCP 状态/目录刷新、`cc_src` 的 scoped config/取消/压缩边界、
+Playwright MCP 的 accessibility snapshot 与 IDA Pro MCP 的显式 database 会话。
 
-模型上下文使用有界投影，保留完整原始 Artifact 引用。HTTP/API 投影至少包含状态码、Header 差异、Body 长度/差异、时间、请求/响应 hash、枚举覆盖和原始 Artifact 引用。
+#### 6.1A：Run-scoped MCP lifecycle
 
-#### 6C：Context Continuity 与 ReconDigest
+- Playwright 浏览器上下文和 IDA supervisor client 默认按 run 隔离；共享 MCP 仍保留可选配置。
+- `{run_id}`、`{workspace}`、`${ENV_VAR}` 在创建 client 时延迟绑定。
+- MCP roots 指向 run workspace；超时、取消和终态关闭贯穿 ToolPort/WorkerPort。
+- `tools/list_changed` 刷新工具目录；状态投影区分 disabled/failed/duplicate/catalogued/connected。
+- IDA 只清理本 run 通过 `idb_open` 获得的 database session，不根据全局 `idb_list` 猜测所有权。
 
-默认保持一个主模型上下文，仅在上下文退化边界切段。`ReconDigest` 必须包含目标状态、原始 Artifact 引用、已尝试动作、确认观察、未验证假设、矛盾和重开条件；Digest 是导航投影，不是真实来源。
+#### 6.1B：Token-efficient capability catalog
 
-#### Phase 6 验收
+- Playwright 默认高价值目录优先 `browser_find`/`browser_snapshot`，省略安装等低频工具；可用 `include_tools=["*"]` 恢复全量能力。
+- IDA 默认分析目录覆盖 database 管理、反编译、反汇编、xref、调用图、数据流和内存读取；修改类工具按需显式加入。
+- 工具 schema 仍原样提供给强模型；额外的紧凑 server catalog 只用于观测和后续动态选择，不替代完整 schema。
+- 工具结果继续遵守完整 CAS + 有界上下文投影，不把大输出塞入 OperationState。
 
-- 不依赖预置漏洞名称即可由模型生成新搜索节点。
-- `ObservedMiss`、不完整枚举和工具失败均不能自动生成全局 `VerifiedNegative`。
-- 新能力或新证据可以重新激活旧分支，恢复后分支状态和顺序一致。
-- Runtime 不覆盖模型的战术优先级；只执行作用域、预算、凭据、幂等和证据 Gate。
-- 工具结果同时具备有界差异投影和完整 CAS 内容，完整 Artifact 回读成功率 100%。
-- 在相同模型、目标和预算下，长运行输入 Token 较 Phase 5 投影基线下降，攻击路径完成率不下降。
-- 固定动作 DAG 不再作为模型搜索空间；`generic-adaptive` 仅作为旧调用方兼容工作流。
+#### 6.1C：Provider adapters
+
+- Playwright preset 使用官方 `@playwright/mcp` stdio server、isolated/headless、图片响应省略、禁用 codegen 和 workspace output。
+- IDA preset 使用 `idalib-mcp --stdio`，所有分析调用必须显式携带 `database`。
+- `mcp-doctor` 输出 server status、discovery errors、schema hash、side-effect annotation 和有界工具目录。
+
+#### Phase 6.1 验收
+
+- 官方 Playwright MCP initialize/tools-list 成功，真实本地页面的 navigate/snapshot/find 完成并关闭 run client。
+- 两个 run 的 MCP client、cwd、roots 和 browser/database state 不串扰。
+- IDA 配置、工具筛选、显式 database、取消和按 run 清理协议测试通过；实机验收在具备 IDA Pro 8.3+ 与 idalib 的环境运行。
+- 工具变更通知刷新目录，重复 process signature 不重复启动。
+- 完整 Phase 0–6 快照、全量回归、wheel、隔离安装、自检和五个公开 MCP schema 均保持兼容。
 
 ### Phase 7：Evidence、Finding 与专业终态
 

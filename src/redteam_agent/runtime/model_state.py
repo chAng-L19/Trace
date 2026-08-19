@@ -23,6 +23,7 @@ class ToolDescriptor:
     schema_hash: str = ""
     side_effecting: bool = True
     supports_reconcile: bool = False
+    metadata: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def qualified_name(self) -> str:

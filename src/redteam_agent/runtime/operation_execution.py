@@ -146,7 +146,9 @@ class OperationExecutionMixin:
         try:
             workflow = self._workflow_for(initial)
         except (TypeError, ValueError, ImmutableRecordError) as exc:
-            return self._fail_integrity(initial, self._base_workflow_for(initial), f"plan_integrity:{exc}")
+            result = self._fail_integrity(initial, self._base_workflow_for(initial), f"plan_integrity:{exc}")
+            self._close_run_resources(run_id)
+            return result
         token = self.store.acquire_lease(
             run_id,
             "__operation__",
@@ -157,7 +159,10 @@ class OperationExecutionMixin:
             current = self.store.load_operation(run_id) or initial
             return self._result(current, self._workflow_for(current))
         try:
-            return self._resume_locked(run_id, token=token, max_actions=max_actions)
+            result = self._resume_locked(run_id, token=token, max_actions=max_actions)
+            if result.state.status in {"completed", "failed", "failed_integrity", "cancelled"}:
+                self._close_run_resources(run_id)
+            return result
         finally:
             self.store.release_lease(token)
 
@@ -456,4 +461,3 @@ class OperationExecutionMixin:
             event={"executed": executed},
         )
         return self._result(state, self._workflow_for(state))
-

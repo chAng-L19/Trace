@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import queue
+import shutil
 import subprocess
 import threading
 import time
@@ -91,18 +92,31 @@ CAPABILITY_ALIASES: dict[str, frozenset[str]] = {
 
 
 class StdioMcpClient:
-    def __init__(self, server_name: str, command: str, args: Sequence[str], env: Mapping[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        server_name: str,
+        command: str,
+        args: Sequence[str],
+        env: Mapping[str, str] | None = None,
+        *,
+        cwd: Path | None = None,
+        startup_timeout: float = 20.0,
+        roots: Sequence[Path] = (),
+    ) -> None:
         self.server_name = server_name
+        self.roots = tuple(path.expanduser().resolve(strict=False) for path in roots)
         environment = dict(os.environ)
         environment.update({str(key): str(value) for key, value in dict(env or {}).items()})
+        executable = shutil.which(command) or command
         self.process = subprocess.Popen(
-            [command, *args],
+            [executable, *args],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=False,
             bufsize=0,
             env=environment,
+            cwd=cwd,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             start_new_session=os.name != "nt",
         )
@@ -110,7 +124,9 @@ class StdioMcpClient:
         self._responses: dict[int, Mapping[str, Any]] = {}
         self._abandoned: set[int] = set()
         self._pending: set[int] = set()
+        self._active_request_ids: dict[str, int] = {}
         self._reader_error = ""
+        self._tools_changed = False
         self._condition = threading.Condition()
         self._write_lock = threading.Lock()
         self._stderr: queue.Queue[str] = queue.Queue(maxsize=128)
@@ -118,7 +134,7 @@ class StdioMcpClient:
         self._error_reader = threading.Thread(target=self._read_stderr, daemon=True)
         self._reader.start()
         self._error_reader.start()
-        self._initialize()
+        self._initialize(timeout=startup_timeout)
 
     def _read_stdout(self) -> None:
         if self.process.stdout is None:
@@ -167,6 +183,9 @@ class StdioMcpClient:
                     payload = json.loads(stripped.decode("utf-8", errors="replace"))
                 except json.JSONDecodeError:
                     continue
+                if isinstance(payload, Mapping) and isinstance(payload.get("method"), str):
+                    self._handle_server_message(payload)
+                    continue
                 response_id = payload.get("id") if isinstance(payload, Mapping) else None
                 if isinstance(response_id, int):
                     with self._condition:
@@ -179,6 +198,29 @@ class StdioMcpClient:
                                 self._responses.pop(oldest, None)
                                 self._pending.discard(oldest)
                         self._condition.notify_all()
+
+    def _handle_server_message(self, payload: Mapping[str, Any]) -> None:
+        method = str(payload.get("method") or "")
+        if method in {"notifications/tools/list_changed", "notifications/tools/changed"}:
+            with self._condition:
+                self._tools_changed = True
+            return
+        request_id = payload.get("id")
+        if request_id is None:
+            return
+        if method == "roots/list":
+            roots = [{"uri": path.as_uri(), "name": path.name or str(path)} for path in self.roots]
+            response: Mapping[str, Any] = {"jsonrpc": "2.0", "id": request_id, "result": {"roots": roots}}
+        else:
+            response = {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {"code": -32601, "message": "method_not_supported"},
+            }
+        try:
+            self._send(response)
+        except Exception:
+            pass
 
     def _read_stderr(self) -> None:
         if self.process.stderr is None:
@@ -219,27 +261,49 @@ class StdioMcpClient:
             self.process.stdin.write(encoded)
             self.process.stdin.flush()
 
-    def request(self, method: str, params: Mapping[str, Any] | None = None, *, timeout: float = 30.0) -> Mapping[str, Any]:
+    def request(
+        self,
+        method: str,
+        params: Mapping[str, Any] | None = None,
+        *,
+        timeout: float = 30.0,
+        cancellation_id: str = "",
+    ) -> Mapping[str, Any]:
         with self._condition:
             request_id = self._next_id
             self._next_id += 1
             self._pending.add(request_id)
-        try:
-            self._send({"jsonrpc": "2.0", "id": request_id, "method": method, "params": dict(params or {})})
-        except BaseException:
-            with self._condition:
+            try:
+                self._send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "method": method,
+                        "params": dict(params or {}),
+                    }
+                )
+            except BaseException:
                 self._pending.discard(request_id)
-            raise
+                raise
+            if cancellation_id:
+                # Publish cancellation only after the request frame is on the
+                # transport. Otherwise a concurrent cancel can overtake the
+                # tools/call frame and be ignored by a conforming server.
+                self._active_request_ids[cancellation_id] = request_id
         deadline = time.monotonic() + max(0.1, timeout)
         with self._condition:
             while request_id not in self._responses:
                 if self._reader_error:
                     self._pending.discard(request_id)
+                    if cancellation_id:
+                        self._active_request_ids.pop(cancellation_id, None)
                     raise ValueError(safe_error_text(self._reader_error))
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     self._abandoned.add(request_id)
                     self._pending.discard(request_id)
+                    if cancellation_id:
+                        self._active_request_ids.pop(cancellation_id, None)
                     if len(self._abandoned) > 1024:
                         self._abandoned.pop()
                     try:
@@ -252,9 +316,14 @@ class StdioMcpClient:
                     raise TimeoutError(safe_error_text(f"mcp_request_timeout:{self.server_name}:{method}"))
                 self._condition.wait(timeout=min(remaining, 0.25))
                 if self.process.poll() is not None and request_id not in self._responses:
+                    self._pending.discard(request_id)
+                    if cancellation_id:
+                        self._active_request_ids.pop(cancellation_id, None)
                     raise RuntimeError(safe_error_text(f"mcp_server_exited:{self.server_name}:{self.process.returncode}"))
             response = self._responses.pop(request_id)
             self._pending.discard(request_id)
+            if cancellation_id:
+                self._active_request_ids.pop(cancellation_id, None)
         if "error" in response:
             raise RuntimeError(safe_error_text(f"mcp_error:{self.server_name}:{method}:{response['error']}"))
         result = response.get("result")
@@ -263,15 +332,15 @@ class StdioMcpClient:
     def notify(self, method: str, params: Mapping[str, Any] | None = None) -> None:
         self._send({"jsonrpc": "2.0", "method": method, "params": dict(params or {})})
 
-    def _initialize(self) -> None:
+    def _initialize(self, *, timeout: float = 20.0) -> None:
         self.request(
             "initialize",
             {
                 "protocolVersion": "2025-06-18",
-                "capabilities": {},
-            "clientInfo": {"name": "redteam-agent-runtime", "version": "1"},
+                "capabilities": {"roots": {"listChanged": False}},
+                "clientInfo": {"name": "redteam-agent-runtime", "version": "1"},
             },
-            timeout=20.0,
+            timeout=timeout,
         )
         self.notify("notifications/initialized")
 
@@ -289,8 +358,37 @@ class StdioMcpClient:
             cursor = next_cursor
         return tuple(collected)
 
-    def call_tool(self, name: str, arguments: Mapping[str, Any], *, timeout: float) -> Mapping[str, Any]:
-        return self.request("tools/call", {"name": name, "arguments": dict(arguments)}, timeout=timeout)
+    def consume_tools_changed(self) -> bool:
+        with self._condition:
+            changed = self._tools_changed
+            self._tools_changed = False
+            return changed
+
+    def call_tool(
+        self,
+        name: str,
+        arguments: Mapping[str, Any],
+        *,
+        timeout: float,
+        cancellation_id: str = "",
+    ) -> Mapping[str, Any]:
+        return self.request(
+            "tools/call",
+            {"name": name, "arguments": dict(arguments)},
+            timeout=timeout,
+            cancellation_id=cancellation_id,
+        )
+
+    def cancel_request(self, cancellation_id: str) -> bool:
+        with self._condition:
+            request_id = self._active_request_ids.get(cancellation_id)
+        if request_id is None:
+            return False
+        self.notify(
+            "notifications/cancelled",
+            {"requestId": request_id, "reason": "runtime_cancelled"},
+        )
+        return True
 
     def close(self) -> None:
         if self.process.poll() is None:
@@ -303,14 +401,21 @@ class StdioMcpClient:
 
 
 class HttpMcpClient:
-    def __init__(self, server_name: str, url: str, headers: Mapping[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        server_name: str,
+        url: str,
+        headers: Mapping[str, str] | None = None,
+        *,
+        startup_timeout: float = 20.0,
+    ) -> None:
         self.server_name = server_name
         self.url = url
         self.headers = {str(key): str(value) for key, value in dict(headers or {}).items()}
         self.session_id = ""
         self._next_id = 1
         self._request_lock = threading.RLock()
-        self._initialize()
+        self._initialize(timeout=startup_timeout)
 
     def _decode_response(self, response: Any) -> Mapping[str, Any]:
         content_length = response.headers.get("Content-Length")
@@ -394,15 +499,15 @@ class HttpMcpClient:
                 if exc.code not in {202, 204}:
                     raise
 
-    def _initialize(self) -> None:
+    def _initialize(self, *, timeout: float = 20.0) -> None:
         self.request(
             "initialize",
             {
                 "protocolVersion": "2025-06-18",
-                "capabilities": {},
-            "clientInfo": {"name": "redteam-agent-runtime", "version": "1"},
+                "capabilities": {"roots": {"listChanged": False}},
+                "clientInfo": {"name": "redteam-agent-runtime", "version": "1"},
             },
-            timeout=20.0,
+            timeout=timeout,
         )
         self.notify("notifications/initialized")
 
@@ -428,4 +533,3 @@ class HttpMcpClient:
 
 
 Adapter = Callable[[Mapping[str, Any]], Any]
-

@@ -18,6 +18,7 @@ class OperationCancellationMixin:
                 raise KeyError(f"operation_not_found:{run_id}")
             workflow = self._workflow_for(state)
             if state.status == "cancelled":
+                self._close_run_resources(run_id)
                 return self._result(state, workflow, terminal=TerminalDecision(True, False, "cancelled"))
             if state.status in {"completed", "failed", "failed_integrity"}:
                 raise ValueError(f"operation_terminal:{state.status}")
@@ -49,7 +50,10 @@ class OperationCancellationMixin:
             return self._result(current, self._workflow_for(current))
         try:
             current = self.store.load_operation(run_id) or state
-            return self._finalize_cancel_locked(current, self._workflow_for(current), lease)
+            result = self._finalize_cancel_locked(current, self._workflow_for(current), lease)
+            if result.state.status == "cancelled":
+                self._close_run_resources(run_id)
+            return result
         finally:
             self.store.release_lease(lease)
 

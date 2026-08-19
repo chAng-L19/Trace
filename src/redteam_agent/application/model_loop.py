@@ -260,6 +260,7 @@ class ModelLoop(TacticalLoopMixin, ModelIntegrityMixin):
             if self.tools is not None
             else ()
         )
+        tool_catalog = self._tool_catalog(definitions)
         tools = tuple(
             {
                 "type": "function",
@@ -305,8 +306,29 @@ class ModelLoop(TacticalLoopMixin, ModelIntegrityMixin):
                 "cache_read_tokens": selection.cache_read_tokens,
                 "cache_write_tokens": selection.cache_write_tokens,
                 "context_overflow_tokens": selection.context_overflow_tokens,
+                "tool_catalog_total": len(definitions),
+                "tool_catalog": tool_catalog,
             },
         )
+
+    @staticmethod
+    def _tool_catalog(definitions: Sequence[Any]) -> Mapping[str, Any]:
+        grouped: dict[str, dict[str, Any]] = {}
+        for item in definitions:
+            server = grouped.setdefault(
+                item.server,
+                {
+                    "tool_count": 0,
+                    "capabilities": [],
+                    "preset": str(item.metadata.get("mcp_preset") or ""),
+                    "scope": str(item.metadata.get("mcp_scope") or ""),
+                },
+            )
+            server["tool_count"] += 1
+            server["capabilities"] = sorted(
+                set(server["capabilities"]) | set(item.capabilities)
+            )
+        return grouped
 
     def _save_request(self, request: ModelRequest) -> None:
         capabilities = self.model.capabilities()

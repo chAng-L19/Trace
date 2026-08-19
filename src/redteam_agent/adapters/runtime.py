@@ -134,6 +134,7 @@ class RuntimeToolAdapter(ToolPort):
                 "healthy": descriptor.healthy,
                 "priority": descriptor.priority,
                 "schema_hash": descriptor.schema_hash,
+                **dict(descriptor.metadata),
             },
         )
 
@@ -171,6 +172,8 @@ class RuntimeToolAdapter(ToolPort):
             descriptor,
             dict(call.arguments),
             timeout=call.timeout_seconds or 60.0,
+            run_id=call.run_id,
+            external_call_id=call.call_id,
         )
         return self._result(call, result)
 
@@ -187,8 +190,7 @@ class RuntimeToolAdapter(ToolPort):
         return self._result(call, result) if result is not None else None
 
     def cancel(self, call_id: str) -> bool:
-        del call_id
-        return False
+        return self.runtime.broker.cancel(call_id)
 
 
 class OperationRuntimeAdapter:

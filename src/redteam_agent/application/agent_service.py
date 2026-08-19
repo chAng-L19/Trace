@@ -9,6 +9,7 @@ from ..adapters.runtime_mapping import (
     run_from_runtime,
     terminal_from_runtime,
 )
+from ..adapters.runtime import RuntimeToolAdapter
 from ..core import Event, ModelPort, ToolPort, WorkerPort, WorkerResult, WorkerTask
 from ..runtime.durable_store import StateVersionConflict, StoreConflictError
 from ..runtime.worker_store import WorkerStore
@@ -60,6 +61,7 @@ class AgentService:
         else:
             assert root is not None
             self.runtime = OperationRuntime(root=root)
+        resolved_tool_port = tool_port or RuntimeToolAdapter(self.runtime)
         self.exploration = ExplorationLedger(
             self.runtime.store,
             self.runtime.artifacts,
@@ -82,18 +84,17 @@ class AgentService:
                 "codex_handoff": CodexHandoffWorker(records=self.worker_records),
                 "docker": DockerWorkerAdapter(records=self.worker_records),
             }
-            if tool_port is not None:
-                workers["mcp"] = McpWorker(
-                    tools=tool_port,
-                    artifacts=self.runtime.artifacts,
-                    records=self.worker_records,
-                )
+            workers["mcp"] = McpWorker(
+                tools=resolved_tool_port,
+                artifacts=self.runtime.artifacts,
+                records=self.worker_records,
+            )
             self.workers = WorkerManager(workers, records=self.worker_records)
         self.model_loop = (
             ModelLoop(
                 service=self,
                 model=model_port,
-                tools=tool_port,
+                tools=resolved_tool_port,
                 model_name=model_name,
                 streaming=model_streaming,
                 max_retries=model_max_retries,

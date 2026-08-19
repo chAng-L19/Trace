@@ -60,6 +60,7 @@ class OperationRuntime(
         self.evidence_graph = EvidenceGraph(self.store, root / "artifacts")
         self.artifacts = ArtifactStore(root / "artifact-store", self.store)
         self.broker = broker or ToolBroker()
+        self.broker.bind_workspace_root(root / "workspaces")
         if register_builtins:
             register_builtin_tools(self.broker)
         self.registry = registry or WorkflowRegistry()
@@ -88,6 +89,15 @@ class OperationRuntime(
             credential_resolver=self._credential_vault.resolve,
             credential_projector=self._credential_vault.project,
         )
+
+    def _close_run_resources(self, run_id: str) -> None:
+        cleanup = self.broker.close_run(run_id)
+        if cleanup:
+            self.store.append_event(
+                run_id,
+                "mcp_run_resources_closed",
+                {"servers": list(cleanup)},
+            )
 
     def record_tactical_attempt(
         self,
