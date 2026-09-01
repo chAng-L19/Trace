@@ -29,6 +29,13 @@ redteam-agent mcp-doctor --config .\config.toml
 默认保留完整交互能力但优先暴露 17 个高价值工具；IDA preset 要求 IDA Pro 8.3+
 （推荐 9.x）、已激活 idalib，以及可用的 `uv`/`idalib-mcp`。
 
+IDA Free 不能直接作为 `idalib-mcp` 或 IDA Pro 插件后端。项目现在提供
+`redteam_agent.runtime.ida_free_bridge`：通过 IDA Free 的 `-A -S` IDAPython
+批处理入口暴露只读 `list_funcs/imports/decompile/disasm/xrefs/get_*` 工具。
+它是独立的 MCP stdio server，仍遵守 run-scoped workspace、显式 database、
+Artifact 和 Evidence 边界；下载的 `ida-free-pc_94_x64win.exe` 只是安装器，
+需要先得到安装目录中的 `ida64.exe` 或 `idat64.exe`。
+
 开发测试：
 
 ```powershell

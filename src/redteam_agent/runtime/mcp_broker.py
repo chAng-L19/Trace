@@ -77,6 +77,18 @@ class McpBrokerMixin:
                         "preset": spec.preset,
                     }
                     continue
+                command_name = Path(spec.command).name.casefold() if spec.command else ""
+                if command_name.startswith("ida-free-pc") or "installer" in command_name or command_name == "setup.exe":
+                    error = "ida_free_installer_not_runtime:configure_ida64_or_idat64"
+                    self._record_discovery_error(f"server:{server_name}", error)
+                    self._server_status[server_name] = {
+                        "status": "failed",
+                        "transport": spec.transport,
+                        "scope": spec.scope,
+                        "preset": spec.preset,
+                        "error": error,
+                    }
+                    continue
                 if spec.transport not in {"stdio", "http"} or (
                     spec.transport == "stdio" and not spec.command
                 ) or (spec.transport == "http" and not spec.url):
@@ -305,7 +317,7 @@ class McpBrokerMixin:
         arguments: Mapping[str, Any],
         output: Any,
     ) -> None:
-        if spec.preset != "ida" or not run_id:
+        if spec.preset not in {"ida", "ida_free"} or not run_id:
             return
         key = (spec.name, run_id)
         if tool_name == "idb_open":
@@ -373,7 +385,7 @@ class McpBrokerMixin:
         for server_name, client, spec, resources in detached:
             closed: list[str] = []
             errors: list[Mapping[str, str]] = []
-            if spec is not None and spec.preset == "ida":
+            if spec is not None and spec.preset in {"ida", "ida_free"}:
                 for session_id in resources:
                     try:
                         result = client.call_tool(

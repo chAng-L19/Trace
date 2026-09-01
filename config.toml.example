@@ -28,3 +28,15 @@ command = "uv"
 args = ["run", "idalib-mcp", "--stdio", "--max-workers", "4"]
 startup_timeout_seconds = 180
 tool_timeout_seconds = 180
+
+# IDA Free does not expose idalib or the IDA Pro MCP plugin. Use the bundled
+# read-only batch bridge after installing IDA Free and locating idat64.exe.
+# The downloaded ida-free-pc_94_x64win.exe is an installer, not this runtime.
+# [mcp_servers.ida_free]
+# preset = "ida_free"
+# scope = "run"
+# `{python}` binds to the current Agent runtime interpreter.
+# command = "{python}"
+# args = ["-m", "redteam_agent.runtime.ida_free_bridge", "--ida", "C:\\Program Files\\IDA Free 9.4\\idat64.exe"]
+# startup_timeout_seconds = 180
+# tool_timeout_seconds = 240

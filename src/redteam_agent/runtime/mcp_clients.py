@@ -251,7 +251,15 @@ class StdioMcpClient:
 
     def _send(self, payload: Mapping[str, Any]) -> None:
         if self.process.poll() is not None:
-            raise RuntimeError(safe_error_text(f"mcp_server_exited:{self.server_name}:{self.process.returncode}"))
+            if self._error_reader.is_alive():
+                self._error_reader.join(timeout=0.05)
+            detail = self.stderr_snapshot()
+            suffix = f":{detail}" if detail else ""
+            raise RuntimeError(
+                safe_error_text(
+                    f"mcp_server_exited:{self.server_name}:{self.process.returncode}{suffix}"
+                )
+            )
         if self.process.stdin is None:
             raise RuntimeError(safe_error_text(f"mcp_server_stdin_missing:{self.server_name}"))
         encoded = (json.dumps(dict(payload), ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
@@ -319,7 +327,15 @@ class StdioMcpClient:
                     self._pending.discard(request_id)
                     if cancellation_id:
                         self._active_request_ids.pop(cancellation_id, None)
-                    raise RuntimeError(safe_error_text(f"mcp_server_exited:{self.server_name}:{self.process.returncode}"))
+                    if self._error_reader.is_alive():
+                        self._error_reader.join(timeout=0.05)
+                    detail = self.stderr_snapshot()
+                    suffix = f":{detail}" if detail else ""
+                    raise RuntimeError(
+                        safe_error_text(
+                            f"mcp_server_exited:{self.server_name}:{self.process.returncode}{suffix}"
+                        )
+                    )
             response = self._responses.pop(request_id)
             self._pending.discard(request_id)
             if cancellation_id:
@@ -331,6 +347,17 @@ class StdioMcpClient:
 
     def notify(self, method: str, params: Mapping[str, Any] | None = None) -> None:
         self._send({"jsonrpc": "2.0", "method": method, "params": dict(params or {})})
+
+    def stderr_snapshot(self) -> str:
+        lines: list[str] = []
+        while True:
+            try:
+                lines.append(self._stderr.get_nowait())
+            except queue.Empty:
+                break
+        # The actionable reason is normally the final traceback line; keeping
+        # only the tail avoids truncating it behind a long Python traceback.
+        return safe_error_text(lines[-1] if lines else "", limit=MAX_ERROR_TEXT_BYTES)
 
     def _initialize(self, *, timeout: float = 20.0) -> None:
         self.request(
