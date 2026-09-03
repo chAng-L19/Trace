@@ -66,7 +66,7 @@ Tool visibility is reduced only through reversible presets:
 | Live Playwright local page | `browser_navigate`, `browser_snapshot`, `browser_find` | pass |
 | Playwright run cleanup | active clients `1 -> 0`; process/browser closed | pass |
 | Real IDA connection | host lacks IDA Pro, idalib and `uv` | environment pending |
-| IDA Free direct bridge | `ida_free_bridge` protocol and installer/runtime detection | pass (runtime executable pending) |
+| IDA Free feasibility | official feature matrix: no IDAPython/API/plugin support | unsupported |
 
 ## Live Playwright proof
 
@@ -94,19 +94,17 @@ Therefore IDA acceptance is protocol/configuration level on this host. A real
 IDA gate must run `mcp-doctor`, `idb_open`, one explicit-database analysis call,
 and terminal `idb_close` on a host with IDA Pro 8.3+ (9.x recommended).
 
-The host does contain `C:\Users\Lin\Downloads\ida-free-pc_94_x64win.exe`, whose
-PE metadata identifies it as **IDA Free 9.4 setup.exe**. It is not an IDA runtime
-binary. The new `ida_free` preset intentionally rejects installer paths and
-requires the installed `ida64.exe`/`idat64.exe`; this avoids reporting a false
-MCP connection. Once installed, the bridge starts IDA in batch mode and exposes
-read-only analysis tools without requiring the unsupported IDA Pro plugin.
+The host contains `C:\Users\Lin\Downloads\ida-free-pc_94_x64win.exe`; PE metadata
+identifies it as **IDA Free 9.4 setup.exe**, not an analysis runtime. Hex-Rays'
+current IDA Free feature matrix explicitly excludes the IDAPython API and C++
+SDK, while the inspected IDA Pro MCP implementation explicitly rejects IDA Free
+plugin installation. An MCP bridge based on IDAPython or that plugin therefore
+does not satisfy executable acceptance and is not shipped.
 
 ## Changed files
 
 ```text
 src/redteam_agent/runtime/mcp_config.py
-src/redteam_agent/runtime/ida_free_bridge.py
-src/redteam_agent/runtime/ida_free_agent.py
 src/redteam_agent/runtime/mcp_clients.py
 src/redteam_agent/runtime/tool_broker.py
 src/redteam_agent/adapters/runtime.py

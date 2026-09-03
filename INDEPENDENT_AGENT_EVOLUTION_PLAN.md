@@ -84,19 +84,12 @@ Playwright MCP 的 accessibility snapshot 与 IDA Pro MCP 的显式 database 会
 - 工具变更通知刷新目录，重复 process signature 不重复启动。
 - 完整 Phase 0–6 快照、全量回归、wheel、隔离安装、自检和五个公开 MCP schema 均保持兼容。
 
-### Phase 6.2：IDA Free 只读桥接
+### Phase 6.2：IDA Free 可行性验证
 
-IDA Free 9.4 不提供 `idalib`，且 IDA Pro MCP 插件明确排除 Free。因此不伪装成
-`idalib-mcp`，而是通过独立 stdio MCP bridge 启动 `ida64.exe`/`idat64.exe` 的
-`-A -S` IDAPython 会话。桥接器按 database session 隔离进程，仅暴露函数、导入、
-反编译、反汇编、xref、字符串、字节和整数读取；修改类 API 不进入默认目录。
-
-#### Phase 6.2 验收
-
-- 安装器路径被识别并拒绝，不会被误报为可用 IDA runtime。
-- bridge 的 initialize/tools/list、显式 database 和 session close 协议测试通过。
-- IDA Free 实际运行时完成 `idb_open → decompile/list_funcs → idb_close`，原始输出进入 CAS。
-- IDA Free 不可用时，MCP status 保持 failed/pending，不生成 Evidence 或成功终态。
+验证结论为不建设 IDA Free MCP Adapter：IDA Free 9.4 的官方能力矩阵不提供
+IDAPython API、C++ SDK 或插件支持，无法满足结构化工具调用、取消、会话隔离与
+证据 lineage 的验收要求。项目保持 IDA Pro + `idalib-mcp` 为权威 IDA 后端，
+避免用 GUI 自动化或虚假 tool schema 降低专业能力和终态可信度。
 
 ### Phase 7：Evidence、Finding 与专业终态
 

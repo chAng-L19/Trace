@@ -358,7 +358,7 @@ env = { PROFILE = "two" }
     assert len(_FakeMcpClient.instances) == 2
 
 
-def test_installer_command_is_rejected_before_process_launch(
+def test_ida_free_installer_is_not_started_as_an_mcp_server(
     tmp_path: Path,
     fake_mcp: None,
 ) -> None:
@@ -366,15 +366,14 @@ def test_installer_command_is_rejected_before_process_launch(
     config.write_text(
         """
 [mcp_servers.ida]
-preset = "ida_free"
+preset = "ida"
 command = "ida-free-pc_94_x64win.exe"
 """.strip(),
         encoding="utf-8",
     )
     broker = ToolBroker()
     broker.discover_from_configs((config,))
-    assert broker.server_statuses()["ida"]["status"] == "failed"
-    assert broker.server_statuses()["ida"]["error"].startswith("ida_free_installer_not_runtime")
+    assert broker.server_statuses()["ida"]["error"] == "ida_installer_not_mcp_server"
     assert _FakeMcpClient.instances == []
 
 

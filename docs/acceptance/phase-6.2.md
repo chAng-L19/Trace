@@ -1,93 +1,55 @@
-# Phase 6.2 Acceptance - IDA Free Read-only Bridge
+# Phase 6.2 Acceptance - IDA Free Feasibility
 
 ## Decision
 
-The supplied file is an installer:
+IDA Free is **not an executable backend for this project**. The supplied file is
+an installer, not an analysis runtime:
 
 ```text
-C:\Users\Lin\Downloads\ida-free-pc_94_x64win.exe
+Path: C:\Users\Lin\Downloads\ida-free-pc_94_x64win.exe
 Product: IDA Free 9.4
 OriginalFilename: setup.exe
 SHA-256: 95250D9503A3D5CEEE160F6174E44BBA28A12BA3A6B8DFB12D51F85C85AD5F83
 ```
 
-It is not an executable IDA runtime and therefore is not passed to an MCP
-server as if it were `ida64.exe`/`idat64.exe`. The installer requested elevation
-on this host and was not installed automatically.
+The installer requested elevation on this host and was not installed.
 
-## Integration model
+## Compatibility finding
 
-IDA Free does not expose `idalib` and the inspected IDA Pro MCP project rejects
-IDA Free plugin installation. The project therefore adds an independent bridge:
+Hex-Rays' current IDA Free feature matrix excludes the IDAPython API and C++
+SDK. It also does not support the IDA Pro plugin surface used by the inspected
+IDA MCP project. Therefore the planned `-A -S` IDAPython bridge was tested and
+discarded: it would expose a plausible schema but fail at runtime and could
+produce false capability status.
 
-```text
-Agent ToolBroker (run-scoped MCP client)
-  -> ida_free_bridge (MCP stdio server)
-     -> ida64.exe/idat64.exe -A -S ida_free_agent.py target.bin
-        -> loopback JSON command channel
-```
-
-The bridge starts one IDA process per explicit database session. The embedded
-IDAPython endpoint exposes only read-oriented analysis operations. Every tool
-call carries `database`; no implicit current database is used.
-
-## Exposed read-only surface
+The authoritative integration remains:
 
 ```text
-idb_open / idb_list / idb_close
-server_health
-list_funcs / imports
-decompile / disasm / xrefs_to
-get_string / get_bytes / get_int
+IDA Pro + idalib-mcp --stdio
 ```
 
-`idb_open` and `idb_close` are lifecycle operations; analysis tools are marked
-read-only in MCP annotations and the `ida_free` preset excludes rename/patch/
-write APIs. Full tool results still pass through the existing Observation,
-Artifact and Evidence boundaries.
+This preserves explicit `database` sessions, supervisor/worker lifecycle,
+cursor pagination, cancellation and verified Artifact/Evidence lineage.
 
-## Acceptance matrix
-
-| Requirement | Evidence | Result |
-|---|---|---|
-| `ida_free` preset is run-scoped and bounded | `test_ida_free_preset_is_read_only_and_token_bounded` | pass |
-| MCP initialize/tools/list contract | `test_ida_free_bridge_mcp_initialize_and_tools_list` | pass |
-| Installer/runtime distinction | `test_ida_free_installer_path_is_rejected_without_launching` | pass |
-| Invalid calls remain MCP errors | `test_ida_free_bridge_reports_invalid_tool_as_mcp_error` | pass |
-| Actual IDA Free analysis session | requires installed `ida64.exe`/`idat64.exe` | pending host install |
-
-## Operator configuration
-
-After installing IDA Free, configure the installed runtime, not the downloaded
-setup file:
-
-```toml
-[mcp_servers.ida_free]
-preset = "ida_free"
-scope = "run"
-command = "{python}"
-args = ["-m", "redteam_agent.runtime.ida_free_bridge", "--ida", "C:\\Program Files\\IDA Free 9.4\\idat64.exe"]
-startup_timeout_seconds = 180
-tool_timeout_seconds = 240
-```
-
-Then run:
-
-```powershell
-redteam-agent mcp-doctor --config .\config.toml
-```
-
-The expected status is `catalogued` with the bounded read-only tool count. The
-first actual binary operation is `idb_open(input_path=...)`; subsequent calls
-must use the returned `database` session ID.
-
-## Regression record
+## Test evidence
 
 ```text
+installer metadata inspection: pass
+runtime executable discovery: no ida64.exe/idat64.exe found
+IDA Free IDAPython/plugin compatibility: unsupported by vendor feature matrix
+ida_free bridge implementation: removed before release
+```
+
+The runtime no longer exposes an `ida_free` preset or bridge. Configuring the
+downloaded installer as an MCP command is treated as a failed discovery rather
+than a connected server.
+
+## Current project status
+
+```text
+pytest: 280 passed, 1 skipped
 compileall: passed
-pytest: 285 passed, 1 skipped
-wheel: codex_redteam_agent-0.1.0-py3-none-any.whl
-wheel SHA-256: 75C723F72D08DFE64DCE5DA6EFD8F027E1E9AC27E610E60CBA66898AD7F8591B
-isolated install: passed
-installed self-test: terminal=true, success=true
 ```
+
+The next valid IDA acceptance requires IDA Pro 8.3+ (9.x recommended), an
+activated `idalib`, `uv`, and one real `idb_open -> analysis -> idb_close` run.

@@ -6,7 +6,6 @@ import json
 import math
 import os
 import re
-import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -72,7 +71,6 @@ class McpServerSpec:
         values = {
             "run_id": run_id,
             "workspace": str(workspace or ""),
-            "python": sys.executable,
         }
 
         def render_text(value: str) -> str:
@@ -180,33 +178,6 @@ PRESET_DEFAULTS: dict[str, Mapping[str, Any]] = {
             "int_convert",
         ),
     },
-    "ida_free": {
-        "scope": "run",
-        "startup_timeout_seconds": 180.0,
-        "tool_timeout_seconds": 240.0,
-        "include_tools": (
-            "idb_*",
-            "server_health",
-            "list_funcs",
-            "imports*",
-            "decompile",
-            "disasm",
-            "xrefs_to",
-            "get_string",
-            "get_bytes",
-            "get_int",
-        ),
-        "read_only_tools": (
-            "idb_list",
-            "server_health",
-            "list_*",
-            "imports*",
-            "decompile",
-            "disasm",
-            "xrefs_to",
-            "get_*",
-        ),
-    },
 }
 
 
@@ -242,7 +213,7 @@ IDA_CAPABILITIES: tuple[tuple[str, tuple[str, ...]], ...] = (
 
 
 def profile_capabilities(preset: str, tool_name: str) -> tuple[str, ...]:
-    rules = PLAYWRIGHT_CAPABILITIES if preset == "playwright" else IDA_CAPABILITIES if preset in {"ida", "ida_free"} else ()
+    rules = PLAYWRIGHT_CAPABILITIES if preset == "playwright" else IDA_CAPABILITIES if preset == "ida" else ()
     capabilities: list[str] = []
     for pattern, offered in rules:
         if fnmatch.fnmatchcase(tool_name.casefold(), pattern.casefold()):
