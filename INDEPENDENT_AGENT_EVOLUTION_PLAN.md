@@ -1,128 +1,129 @@
 # codex-redteam-agent 第一性原理演进计划
 
-> 权威路线文档。Phase 0–6 的已验收行为以 `docs/acceptance/phase-0.md` 至
-> `docs/acceptance/phase-6.md` 为准；旧版架构草案不再作为验收依据。
+> 当前权威计划已升级为“Lean Transparent Agent Refactor”。详细方案、Pi 参考映射、
+> 复杂度预算、阶段验收和删除边界见 `docs/architecture/lean-transparent-refactor.md`。
 
-## 定位与第一性原理
+## 定位
 
-项目根目录：`E:\\cli\\codex-redteam-agent`
+构建一个证据驱动、可持久恢复、最大化强模型战术能力的专业红队 Agent Harness。
 
-目标是构建证据驱动、可持久恢复、最大化强模型战术能力的专业红队 Agent 平台。
+```text
+模型：理解目标、生成假设、选择工具、动态搜索、编写代码、重规划
+Runtime：作用域、凭据、预算、幂等、CAS、Lease、Evidence lineage、清理、终态
+```
 
-- **模型负责战术**：目标理解、假设生成、工具选择、局部搜索、代码编写、动态分支和重规划。
-- **Runtime 负责不变量**：作用域、凭据、预算、租约、幂等、CAS、证据 lineage、清理和终态裁决。
-- **SearchGraph 是战术账本**：记录模型提出的假设、尝试、未验证线索、覆盖边界和重开条件；它不是事实库，也不负责替模型排序。
-- **EvidenceGraph 是权威证据链**：append-only，任何晋升都必须经过来源、目标、父证据、工具和完整 Artifact 校验。
-- **AssetAttackGraph 是已验证关系图**：只接受已验证资产、身份、关系、Finding 和攻击路径。
-- 默认先使用一个最强主模型和连续上下文；多 Agent、复杂调度和分布式能力必须通过等预算实测证明收益。
+轻量化不是减少红队能力，而是删除重复状态、重复映射和重复编排。任何安全不变量
+和机器可验证证据都不得因降低 Token 或代码量而削弱。
 
-## 已完成阶段
+## 参考依据
 
-### Phase 0：权威基线
+| 项目 | 版本/提交 | 吸收内容 |
+|---|---|---|
+| Pi coding-agent | `9767ba275f3e9a5ee0f5c5342249b629ab1b2282` | session tree、append-only journal、selected tools、OutputAccumulator、compaction boundary、resource loader、生命周期 hooks |
+| OpenCode | `7774461bbf7bd0600070cdede4fe8b9d9f301bf4` | MCP 状态、工具目录、连接生命周期 |
+| `cc_src` | 本地参考 | scoped config、取消、缓存失效、Token-aware 输出 |
+| Playwright MCP | `7e0457a7cbf88823bf0146d12c46ae12c6818247` | accessibility snapshot、隔离 browser、read-only annotations |
+| IDA Pro MCP | `3349ae30c6eb7fa1c14b158ff71bfc7c3081bb51` | explicit database、profile、supervisor/worker、cursor/cancel |
 
-冻结独立 Git 基线、Python 3.12、SQLite/MCP/Goal/Evidence/Terminal 快照和确定性 fixtures。
+## 已完成基线
 
-### Phase 1：Core Contracts 与 Ports
+### Phase 0–5
 
-建立标准库 Core、版本化领域类型和 Provider/Tool/Worker/Store/Event 端口，保留旧 Runtime 适配层。
+已完成：基线冻结、Core Contracts、AgentService 生命周期、Provider-agnostic ModelLoop、
+Transcript/Context/Budget、Worker Plane、CAS Artifact Store、Lease/Fencing、幂等和恢复。
 
-### Phase 2：AgentService 与持久生命周期
+### Phase 6
 
-统一 `start/run/submit_observation/status/cancel/events`，保留 CAS、Lease/Fencing、恢复、取消和多目标隔离。
+已完成：模型主导的薄战术循环、ExplorationLedger、ObservedMiss/VerifiedNegative、
+分支重开、ReconDigest、有界工具投影和完整 Artifact。
 
-### Phase 3：Provider-Agnostic ModelLoop
+### Phase 6.1
 
-Runtime 驱动模型循环，记录 Prompt/Response hash、Provider、Capabilities、Usage，支持结构化输出、工具调用、并行、流式和恢复。
+已完成：run-scoped Playwright/IDA Pro MCP、roots、工具目录刷新、取消、资源清理、
+`mcp-doctor` 和 Token-efficient capability catalog。
 
-### Phase 4：Conversation、Context 与 Budget
+### Phase 6.2
 
-持久化完整 transcript，建立可追溯压缩、受保护目标状态和 action/token/time 三维预算。
+已完成可行性结论：IDA Free 安装器和 GUI 不作为项目内置后端；IDA Free 不提供满足
+本项目结构化、可取消、可验证 Agent 集成所需的 API/插件能力。用户自行接入 IDA Pro
+MCP；项目只维护通用 `ida` 配置与 adapter。
 
-### Phase 5：Worker Plane 与 Artifact Store
+当前基线：
 
-实现 Local/MCP/Codex/Docker Worker 边界、隔离 workspace、取消/reconcile、SHA-256 CAS、FTS5 和大输出有界投影。
+```text
+HEAD: 99288e9 fix: remove unsupported ida free bridge
+pytest: 280 passed, 1 skipped
+compileall: passed
+```
 
-### Phase 6：Thin Tactical Loop、工具可见性与反误判语义
+## 当前总计划
 
-已完成模型主导的薄战术循环、append-only ExplorationLedger、ObservedMiss/VerifiedNegative
-语义分离、分支重开、ReconDigest、完整 Artifact 与有界模型投影。
+详细阶段定义见 `docs/architecture/lean-transparent-refactor.md`。
 
-## 修订后的后续阶段
+| 阶段 | 目标 | 状态 |
+|---|---|---|
+| L0 | 复杂度/调用图/行为冻结 | 已通过 |
+| L1 | 唯一 AgentService 入口与边界收敛 | 待执行 |
+| L2 | SessionJournal 透明会话树 | 待执行 |
+| L3 | 单一 AgentLoop | 待执行 |
+| L4 | ToolRegistry 与按需可见工具 | 待执行 |
+| L5 | BoundedOutput 与流式 Artifact | 待执行 |
+| L6 | ContextBudget 与可追溯 Compaction | 待执行 |
+| L7 | ResourceResolver 与透明扩展 | 待执行 |
+| L8 | EvidenceGate 收敛 | 待执行 |
+| L9 | MCP/Worker 适配器瘦身 | 待执行 |
+| L10 | 删除旧编排与发布门 | 待执行 |
+| L11 | 透明度、Token 与能力评测 | 待执行 |
 
-### Phase 6.1：Stateful MCP Capability Plane（Phase 7 基础）
+## 硬性目标
 
-在不改变 Phase 7 Evidence 目标的前提下，先补齐有状态专业工具平面。该层参考
-OpenCode 的 MCP 状态/目录刷新、`cc_src` 的 scoped config/取消/压缩边界、
-Playwright MCP 的 accessibility snapshot 与 IDA Pro MCP 的显式 database 会话。
+- 生产代码目标 ≤16,000 行、模块 ≤80 个、单文件 ≤800 行；
+- 默认模型工具输入 Token 相对 Phase 6 基线下降 ≥35%；
+- 大型工具输出输入上下文 Token 中位数下降 ≥40%；
+- GoalContract 完成率不下降，干净目标误成功率不升高；
+- 所有原始 Transcript、Artifact、Observation 和 Evidence lineage 可回读；
+- 任何 hook/resource/tool proposal 都不能直接写 Evidence 或 Terminal；
+- MCP 五个公开工具 schema 保持兼容；
+- 每阶段独立提交、独立验收，失败不进入下一阶段。
 
-#### 6.1A：Run-scoped MCP lifecycle
+## 删除优先原则
 
-- Playwright 浏览器上下文和 IDA supervisor client 默认按 run 隔离；共享 MCP 仍保留可选配置。
-- `{run_id}`、`{workspace}`、`${ENV_VAR}` 在创建 client 时延迟绑定。
-- MCP roots 指向 run workspace；超时、取消和终态关闭贯穿 ToolPort/WorkerPort。
-- `tools/list_changed` 刷新工具目录；状态投影区分 disabled/failed/duplicate/catalogued/connected。
-- IDA 只清理本 run 通过 `idb_open` 获得的 database session，不根据全局 `idb_list` 猜测所有权。
+允许并鼓励删除代码，但采用“证明后删除”，不采用“为了兼容全部保留”：
 
-#### 6.1B：Token-efficient capability catalog
+- `OperationRuntimeAdapter`、重复 Runtime projection、重复 Planner/Scheduler/Workflow
+  路径、默认低频 Worker 都是首批审查对象；
+- 每个候选先锁定调用者、替代路径、恢复路径和 Evidence/Terminal 不变量；
+- 先迁移测试，再删除引用，再删除导出，最后删除文件；
+- shim 只能转发，最多保留一个版本周期；
+- 代码减少必须伴随能力覆盖、终态准确率和回归时间数据；
+- 详细候选矩阵见 `docs/architecture/lean-transparent-refactor.md`。
 
-- Playwright 默认高价值目录优先 `browser_find`/`browser_snapshot`，省略安装等低频工具；可用 `include_tools=["*"]` 恢复全量能力。
-- IDA 默认分析目录覆盖 database 管理、反编译、反汇编、xref、调用图、数据流和内存读取；修改类工具按需显式加入。
-- 工具 schema 仍原样提供给强模型；额外的紧凑 server catalog 只用于观测和后续动态选择，不替代完整 schema。
-- 工具结果继续遵守完整 CAS + 有界上下文投影，不把大输出塞入 OperationState。
+## 核心架构决策
 
-#### 6.1C：Provider adapters
-
-- Playwright preset 使用官方 `@playwright/mcp` stdio server、isolated/headless、图片响应省略、禁用 codegen 和 workspace output。
-- IDA preset 使用 `idalib-mcp --stdio`，所有分析调用必须显式携带 `database`。
-- `mcp-doctor` 输出 server status、discovery errors、schema hash、side-effect annotation 和有界工具目录。
-
-#### Phase 6.1 验收
-
-- 官方 Playwright MCP initialize/tools-list 成功，真实本地页面的 navigate/snapshot/find 完成并关闭 run client。
-- 两个 run 的 MCP client、cwd、roots 和 browser/database state 不串扰。
-- IDA 配置、工具筛选、显式 database、取消和按 run 清理协议测试通过；实机验收在具备 IDA Pro 8.3+ 与 idalib 的环境运行。
-- 工具变更通知刷新目录，重复 process signature 不重复启动。
-- 完整 Phase 0–6 快照、全量回归、wheel、隔离安装、自检和五个公开 MCP schema 均保持兼容。
-
-### Phase 6.2：IDA Free 可行性验证
-
-验证结论为不建设 IDA Free MCP Adapter：IDA Free 9.4 的官方能力矩阵不提供
-IDAPython API、C++ SDK 或插件支持，无法满足结构化工具调用、取消、会话隔离与
-证据 lineage 的验收要求。项目保持 IDA Pro + `idalib-mcp` 为权威 IDA 后端，
-避免用 GUI 自动化或虚假 tool schema 降低专业能力和终态可信度。
-
-### Phase 7：Evidence、Finding 与专业终态
-
-保留 append-only EvidenceGraph 和 TerminalJudge。负向控制只证明明确测试条件；“已耗尽”必须具有机器可验证覆盖、未解决矛盾检查和清理证明。
-
-### Phase 8：Web/API Capability Pack
-
-建设 HTTP、浏览器、API Schema、认证态、会话、入口发现、差异分析、受控验证和负向控制，并使用确定性易受攻击/已修复 fixtures 评估可见性、首触达延迟、攻击路径完成率和误证伪率。
-
-### Phase 9：Codex/MCP Adapter 收敛
-
-MCP、Codex、standalone 全部调用同一 `AgentService`；保持五个公开工具 `redteam_run/status/evidence/cancel/events`，兼容旧 OperationRuntime。
-
-### Phase 10：CLI、TUI、API 与 Web Workbench
-
-UI 仅投影 AgentService 状态；SearchGraph、EvidenceGraph、攻击路径、预算、事件流和 Artifact 查看均支持断线恢复。
-
-### Phase 11：动态多 Agent 与分布式 Worker
-
-仅在能力缺口、上下文隔离或并行搜索带来收益时创建 Specialist。共享原始 Evidence/Artifact 和不确定性，不共享未经验证的结论。相同 Token/时间预算下完成率提升不足 5% 或成本超过 2 倍时，默认保持单 Agent。
-
-## 评测指标
-
-- 攻击路径完成率、首触达延迟、每分钟有效动作数；
-- 每动作/Token 暴露的新节点数；
-- 误证伪率、分支重开召回率、重复动作率；
-- 压缩后原始证据回读率、Digest 信息损失率；
-- 相同模型/目标/预算下的输入 Token、Wall-clock 和终态准确率；
-- 干净目标的错误成功率和清理完成率。
+1. 保留 SQLite/CAS/Lease 作为唯一事实源，不引入第二个可写 JSONL store。
+2. 采用 Pi 的 session-tree 逻辑模型，但通过 `SessionJournal` 投影到现有持久层。
+3. 保留一个最强主模型和一个 AgentLoop，不做固定 Specialist 流水线。
+4. 工具默认 selected/catalog，强模型可显式 expand；不因省 Token 隐藏可用能力。
+5. Projection、summary、report 都是导航投影，不能冒充 Evidence。
+6. IDA 由用户自行通过 `ida` MCP preset 接入；不安装、不打包、不模拟 IDA Free。
 
 ## 迁移规则
 
-- 新 Core 类型和 Ports 长期稳定；Provider、MCP、Codex、Docker、CLI 都是 Adapter。
-- SQLite 只做向前、可重复、非破坏性迁移；Phase 6 schema version 从 8 升至 9。
-- Artifact 使用内容寻址；原始数据永远优先于摘要、图和 RAG 索引。
-- 旧 `OperationRuntime` 和 `generic-adaptive` 保留兼容语义，新的模型战术循环通过 `AgentService` 增强，不破坏 Phase 0–5 快照。
+- 旧 `OperationRuntime` 在迁移期间只保留兼容 facade，不能继续扩张调用面；
+- `generic-adaptive` 作为兼容路径，L10 前不得删除；
+- 每次删除前先添加调用者/恢复/攻击性回归测试；
+- SQLite 只做向前、可重复、非破坏性迁移；
+- Phase L2/L6 的 compaction 不删除原始记录；
+- Phase L4/L5 的 Token 优化必须和能力覆盖、终态准确率一起验收；
+- 前一阶段验收未通过时不得进入下一阶段。
+
+## 阶段验收索引
+
+```text
+docs/acceptance/phase-0.md ... phase-6.md   历史基线
+docs/acceptance/phase-6.1.md                Stateful MCP
+docs/acceptance/phase-6.2.md                IDA Free feasibility
+docs/acceptance/lean-L0.md                  Lean L0 complexity/behavior freeze
+docs/acceptance/lean-l0-audit.json         Lean L0 machine-readable audit
+docs/architecture/lean-transparent-refactor.md  L0–L11 详细方案
+```

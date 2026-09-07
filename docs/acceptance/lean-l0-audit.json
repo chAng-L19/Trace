@@ -1,0 +1,765 @@
+{
+  "deletion_candidates": {
+    "AdaptivePlanner": {
+      "references": {
+        "src/redteam_agent/runtime/__init__.py": 2,
+        "src/redteam_agent/runtime/adaptive_planner.py": 1,
+        "src/redteam_agent/runtime/executor.py": 2,
+        "src/redteam_agent/runtime/mcp_server.py": 1,
+        "src/redteam_agent/runtime/mcp_transport.py": 2,
+        "src/redteam_agent/runtime/operation_runtime.py": 3,
+        "tests/test_clause_binding.py": 2,
+        "tests/test_lean_l0_audit.py": 1,
+        "tests/test_runtime_planning_adversarial.py": 2
+      }
+    },
+    "OperationRuntimeAdapter": {
+      "references": {
+        "src/redteam_agent/adapters/__init__.py": 2,
+        "src/redteam_agent/adapters/runtime.py": 1,
+        "tests/test_lean_l0_audit.py": 2,
+        "tests/test_runtime_core_adapter.py": 3
+      }
+    },
+    "RuntimeEventAdapter": {
+      "references": {
+        "src/redteam_agent/adapters/__init__.py": 2,
+        "src/redteam_agent/adapters/runtime.py": 2
+      }
+    },
+    "RuntimeStoreAdapter": {
+      "references": {
+        "src/redteam_agent/adapters/__init__.py": 2,
+        "src/redteam_agent/adapters/runtime.py": 2
+      }
+    },
+    "RuntimeToolAdapter": {
+      "references": {
+        "src/redteam_agent/adapters/__init__.py": 2,
+        "src/redteam_agent/adapters/runtime.py": 2,
+        "src/redteam_agent/application/agent_service.py": 2
+      }
+    },
+    "Scheduler": {
+      "references": {
+        "src/redteam_agent/runtime/executor.py": 2,
+        "src/redteam_agent/runtime/operation_runtime.py": 2,
+        "src/redteam_agent/runtime/scheduler.py": 2,
+        "tests/test_lean_l0_audit.py": 1
+      }
+    },
+    "TacticalLoopMixin": {
+      "references": {
+        "src/redteam_agent/application/model_loop.py": 2,
+        "src/redteam_agent/application/tactical_loop.py": 1
+      }
+    },
+    "WorkflowRegistry": {
+      "references": {
+        "src/redteam_agent/runtime/__init__.py": 2,
+        "src/redteam_agent/runtime/adaptive_planner.py": 2,
+        "src/redteam_agent/runtime/operation_result.py": 1,
+        "src/redteam_agent/runtime/operation_runtime.py": 3,
+        "src/redteam_agent/runtime/workflow_registry.py": 1,
+        "tests/test_clause_binding.py": 6,
+        "tests/test_evidence_graph.py": 2,
+        "tests/test_lean_l0_audit.py": 1,
+        "tests/test_runtime_compat.py": 6,
+        "tests/test_runtime_foundation.py": 3,
+        "tests/test_standalone_package.py": 2
+      }
+    }
+  },
+  "local_import_edges": {
+    "src/redteam_agent/__init__.py": [
+      "",
+      "application",
+      "runtime"
+    ],
+    "src/redteam_agent/__main__.py": [
+      "redteam_agent.cli"
+    ],
+    "src/redteam_agent/adapters/__init__.py": [
+      "redteam_agent.runtime"
+    ],
+    "src/redteam_agent/adapters/runtime.py": [
+      "redteam_agent.adapters.runtime_mapping",
+      "redteam_agent.core",
+      "redteam_agent.core.ports",
+      "redteam_agent.runtime.durable_store",
+      "redteam_agent.runtime.models",
+      "redteam_agent.runtime.operation_result",
+      "redteam_agent.runtime.operation_runtime"
+    ],
+    "src/redteam_agent/adapters/runtime_mapping.py": [
+      "redteam_agent.core",
+      "redteam_agent.runtime.models"
+    ],
+    "src/redteam_agent/application/__init__.py": [
+      "redteam_agent.agent_service",
+      "redteam_agent.context",
+      "redteam_agent.contracts",
+      "redteam_agent.lifecycle",
+      "redteam_agent.model_loop",
+      "redteam_agent.model_records",
+      "redteam_agent.tool_projection"
+    ],
+    "src/redteam_agent/application/agent_service.py": [
+      "redteam_agent.adapters.runtime",
+      "redteam_agent.adapters.runtime_mapping",
+      "redteam_agent.application.context",
+      "redteam_agent.application.contracts",
+      "redteam_agent.application.lifecycle",
+      "redteam_agent.application.model_loop",
+      "redteam_agent.core",
+      "redteam_agent.runtime.durable_store",
+      "redteam_agent.runtime.exploration",
+      "redteam_agent.runtime.operation_result",
+      "redteam_agent.runtime.operation_runtime",
+      "redteam_agent.runtime.worker_store",
+      "redteam_agent.workers"
+    ],
+    "src/redteam_agent/application/context.py": [
+      "redteam_agent.application.contracts",
+      "redteam_agent.application.tool_projection",
+      "redteam_agent.core",
+      "redteam_agent.core.contracts",
+      "redteam_agent.runtime.conversation_records",
+      "redteam_agent.runtime.model_common"
+    ],
+    "src/redteam_agent/application/contracts.py": [
+      "redteam_agent.core",
+      "redteam_agent.core.contracts"
+    ],
+    "src/redteam_agent/application/lifecycle.py": [
+      "redteam_agent.core"
+    ],
+    "src/redteam_agent/application/model_integrity.py": [
+      "redteam_agent.application.model_loop",
+      "redteam_agent.core",
+      "redteam_agent.core.contracts"
+    ],
+    "src/redteam_agent/application/model_loop.py": [
+      "redteam_agent.application.contracts",
+      "redteam_agent.application.model_integrity",
+      "redteam_agent.application.tactical_loop",
+      "redteam_agent.core",
+      "redteam_agent.core.contracts",
+      "redteam_agent.runtime.artifact_store",
+      "redteam_agent.runtime.conversation_records",
+      "redteam_agent.runtime.model_common",
+      "redteam_agent.runtime.model_records",
+      "redteam_agent.runtime.security"
+    ],
+    "src/redteam_agent/application/model_records.py": [
+      "redteam_agent.runtime.model_records"
+    ],
+    "src/redteam_agent/application/tactical_loop.py": [
+      "redteam_agent.application.contracts",
+      "redteam_agent.core",
+      "redteam_agent.runtime.exploration_records",
+      "redteam_agent.runtime.model_common"
+    ],
+    "src/redteam_agent/application/tool_projection.py": [
+      "redteam_agent.core"
+    ],
+    "src/redteam_agent/cli.py": [
+      "redteam_agent.runtime.mcp_transport",
+      "redteam_agent.runtime.operation_runtime",
+      "redteam_agent.runtime.tool_broker"
+    ],
+    "src/redteam_agent/core/__init__.py": [
+      "redteam_agent.contracts",
+      "redteam_agent.domain",
+      "redteam_agent.ports"
+    ],
+    "src/redteam_agent/core/domain/__init__.py": [
+      "redteam_agent.core.assets",
+      "redteam_agent.core.evidence",
+      "redteam_agent.core.exploration",
+      "redteam_agent.core.goal",
+      "redteam_agent.core.run",
+      "redteam_agent.core.search"
+    ],
+    "src/redteam_agent/core/domain/assets.py": [
+      "redteam_agent.core.contracts"
+    ],
+    "src/redteam_agent/core/domain/evidence.py": [
+      "redteam_agent.core.contracts"
+    ],
+    "src/redteam_agent/core/domain/exploration.py": [
+      "redteam_agent.core.contracts"
+    ],
+    "src/redteam_agent/core/domain/goal.py": [
+      "redteam_agent.core.contracts"
+    ],
+    "src/redteam_agent/core/domain/run.py": [
+      "redteam_agent.core.contracts"
+    ],
+    "src/redteam_agent/core/domain/search.py": [
+      "redteam_agent.core.contracts"
+    ],
+    "src/redteam_agent/core/ports/__init__.py": [
+      "redteam_agent.core.event",
+      "redteam_agent.core.model",
+      "redteam_agent.core.store",
+      "redteam_agent.core.tool",
+      "redteam_agent.core.worker"
+    ],
+    "src/redteam_agent/core/ports/event.py": [
+      "redteam_agent.core.contracts"
+    ],
+    "src/redteam_agent/core/ports/model.py": [
+      "redteam_agent.core.contracts"
+    ],
+    "src/redteam_agent/core/ports/store.py": [
+      "redteam_agent.core.domain"
+    ],
+    "src/redteam_agent/core/ports/tool.py": [
+      "redteam_agent.core.contracts"
+    ],
+    "src/redteam_agent/core/ports/worker.py": [
+      "redteam_agent.core.contracts"
+    ],
+    "src/redteam_agent/providers/__init__.py": [
+      "redteam_agent.fake"
+    ],
+    "src/redteam_agent/providers/fake.py": [
+      "redteam_agent.core"
+    ],
+    "src/redteam_agent/runtime/__init__.py": [
+      "redteam_agent.adaptive_planner",
+      "redteam_agent.durable_store",
+      "redteam_agent.evidence_graph",
+      "redteam_agent.exploration",
+      "redteam_agent.exploration_records",
+      "redteam_agent.facts",
+      "redteam_agent.goal_compiler",
+      "redteam_agent.intent_rewriter",
+      "redteam_agent.models",
+      "redteam_agent.operation_runtime",
+      "redteam_agent.plan",
+      "redteam_agent.review",
+      "redteam_agent.store_migrations",
+      "redteam_agent.terminal_judge",
+      "redteam_agent.tool_broker",
+      "redteam_agent.verifier",
+      "redteam_agent.workflow_registry"
+    ],
+    "src/redteam_agent/runtime/adaptive_planner.py": [
+      "redteam_agent.runtime.models",
+      "redteam_agent.runtime.plan",
+      "redteam_agent.runtime.workflow_registry"
+    ],
+    "src/redteam_agent/runtime/artifact_store.py": [
+      "redteam_agent.runtime.model_common",
+      "redteam_agent.runtime.security",
+      "redteam_agent.runtime.store_common"
+    ],
+    "src/redteam_agent/runtime/atomic_commit.py": [
+      "redteam_agent.runtime.durable_store",
+      "redteam_agent.runtime.evidence_trust",
+      "redteam_agent.runtime.models",
+      "redteam_agent.runtime.plan"
+    ],
+    "src/redteam_agent/runtime/budget_store.py": [
+      "redteam_agent.core",
+      "redteam_agent.core.contracts",
+      "redteam_agent.runtime.model_common",
+      "redteam_agent.runtime.model_state",
+      "redteam_agent.runtime.store_common"
+    ],
+    "src/redteam_agent/runtime/builtins.py": [
+      "redteam_agent.runtime.tool_broker"
+    ],
+    "src/redteam_agent/runtime/conversation_records.py": [
+      "redteam_agent.core.contracts"
+    ],
+    "src/redteam_agent/runtime/conversation_store.py": [
+      "redteam_agent.core",
+      "redteam_agent.runtime.conversation_records",
+      "redteam_agent.runtime.store_common"
+    ],
+    "src/redteam_agent/runtime/durable_store.py": [
+      "redteam_agent.runtime.budget_store",
+      "redteam_agent.runtime.conversation_store",
+      "redteam_agent.runtime.exploration_store",
+      "redteam_agent.runtime.model_common",
+      "redteam_agent.runtime.model_state",
+      "redteam_agent.runtime.model_store",
+      "redteam_agent.runtime.security",
+      "redteam_agent.runtime.service_store",
+      "redteam_agent.runtime.store_common",
+      "redteam_agent.runtime.store_handoff",
+      "redteam_agent.runtime.store_migrations",
+      "redteam_agent.runtime.store_records",
+      "redteam_agent.runtime.store_schema"
+    ],
+    "src/redteam_agent/runtime/evidence_graph.py": [
+      "redteam_agent.runtime.durable_store",
+      "redteam_agent.runtime.evidence_trust",
+      "redteam_agent.runtime.models",
+      "redteam_agent.runtime.security",
+      "redteam_agent.runtime.verifier"
+    ],
+    "src/redteam_agent/runtime/executor.py": [
+      "redteam_agent.runtime.adaptive_planner",
+      "redteam_agent.runtime.durable_store",
+      "redteam_agent.runtime.evidence_graph",
+      "redteam_agent.runtime.evidence_trust",
+      "redteam_agent.runtime.executor_actions",
+      "redteam_agent.runtime.executor_common",
+      "redteam_agent.runtime.executor_trust",
+      "redteam_agent.runtime.facts",
+      "redteam_agent.runtime.models",
+      "redteam_agent.runtime.plan",
+      "redteam_agent.runtime.review",
+      "redteam_agent.runtime.scheduler",
+      "redteam_agent.runtime.tool_broker",
+      "redteam_agent.runtime.verifier"
+    ],
+    "src/redteam_agent/runtime/executor_actions.py": [
+      "redteam_agent.runtime.executor_common",
+      "redteam_agent.runtime.models"
+    ],
+    "src/redteam_agent/runtime/executor_common.py": [
+      "redteam_agent.runtime.models",
+      "redteam_agent.runtime.plan"
+    ],
+    "src/redteam_agent/runtime/executor_trust.py": [
+      "redteam_agent.runtime.evidence_trust",
+      "redteam_agent.runtime.executor_common",
+      "redteam_agent.runtime.models",
+      "redteam_agent.runtime.verifier"
+    ],
+    "src/redteam_agent/runtime/exploration.py": [
+      "redteam_agent.core",
+      "redteam_agent.core.contracts",
+      "redteam_agent.runtime.exploration_records",
+      "redteam_agent.runtime.model_common"
+    ],
+    "src/redteam_agent/runtime/exploration_records.py": [
+      "redteam_agent.core.contracts"
+    ],
+    "src/redteam_agent/runtime/exploration_store.py": [
+      "redteam_agent.core",
+      "redteam_agent.runtime.exploration_records",
+      "redteam_agent.runtime.store_common"
+    ],
+    "src/redteam_agent/runtime/facts.py": [
+      "redteam_agent.runtime.models"
+    ],
+    "src/redteam_agent/runtime/goal_compiler.py": [
+      "redteam_agent.runtime.intent_rewriter",
+      "redteam_agent.runtime.models",
+      "redteam_agent.runtime.security"
+    ],
+    "src/redteam_agent/runtime/handoff.py": [
+      "redteam_agent.runtime.durable_store",
+      "redteam_agent.runtime.models",
+      "redteam_agent.runtime.store_migrations"
+    ],
+    "src/redteam_agent/runtime/mcp_broker.py": [
+      "redteam_agent.runtime.mcp_clients",
+      "redteam_agent.runtime.mcp_config",
+      "redteam_agent.runtime.models",
+      "redteam_agent.runtime.security"
+    ],
+    "src/redteam_agent/runtime/mcp_clients.py": [
+      "redteam_agent.runtime.models",
+      "redteam_agent.runtime.security"
+    ],
+    "src/redteam_agent/runtime/mcp_server.py": [
+      "redteam_agent.runtime.adaptive_planner",
+      "redteam_agent.runtime.handoff",
+      "redteam_agent.runtime.mcp_limits",
+      "redteam_agent.runtime.mcp_tool_dispatch",
+      "redteam_agent.runtime.mcp_transport",
+      "redteam_agent.runtime.operation_runtime",
+      "redteam_agent.runtime.security",
+      "redteam_agent.runtime.session_bridge",
+      "redteam_agent.runtime.tool_broker"
+    ],
+    "src/redteam_agent/runtime/mcp_tool_dispatch.py": [
+      "redteam_agent.runtime.mcp_limits",
+      "redteam_agent.runtime.session_bridge"
+    ],
+    "src/redteam_agent/runtime/mcp_transport.py": [
+      "redteam_agent.runtime.adaptive_planner",
+      "redteam_agent.runtime.handoff",
+      "redteam_agent.runtime.mcp_limits",
+      "redteam_agent.runtime.mcp_server",
+      "redteam_agent.runtime.operation_runtime",
+      "redteam_agent.runtime.tool_broker"
+    ],
+    "src/redteam_agent/runtime/model_contracts.py": [
+      "redteam_agent.runtime.model_common"
+    ],
+    "src/redteam_agent/runtime/model_records.py": [
+      "redteam_agent.core.contracts"
+    ],
+    "src/redteam_agent/runtime/model_state.py": [
+      "redteam_agent.runtime.model_common",
+      "redteam_agent.runtime.model_contracts"
+    ],
+    "src/redteam_agent/runtime/model_store.py": [
+      "redteam_agent.core",
+      "redteam_agent.runtime.model_records",
+      "redteam_agent.runtime.store_common"
+    ],
+    "src/redteam_agent/runtime/models.py": [
+      "redteam_agent.runtime.model_common",
+      "redteam_agent.runtime.model_contracts",
+      "redteam_agent.runtime.model_state"
+    ],
+    "src/redteam_agent/runtime/operation_cancellation.py": [
+      "redteam_agent.runtime.durable_store",
+      "redteam_agent.runtime.models",
+      "redteam_agent.runtime.operation_result"
+    ],
+    "src/redteam_agent/runtime/operation_contract.py": [
+      "redteam_agent.runtime.durable_store",
+      "redteam_agent.runtime.intent_rewriter",
+      "redteam_agent.runtime.models",
+      "redteam_agent.runtime.plan",
+      "redteam_agent.runtime.security"
+    ],
+    "src/redteam_agent/runtime/operation_execution.py": [
+      "redteam_agent.runtime.durable_store",
+      "redteam_agent.runtime.models",
+      "redteam_agent.runtime.operation_result"
+    ],
+    "src/redteam_agent/runtime/operation_handoff.py": [
+      "redteam_agent.runtime.models",
+      "redteam_agent.runtime.operation_result",
+      "redteam_agent.runtime.verifier"
+    ],
+    "src/redteam_agent/runtime/operation_lifecycle.py": [
+      "redteam_agent.runtime.durable_store",
+      "redteam_agent.runtime.models",
+      "redteam_agent.runtime.operation_result",
+      "redteam_agent.runtime.plan",
+      "redteam_agent.runtime.security"
+    ],
+    "src/redteam_agent/runtime/operation_result.py": [
+      "redteam_agent.runtime.evidence_trust",
+      "redteam_agent.runtime.models",
+      "redteam_agent.runtime.verifier",
+      "redteam_agent.runtime.workflow_registry"
+    ],
+    "src/redteam_agent/runtime/operation_runtime.py": [
+      "redteam_agent.runtime.adaptive_planner",
+      "redteam_agent.runtime.artifact_store",
+      "redteam_agent.runtime.builtins",
+      "redteam_agent.runtime.durable_store",
+      "redteam_agent.runtime.evidence_graph",
+      "redteam_agent.runtime.executor",
+      "redteam_agent.runtime.exploration_records",
+      "redteam_agent.runtime.goal_compiler",
+      "redteam_agent.runtime.operation_cancellation",
+      "redteam_agent.runtime.operation_contract",
+      "redteam_agent.runtime.operation_execution",
+      "redteam_agent.runtime.operation_handoff",
+      "redteam_agent.runtime.operation_lifecycle",
+      "redteam_agent.runtime.operation_result",
+      "redteam_agent.runtime.review",
+      "redteam_agent.runtime.scheduler",
+      "redteam_agent.runtime.security",
+      "redteam_agent.runtime.terminal_judge",
+      "redteam_agent.runtime.tool_broker",
+      "redteam_agent.runtime.verifier",
+      "redteam_agent.runtime.workflow_registry"
+    ],
+    "src/redteam_agent/runtime/plan.py": [
+      "redteam_agent.runtime.models"
+    ],
+    "src/redteam_agent/runtime/review.py": [
+      "redteam_agent.runtime.models"
+    ],
+    "src/redteam_agent/runtime/scheduler.py": [
+      "redteam_agent.runtime.facts",
+      "redteam_agent.runtime.models",
+      "redteam_agent.runtime.tool_broker"
+    ],
+    "src/redteam_agent/runtime/service_store.py": [
+      "redteam_agent.runtime.model_common",
+      "redteam_agent.runtime.model_state",
+      "redteam_agent.runtime.store_common"
+    ],
+    "src/redteam_agent/runtime/session_bridge.py": [
+      "redteam_agent.runtime.durable_store",
+      "redteam_agent.runtime.security"
+    ],
+    "src/redteam_agent/runtime/store_common.py": [
+      "redteam_agent.runtime.security"
+    ],
+    "src/redteam_agent/runtime/store_handoff.py": [
+      "redteam_agent.runtime.handoff",
+      "redteam_agent.runtime.model_common",
+      "redteam_agent.runtime.model_state",
+      "redteam_agent.runtime.store_common"
+    ],
+    "src/redteam_agent/runtime/store_migrations.py": [
+      "redteam_agent.core",
+      "redteam_agent.runtime.handoff",
+      "redteam_agent.runtime.store_common"
+    ],
+    "src/redteam_agent/runtime/store_records.py": [
+      "redteam_agent.runtime.atomic_commit",
+      "redteam_agent.runtime.evidence_trust",
+      "redteam_agent.runtime.model_common",
+      "redteam_agent.runtime.model_state",
+      "redteam_agent.runtime.plan",
+      "redteam_agent.runtime.store_common"
+    ],
+    "src/redteam_agent/runtime/store_schema.py": [
+      "redteam_agent.runtime.store_common",
+      "redteam_agent.runtime.store_migrations"
+    ],
+    "src/redteam_agent/runtime/terminal_judge.py": [
+      "redteam_agent.runtime.evidence_trust",
+      "redteam_agent.runtime.models"
+    ],
+    "src/redteam_agent/runtime/tool_broker.py": [
+      "redteam_agent.runtime.mcp_broker",
+      "redteam_agent.runtime.mcp_clients",
+      "redteam_agent.runtime.mcp_config",
+      "redteam_agent.runtime.models",
+      "redteam_agent.runtime.security"
+    ],
+    "src/redteam_agent/runtime/verifier.py": [
+      "redteam_agent.runtime.evidence_trust",
+      "redteam_agent.runtime.models",
+      "redteam_agent.runtime.security"
+    ],
+    "src/redteam_agent/runtime/worker_store.py": [
+      "redteam_agent.core",
+      "redteam_agent.runtime.model_common",
+      "redteam_agent.runtime.store_common"
+    ],
+    "src/redteam_agent/runtime/workflow_registry.py": [
+      "redteam_agent.runtime.models"
+    ],
+    "src/redteam_agent/workers/__init__.py": [
+      "redteam_agent.codex_handoff",
+      "redteam_agent.docker",
+      "redteam_agent.local",
+      "redteam_agent.manager",
+      "redteam_agent.mcp",
+      "redteam_agent.workspace"
+    ],
+    "src/redteam_agent/workers/codex_handoff.py": [
+      "redteam_agent.core",
+      "redteam_agent.runtime.worker_store"
+    ],
+    "src/redteam_agent/workers/docker.py": [
+      "redteam_agent.core",
+      "redteam_agent.runtime.worker_store"
+    ],
+    "src/redteam_agent/workers/local.py": [
+      "redteam_agent.core",
+      "redteam_agent.runtime.artifact_store",
+      "redteam_agent.runtime.security",
+      "redteam_agent.runtime.worker_store",
+      "redteam_agent.workers.workspace"
+    ],
+    "src/redteam_agent/workers/manager.py": [
+      "redteam_agent.core"
+    ],
+    "src/redteam_agent/workers/mcp.py": [
+      "redteam_agent.core",
+      "redteam_agent.runtime.artifact_store",
+      "redteam_agent.runtime.security",
+      "redteam_agent.runtime.worker_store"
+    ],
+    "src/redteam_agent/workers/workspace.py": [
+      "redteam_agent.core",
+      "redteam_agent.runtime.model_common",
+      "redteam_agent.runtime.security",
+      "redteam_agent.runtime.store_common"
+    ]
+  },
+  "metrics": {
+    "files_over_800_lines": [],
+    "max_file": "src/redteam_agent/application/model_loop.py",
+    "max_file_lines": 796,
+    "production_files": 99,
+    "production_lines": 23794,
+    "top_files": [
+      {
+        "imports": [
+          "redteam_agent.application.contracts",
+          "redteam_agent.application.model_integrity",
+          "redteam_agent.application.tactical_loop",
+          "redteam_agent.core",
+          "redteam_agent.core.contracts",
+          "redteam_agent.runtime.artifact_store",
+          "redteam_agent.runtime.conversation_records",
+          "redteam_agent.runtime.model_common",
+          "redteam_agent.runtime.model_records",
+          "redteam_agent.runtime.security"
+        ],
+        "lines": 796,
+        "path": "src/redteam_agent/application/model_loop.py"
+      },
+      {
+        "imports": [
+          "redteam_agent.runtime.adaptive_planner",
+          "redteam_agent.runtime.durable_store",
+          "redteam_agent.runtime.evidence_graph",
+          "redteam_agent.runtime.evidence_trust",
+          "redteam_agent.runtime.executor_actions",
+          "redteam_agent.runtime.executor_common",
+          "redteam_agent.runtime.executor_trust",
+          "redteam_agent.runtime.facts",
+          "redteam_agent.runtime.models",
+          "redteam_agent.runtime.plan",
+          "redteam_agent.runtime.review",
+          "redteam_agent.runtime.scheduler",
+          "redteam_agent.runtime.tool_broker",
+          "redteam_agent.runtime.verifier"
+        ],
+        "lines": 794,
+        "path": "src/redteam_agent/runtime/executor.py"
+      },
+      {
+        "imports": [
+          "redteam_agent.runtime.adaptive_planner",
+          "redteam_agent.runtime.handoff",
+          "redteam_agent.runtime.mcp_limits",
+          "redteam_agent.runtime.mcp_tool_dispatch",
+          "redteam_agent.runtime.mcp_transport",
+          "redteam_agent.runtime.operation_runtime",
+          "redteam_agent.runtime.security",
+          "redteam_agent.runtime.session_bridge",
+          "redteam_agent.runtime.tool_broker"
+        ],
+        "lines": 766,
+        "path": "src/redteam_agent/runtime/mcp_server.py"
+      },
+      {
+        "imports": [
+          "redteam_agent.runtime.model_common",
+          "redteam_agent.runtime.model_contracts"
+        ],
+        "lines": 736,
+        "path": "src/redteam_agent/runtime/model_state.py"
+      },
+      {
+        "imports": [
+          "redteam_agent.application.contracts",
+          "redteam_agent.application.tool_projection",
+          "redteam_agent.core",
+          "redteam_agent.core.contracts",
+          "redteam_agent.runtime.conversation_records",
+          "redteam_agent.runtime.model_common"
+        ],
+        "lines": 662,
+        "path": "src/redteam_agent/application/context.py"
+      },
+      {
+        "imports": [
+          "redteam_agent.runtime.executor_common",
+          "redteam_agent.runtime.models"
+        ],
+        "lines": 613,
+        "path": "src/redteam_agent/runtime/executor_actions.py"
+      },
+      {
+        "imports": [
+          "redteam_agent.runtime.durable_store",
+          "redteam_agent.runtime.models",
+          "redteam_agent.runtime.store_migrations"
+        ],
+        "lines": 611,
+        "path": "src/redteam_agent/runtime/handoff.py"
+      },
+      {
+        "imports": [
+          "redteam_agent.runtime.evidence_trust",
+          "redteam_agent.runtime.models",
+          "redteam_agent.runtime.security"
+        ],
+        "lines": 595,
+        "path": "src/redteam_agent/runtime/verifier.py"
+      },
+      {
+        "imports": [
+          "redteam_agent.runtime.models",
+          "redteam_agent.runtime.security"
+        ],
+        "lines": 562,
+        "path": "src/redteam_agent/runtime/mcp_clients.py"
+      },
+      {
+        "imports": [],
+        "lines": 541,
+        "path": "src/redteam_agent/runtime/intent_rewriter.py"
+      },
+      {
+        "imports": [
+          "redteam_agent.runtime.model_common",
+          "redteam_agent.runtime.security",
+          "redteam_agent.runtime.store_common"
+        ],
+        "lines": 531,
+        "path": "src/redteam_agent/runtime/artifact_store.py"
+      },
+      {
+        "imports": [
+          "redteam_agent.runtime.mcp_broker",
+          "redteam_agent.runtime.mcp_clients",
+          "redteam_agent.runtime.mcp_config",
+          "redteam_agent.runtime.models",
+          "redteam_agent.runtime.security"
+        ],
+        "lines": 521,
+        "path": "src/redteam_agent/runtime/tool_broker.py"
+      },
+      {
+        "imports": [
+          "redteam_agent.runtime.budget_store",
+          "redteam_agent.runtime.conversation_store",
+          "redteam_agent.runtime.exploration_store",
+          "redteam_agent.runtime.model_common",
+          "redteam_agent.runtime.model_state",
+          "redteam_agent.runtime.model_store",
+          "redteam_agent.runtime.security",
+          "redteam_agent.runtime.service_store",
+          "redteam_agent.runtime.store_common",
+          "redteam_agent.runtime.store_handoff",
+          "redteam_agent.runtime.store_migrations",
+          "redteam_agent.runtime.store_records",
+          "redteam_agent.runtime.store_schema"
+        ],
+        "lines": 487,
+        "path": "src/redteam_agent/runtime/durable_store.py"
+      },
+      {
+        "imports": [
+          "redteam_agent.runtime.durable_store",
+          "redteam_agent.runtime.models",
+          "redteam_agent.runtime.operation_result"
+        ],
+        "lines": 463,
+        "path": "src/redteam_agent/runtime/operation_execution.py"
+      },
+      {
+        "imports": [
+          "redteam_agent.runtime.durable_store",
+          "redteam_agent.runtime.models",
+          "redteam_agent.runtime.operation_result",
+          "redteam_agent.runtime.plan",
+          "redteam_agent.runtime.security"
+        ],
+        "lines": 441,
+        "path": "src/redteam_agent/runtime/operation_lifecycle.py"
+      }
+    ]
+  },
+  "schema_version": 1,
+  "scope": {
+    "production_root": "src/redteam_agent",
+    "test_root": "tests"
+  }
+}

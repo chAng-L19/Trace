@@ -39,4 +39,9 @@ IDA Free 不提供 IDAPython API、C++ SDK 或插件支持，不能作为当前 
 python -m pytest -q
 ```
 
-权威阶段路线见 `INDEPENDENT_AGENT_EVOLUTION_PLAN.md`，阶段验收见 `docs/acceptance/`。
+权威阶段路线见 `INDEPENDENT_AGENT_EVOLUTION_PLAN.md`；透明、轻量化重构的完整方案见
+`docs/architecture/lean-transparent-refactor.md`；阶段验收见 `docs/acceptance/`。
+
+重构明确参考 Pi coding-agent 的 session tree、selected tools、增量输出截断和
+compaction boundary，但保留本项目的 SQLite/CAS、Lease、EvidenceGate 和 TerminalJudge
+作为唯一权威。不把 JSONL、扩展或摘要当作事实源。
