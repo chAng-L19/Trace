@@ -6,22 +6,23 @@ import tempfile
 import os
 from pathlib import Path
 
-from .runtime.operation_runtime import OperationRuntime
-
-
 def _self_test(root: Path | None = None) -> int:
     if root is None:
         with tempfile.TemporaryDirectory(prefix="redteam-agent-self-test-") as directory:
             return _self_test(Path(directory))
-    runtime = OperationRuntime(root=root)
-    state = runtime.start(
-        session_id="self-test",
-        objective=f"Give me a plan for {root}; do not make changes yet and no need to run tests",
-        targets=(str(root),),
-        max_actions=16,
-    )
-    result = runtime.resume(state.run_id, max_actions=16)
-    payload = result.summary()
+    from .application.agent_service import AgentService
+
+    service = AgentService(root=root)
+    started = service.start(
+        {
+            "session_id": "self-test",
+            "objective": f"Give me a plan for {root}; do not make changes yet and no need to run tests",
+            "targets": (str(root),),
+            "max_actions": 16,
+        }
+    ).single
+    service.run(started.run.run_id, max_actions=16)
+    payload = service.summary(started.run.run_id)
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
     terminal = payload.get("terminal") if isinstance(payload.get("terminal"), dict) else {}
     return 0 if terminal.get("terminal") and terminal.get("success") else 1

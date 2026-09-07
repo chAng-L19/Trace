@@ -202,6 +202,10 @@ facade；禁止新增直接调用 Runtime 内部 mixin 的代码；建立 `Agent
 验收：所有入口走同一 start/run/status/cancel/events；并发/CAS/lease/取消竞争回归通过；
 旧公开 API 等价；主 loop 不超过一个。
 
+当前结果：已通过。CLI、MCP production path 和旧 Runtime adapter 均通过
+`AgentService`；fake-runtime fallback 仅用于协议测试。`OperationRuntimeAdapter` 已降为
+转发 shim，Store/Event/Tool adapter 的删除延后到 L2/L4。
+
 ### L2：SessionJournal 与透明树
 
 动作：把 transcript、exploration、recon digest、model request/observation、events

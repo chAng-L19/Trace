@@ -266,11 +266,17 @@ class RuntimeMcpServer(RuntimeMcpToolDispatchMixin):
         self,
         runtime: OperationRuntime,
         *,
+        service: Any | None = None,
         default_max_actions: int = 64,
         default_max_retries_per_action: int = 2,
         handoff_ttl_seconds: float = DEFAULT_HANDOFF_TTL_SECONDS,
     ) -> None:
         self.runtime = runtime
+        if service is None and isinstance(runtime, OperationRuntime):
+            from ..application.agent_service import AgentService
+
+            service = AgentService(runtime=runtime)
+        self.service = service
         self.default_max_actions = max(1, min(512, int(default_max_actions)))
         self.default_max_retries_per_action = max(0, min(8, int(default_max_retries_per_action)))
         self.handoff_ttl_seconds = max(1.0, float(handoff_ttl_seconds))
@@ -450,6 +456,32 @@ class RuntimeMcpServer(RuntimeMcpToolDispatchMixin):
         supplied_action = str(observation.get("action_id") or "").strip()
         if supplied_action and supplied_action != record.action_id:
             raise ValueError("handoff_action_mismatch")
+        service = self._application_service()
+        if service is not None:
+            from ..application.contracts import Observation
+
+            service.submit_observation(
+                run_id,
+                Observation(
+                    action_id=record.action_id,
+                    output=observation.get("output"),
+                    tool=str(observation.get("tool") or "host-agent"),
+                    usage=(
+                        observation.get("usage")
+                        if isinstance(observation.get("usage"), Mapping)
+                        else {}
+                    ),
+                    continue_run=True,
+                    max_actions=max_actions,
+                    handoff_id=handoff_id,
+                    handoff_token=handoff_token,
+                    attempt_id=attempt_id,
+                    contract_hash=contract_hash,
+                ),
+            )
+            with self._handoff_token_lock:
+                self._handoff_tokens.pop(handoff_id, None)
+            return service.summary(run_id)
         submit = getattr(self.runtime, "submit_handoff_observation", None)
         if callable(submit):
             result = submit(
@@ -508,9 +540,14 @@ class RuntimeMcpServer(RuntimeMcpToolDispatchMixin):
         if not any((delta["actions"], delta["tokens"], delta["time_seconds"], delta["deadline"])):
             return
         apply_delta = getattr(self.runtime, "apply_budget_delta", None)
+        service = self._application_service()
+        if service is not None:
+            apply_delta = service.apply_budget_delta
         if not callable(apply_delta):
             raise ValueError("runtime_budget_delta_unsupported")
         apply_batch = getattr(self.runtime, "apply_budget_delta_batch", None)
+        if service is not None:
+            apply_batch = service.apply_budget_delta_batch
         if len(run_ids) > 1 and callable(apply_batch):
             apply_batch(run_ids, **delta)
             return
@@ -529,7 +566,7 @@ class RuntimeMcpServer(RuntimeMcpToolDispatchMixin):
         cycles = 1
         run_id = str(current.get("run_id") or "")
         while auto_continue and run_id and current.get("status") == "paused_budget" and cycles < max_cycles:
-            current = self.runtime.resume(run_id, max_actions=cycle_actions).summary()
+            current = self._resume_summary(run_id, max_actions=cycle_actions)
             cycles += 1
         current["automation_cycles"] = cycles
         return current
@@ -618,7 +655,7 @@ class RuntimeMcpServer(RuntimeMcpToolDispatchMixin):
             elif run_id in initial:
                 summary = dict(initial[run_id])
             else:
-                summary = self.runtime.resume(run_id, max_actions=cycle_actions).summary()
+                summary = self._resume_summary(run_id, max_actions=cycle_actions)
             results.append(
                 self._ensure_host_handoff(
                     self._continue_summary(
@@ -667,7 +704,7 @@ class RuntimeMcpServer(RuntimeMcpToolDispatchMixin):
         if not states:
             raise KeyError(f"batch_not_found:{batch_session_id}")
         results = [
-            self._ensure_host_handoff(self.runtime.status(state.run_id).summary())
+            self._ensure_host_handoff(self._status_summary(state.run_id))
             for state in states
         ]
         success = bool(results) and all(
@@ -750,9 +787,6 @@ class RuntimeMcpServer(RuntimeMcpToolDispatchMixin):
             "id": request_id,
             "error": {"code": code, "message": safe_error_text(message)},
         }
-
-
-
 from .mcp_transport import (
     _default_config_paths,
     _iter_request_lines,

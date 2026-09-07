@@ -8,6 +8,55 @@ from .session_bridge import sync_session_summary
 
 
 class RuntimeMcpToolDispatchMixin:
+    def _application_service(self) -> Any | None:
+        service = getattr(self, "service", None)
+        return service if service is not None else None
+
+    def _bind_credentials(self, run_id: str, bindings: Mapping[str, Any]) -> None:
+        service = self._application_service()
+        if service is not None:
+            service.bind_credentials(run_id, bindings)
+        else:
+            self.runtime.bind_credentials(run_id, bindings)
+
+    def _resume_summary(self, run_id: str, *, max_actions: int) -> dict[str, Any]:
+        service = self._application_service()
+        if service is None:
+            return self.runtime.resume(run_id, max_actions=max_actions).summary()
+        service.run(run_id, max_actions=max_actions)
+        return service.summary(run_id)
+
+    def _status_summary(self, run_id: str) -> dict[str, Any]:
+        service = self._application_service()
+        return service.summary(run_id) if service is not None else self.runtime.status(run_id).summary()
+
+    def _cancel_summary(self, run_id: str, reason: str) -> dict[str, Any]:
+        service = self._application_service()
+        if service is None:
+            return self.runtime.cancel(run_id, reason=reason).summary()
+        service.cancel(run_id, reason=reason)
+        return service.summary(run_id)
+
+    def _submit_summary(self, run_id: str, arguments: Mapping[str, Any], *, max_actions: int) -> dict[str, Any]:
+        service = self._application_service()
+        if service is None:
+            return self.runtime.submit_observation(
+                run_id=run_id,
+                action_id=str(arguments.get("action_id") or ""),
+                output=arguments.get("output"),
+                tool=str(arguments.get("tool") or "host-agent"),
+                usage=arguments.get("usage") if isinstance(arguments.get("usage"), Mapping) else None,
+                continue_run=bool(arguments.get("continue_run", True)),
+                max_actions=max_actions,
+            ).summary()
+        from ..application.contracts import Observation
+
+        service.submit_observation(
+            run_id,
+            Observation.from_value({**dict(arguments), "max_actions": max_actions}),
+        )
+        return service.summary(run_id)
+
     def _call_tool(self, name: str, raw_arguments: Any) -> Mapping[str, Any]:
         arguments = raw_arguments if isinstance(raw_arguments, Mapping) else {}
         if name == "redteam_run":
@@ -68,7 +117,11 @@ class RuntimeMcpToolDispatchMixin:
                 )
                 if not supplied_targets:
                     raise ValueError("target_required_for_waiting_goal")
-                self.runtime.provide_target(run_id, targets=supplied_targets)
+                service = self._application_service()
+                if service is not None:
+                    service.provide_target(run_id, supplied_targets)
+                else:
+                    self.runtime.provide_target(run_id, targets=supplied_targets)
             if batch_session_id:
                 batch_states = self.runtime.store.operations_for_batch(batch_session_id)
                 if not batch_states:
@@ -87,7 +140,7 @@ class RuntimeMcpToolDispatchMixin:
                         if str(reference) in state.credential_refs
                     }
                     if scoped:
-                        self.runtime.bind_credentials(state.run_id, scoped)
+                        self._bind_credentials(state.run_id, scoped)
                 self._apply_budget_delta([state.run_id for state in batch_states], budget_delta)
                 summary = self._run_batch(
                     batch_session_id=batch_session_id,
@@ -130,7 +183,7 @@ class RuntimeMcpToolDispatchMixin:
                     return started
             elif observation is not None:
                 if credential_bindings:
-                    self.runtime.bind_credentials(run_id, credential_bindings)
+                    self._bind_credentials(run_id, credential_bindings)
                 self._apply_budget_delta([run_id], budget_delta)
                 summary = self._submit_handoff_observation(
                     run_id=run_id,
@@ -139,12 +192,9 @@ class RuntimeMcpToolDispatchMixin:
                 )
             else:
                 if credential_bindings:
-                    self.runtime.bind_credentials(run_id, credential_bindings)
+                    self._bind_credentials(run_id, credential_bindings)
                 self._apply_budget_delta([run_id], budget_delta)
-                summary = self.runtime.resume(
-                    run_id,
-                    max_actions=cycle_actions,
-                ).summary()
+                summary = self._resume_summary(run_id, max_actions=cycle_actions)
             if run_id:
                 summary = self._continue_summary(
                     summary,
@@ -175,21 +225,39 @@ class RuntimeMcpToolDispatchMixin:
                 budget_options["time_limit_seconds"] = float(arguments["max_time_seconds"])
             if arguments.get("deadline") is not None:
                 budget_options["deadline"] = str(arguments.get("deadline") or "")
-            states = self.runtime.start_batch(
-                session_id=session_id,
-                objective=objective,
-                targets=resolved_targets,
-                workflow_hint=str(arguments.get("workflow_hint") or ""),
-                starting_context=starting_context,
-                constraints=arguments.get("constraints") if isinstance(arguments.get("constraints"), Mapping) else {},
-                success_predicates=predicates if isinstance(predicates, list) else (),
-                max_actions=total_actions,
-                max_retries_per_action=int(
-                    arguments.get("max_retries_per_action", self.default_max_retries_per_action)
-                ),
-                **budget_options,
-            )
-            results = [self.runtime.resume(state.run_id, max_actions=cycle_actions).summary() for state in states]
+            service = self._application_service()
+            if service is not None:
+                start_arguments = {
+                    **dict(arguments),
+                    "targets": resolved_targets,
+                    "max_actions": total_actions,
+                    "token_limit": budget_options.get("token_limit"),
+                    "time_limit_seconds": budget_options.get("time_limit_seconds"),
+                    "deadline": budget_options.get("deadline", ""),
+                }
+                start_result = service.start(start_arguments)
+                run_ids = start_result.run_ids
+                states = tuple(
+                    self.runtime.store.load_operation(run_id)
+                    for run_id in run_ids
+                )
+                results = [self._resume_summary(run_id, max_actions=cycle_actions) for run_id in run_ids]
+            else:
+                states = self.runtime.start_batch(
+                    session_id=session_id,
+                    objective=objective,
+                    targets=resolved_targets,
+                    workflow_hint=str(arguments.get("workflow_hint") or ""),
+                    starting_context=starting_context,
+                    constraints=arguments.get("constraints") if isinstance(arguments.get("constraints"), Mapping) else {},
+                    success_predicates=predicates if isinstance(predicates, list) else (),
+                    max_actions=total_actions,
+                    max_retries_per_action=int(
+                        arguments.get("max_retries_per_action", self.default_max_retries_per_action)
+                    ),
+                    **budget_options,
+                )
+                results = [self._resume_summary(state.run_id, max_actions=cycle_actions) for state in states]
             if len(results) == 1:
                 summary = results[0]
             else:
@@ -210,36 +278,29 @@ class RuntimeMcpToolDispatchMixin:
                 else {}
             )
             if credential_bindings:
-                self.runtime.bind_credentials(run_id, credential_bindings)
-            summary = self.runtime.resume(
+                self._bind_credentials(run_id, credential_bindings)
+            summary = self._resume_summary(
                 run_id,
                 max_actions=int(arguments.get("max_actions") or self.default_max_actions),
-            ).summary()
+            )
         elif name == "redteam_status":
             run_id = str(arguments.get("run_id") or "").strip()
             batch_session_id = str(arguments.get("batch_session_id") or "").strip()
             if bool(run_id) == bool(batch_session_id):
                 raise ValueError("exactly_one_of_run_id_or_batch_session_id_required")
             summary = (
-                self.runtime.status(run_id).summary()
+                self._status_summary(run_id)
                 if run_id
                 else self._status_batch(batch_session_id)
             )
         elif name == "redteam_submit_observation":
             if self._encoded_size(arguments.get("output")) > MAX_OBSERVATION_BYTES:
                 raise ValueError("observation_output_too_large")
-            observation_options: dict[str, Any] = {}
-            if isinstance(arguments.get("usage"), Mapping):
-                observation_options["usage"] = arguments["usage"]
-            summary = self.runtime.submit_observation(
-                run_id=str(arguments.get("run_id") or ""),
-                action_id=str(arguments.get("action_id") or ""),
-                output=arguments.get("output"),
-                tool=str(arguments.get("tool") or "host-agent"),
-                continue_run=bool(arguments.get("continue_run", True)),
+            summary = self._submit_summary(
+                str(arguments.get("run_id") or ""),
+                arguments,
                 max_actions=self.default_max_actions,
-                **observation_options,
-            ).summary()
+            )
         elif name == "redteam_evidence":
             run_id = str(arguments.get("run_id") or "")
             evidence_id = str(arguments.get("evidence_id") or "")
@@ -261,7 +322,7 @@ class RuntimeMcpToolDispatchMixin:
                 raise ValueError("exactly_one_of_run_id_or_batch_session_id_required")
             reason = str(arguments.get("reason") or "user_requested")
             if run_id:
-                summary = self.runtime.cancel(run_id, reason=reason).summary()
+                summary = self._cancel_summary(run_id, reason)
             else:
                 states = self.runtime.store.operations_for_batch(batch_session_id)
                 if not states:
@@ -269,9 +330,9 @@ class RuntimeMcpToolDispatchMixin:
                 results = []
                 for state in states:
                     if state.status in {"completed", "failed", "failed_integrity"}:
-                        results.append(self.runtime.status(state.run_id).summary())
+                        results.append(self._status_summary(state.run_id))
                     else:
-                        results.append(self.runtime.cancel(state.run_id, reason=reason).summary())
+                        results.append(self._cancel_summary(state.run_id, reason))
                 summary = self._run_batch(
                     batch_session_id=batch_session_id,
                     summaries=results,

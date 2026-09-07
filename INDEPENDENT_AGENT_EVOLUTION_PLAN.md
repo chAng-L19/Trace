@@ -63,7 +63,7 @@ compileall: passed
 | 阶段 | 目标 | 状态 |
 |---|---|---|
 | L0 | 复杂度/调用图/行为冻结 | 已通过 |
-| L1 | 唯一 AgentService 入口与边界收敛 | 待执行 |
+| L1 | 唯一 AgentService 入口与边界收敛 | 已通过 |
 | L2 | SessionJournal 透明会话树 | 待执行 |
 | L3 | 单一 AgentLoop | 待执行 |
 | L4 | ToolRegistry 与按需可见工具 | 待执行 |
@@ -125,5 +125,6 @@ docs/acceptance/phase-6.1.md                Stateful MCP
 docs/acceptance/phase-6.2.md                IDA Free feasibility
 docs/acceptance/lean-L0.md                  Lean L0 complexity/behavior freeze
 docs/acceptance/lean-l0-audit.json         Lean L0 machine-readable audit
+docs/acceptance/lean-L1.md                  Lean L1 canonical entry acceptance
 docs/architecture/lean-transparent-refactor.md  L0–L11 详细方案
 ```

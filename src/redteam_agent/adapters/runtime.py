@@ -15,14 +15,10 @@ from ..core.ports import (
 )
 from ..runtime.durable_store import StateVersionConflict
 from ..runtime.models import ToolDescriptor as LegacyToolDescriptor
-from ..runtime.operation_result import OperationResult
 from ..runtime.operation_runtime import OperationRuntime
 from .runtime_mapping import (
     apply_core_run,
-    evidence_from_runtime,
-    goal_from_runtime,
     run_from_runtime,
-    terminal_from_runtime,
 )
 
 
@@ -46,18 +42,6 @@ class OperationView:
             "missing_capabilities": list(self.missing_capabilities),
             "handoff": dict(self.handoff or {}),
         }
-
-
-def _view(result: OperationResult) -> OperationView:
-    return OperationView(
-        run=run_from_runtime(result.state),
-        goal=goal_from_runtime(result.state.goal),
-        evidence=tuple(evidence_from_runtime(item) for item in result.evidence),
-        terminal=terminal_from_runtime(result.terminal),
-        next_action=result.next_action,
-        missing_capabilities=tuple(result.missing_capabilities),
-        handoff=dict(result.handoff),
-    )
 
 
 class RuntimeStoreAdapter(StorePort):
@@ -194,13 +178,28 @@ class RuntimeToolAdapter(ToolPort):
 
 
 class OperationRuntimeAdapter:
-    """Core-contract facade over the pre-AgentService runtime."""
+    """Compatibility shim forwarding lifecycle calls to AgentService."""
 
     def __init__(self, runtime: OperationRuntime) -> None:
         self.runtime = runtime
         self.store: StorePort = RuntimeStoreAdapter(runtime)
         self.events: EventPort = RuntimeEventAdapter(runtime)
         self.tools: ToolPort = RuntimeToolAdapter(runtime)
+        from ..application.agent_service import AgentService
+
+        self.service = AgentService(runtime=runtime, tool_port=self.tools)
+
+    @staticmethod
+    def _compat_view(view: Any) -> OperationView:
+        return OperationView(
+            run=view.run,
+            goal=view.goal,
+            evidence=tuple(view.evidence),
+            terminal=view.terminal,
+            next_action=view.next_action,
+            missing_capabilities=tuple(view.missing_capabilities),
+            handoff=dict(view.handoff),
+        )
 
     def start(
         self,
@@ -215,27 +214,28 @@ class OperationRuntimeAdapter:
         max_actions: int = 64,
         max_retries_per_action: int = 2,
     ) -> Run:
-        state = self.runtime.start(
-            session_id=session_id,
-            objective=objective,
-            targets=targets,
-            workflow_hint=workflow_hint,
-            starting_context=starting_context,
-            constraints=constraints,
-            success_predicates=success_predicates,
-            max_actions=max_actions,
-            max_retries_per_action=max_retries_per_action,
-        )
-        return run_from_runtime(state)
+        return self.service.start(
+            {
+                "session_id": session_id,
+                "objective": objective,
+                "targets": tuple(targets or ()),
+                "workflow_hint": workflow_hint,
+                "starting_context": dict(starting_context or {}),
+                "constraints": dict(constraints or {}),
+                "success_predicates": tuple(success_predicates),
+                "max_actions": max_actions,
+                "max_retries_per_action": max_retries_per_action,
+            }
+        ).single.run
 
     def run(self, run_id: str, *, max_actions: int | None = None) -> OperationView:
-        return _view(self.runtime.resume(run_id, max_actions=max_actions))
+        return self._compat_view(self.service.run(run_id, max_actions=max_actions))
 
     def status(self, run_id: str) -> OperationView:
-        return _view(self.runtime.status(run_id))
+        return self._compat_view(self.service.status(run_id))
 
     def cancel(self, run_id: str, *, reason: str = "user_requested") -> OperationView:
-        return _view(self.runtime.cancel(run_id, reason=reason))
+        return self._compat_view(self.service.cancel(run_id, reason=reason))
 
     def submit_observation(
         self,
@@ -249,14 +249,17 @@ class OperationRuntimeAdapter:
         continue_run: bool = True,
         max_actions: int | None = None,
     ) -> OperationView:
-        result = self.runtime.submit_observation(
-            run_id=run_id,
-            action_id=action_id,
-            output=output,
-            tool=tool,
-            usage=usage,
-            idempotency_key=idempotency_key,
-            continue_run=continue_run,
-            max_actions=max_actions,
+        return self._compat_view(
+            self.service.submit_observation(
+                run_id,
+                {
+                    "action_id": action_id,
+                    "output": output,
+                    "tool": tool,
+                    "usage": dict(usage or {}),
+                    "idempotency_key": idempotency_key,
+                    "continue_run": continue_run,
+                    "max_actions": max_actions,
+                },
+            )
         )
-        return _view(result)

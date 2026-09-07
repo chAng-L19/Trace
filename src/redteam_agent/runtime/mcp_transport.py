@@ -278,8 +278,12 @@ def main(argv: list[str] | None = None) -> int:
             max_hypothesis_branches=settings["max_hypothesis_branches"],
         ),
     )
+    from ..application.agent_service import AgentService
+
+    service = AgentService(runtime=runtime)
     server = RuntimeMcpServer(
         runtime,
+        service=service,
         default_max_actions=settings["max_actions_per_cycle"],
         default_max_retries_per_action=settings["max_retries_per_action"],
         handoff_ttl_seconds=settings["handoff_ttl_seconds"],

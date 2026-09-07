@@ -267,6 +267,27 @@ class AgentService:
     def status(self, run_id: str) -> AgentRunView:
         return self._view(self.runtime.status(run_id))
 
+    def summary(self, run_id: str) -> dict[str, Any]:
+        self.status(run_id)
+        return self.runtime.status(run_id).summary()
+
+    def bind_credentials(self, run_id: str, bindings: Mapping[str, str]) -> None:
+        self.runtime.bind_credentials(run_id, bindings)
+
+    def apply_budget_delta(self, run_id: str, **delta: Any) -> AgentRunView:
+        before = self.status(run_id)
+        view = self._view(self.runtime.apply_budget_delta(run_id, **delta))
+        return self._validate_result(before.run.status, view)
+
+    def apply_budget_delta_batch(self, run_ids: list[str], **delta: Any) -> None:
+        self.runtime.apply_budget_delta_batch(run_ids, **delta)
+
+    def provide_target(self, run_id: str, targets: Sequence[str]) -> AgentRunView:
+        before = self.status(run_id)
+        self.runtime.provide_target(run_id, targets=targets)
+        view = self.status(run_id)
+        return self._validate_result(before.run.status, view)
+
     def cancel(self, run_id: str, reason: str = "user_requested") -> AgentRunView:
         before = self.status(run_id)
         if self.model_loop is not None:
