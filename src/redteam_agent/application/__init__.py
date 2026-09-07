@@ -9,7 +9,7 @@ from .contracts import (
 )
 from .lifecycle import ALLOWED_RUN_TRANSITIONS, CANONICAL_RUN_STATUSES, validate_run_transition
 from .model_loop import ModelIntegrityError, ModelInterruptedError, ModelLoop, ModelLoopError
-from .model_records import ModelObservationRecord, ModelRequestRecord, ModelResponseRecord
+from ..runtime.model_records import ModelObservationRecord, ModelRequestRecord, ModelResponseRecord
 from .context import (
     ContextSelection,
     ContextSelector,

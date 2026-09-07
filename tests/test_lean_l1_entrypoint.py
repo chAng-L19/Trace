@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Any
 
 from redteam_agent.application import AgentService
-from redteam_agent.adapters import OperationRuntimeAdapter
 from redteam_agent.runtime.mcp_server import RuntimeMcpServer
 from redteam_agent.runtime.operation_runtime import OperationRuntime
 
@@ -63,12 +62,3 @@ def test_runtime_mcp_server_constructs_canonical_service(tmp_path: Path) -> None
 
     assert isinstance(server.service, AgentService)
     assert server.service.runtime is runtime
-
-
-def test_legacy_runtime_adapter_is_an_agent_service_shim(tmp_path: Path) -> None:
-    runtime = OperationRuntime(root=tmp_path / "runtime")
-    adapter = OperationRuntimeAdapter(runtime)
-
-    assert isinstance(adapter.service, AgentService)
-    assert adapter.service.runtime is runtime
-    assert adapter.runtime is runtime

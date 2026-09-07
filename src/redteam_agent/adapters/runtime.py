@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any
 
-from ..core import Evidence, Event, Goal, Run, TerminalDecision
+from ..core import Event, Run
 from ..core.ports import (
     EventPort,
     StoreConflictError,
@@ -20,28 +19,6 @@ from .runtime_mapping import (
     apply_core_run,
     run_from_runtime,
 )
-
-
-@dataclass(frozen=True, slots=True)
-class OperationView:
-    run: Run
-    goal: Goal
-    evidence: tuple[Evidence, ...]
-    terminal: TerminalDecision
-    next_action: str = ""
-    missing_capabilities: tuple[str, ...] = ()
-    handoff: Mapping[str, Any] | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "run": self.run.to_dict(),
-            "goal": self.goal.to_dict(),
-            "evidence": [item.to_dict() for item in self.evidence],
-            "terminal": self.terminal.to_dict(),
-            "next_action": self.next_action,
-            "missing_capabilities": list(self.missing_capabilities),
-            "handoff": dict(self.handoff or {}),
-        }
 
 
 class RuntimeStoreAdapter(StorePort):
@@ -175,91 +152,3 @@ class RuntimeToolAdapter(ToolPort):
 
     def cancel(self, call_id: str) -> bool:
         return self.runtime.broker.cancel(call_id)
-
-
-class OperationRuntimeAdapter:
-    """Compatibility shim forwarding lifecycle calls to AgentService."""
-
-    def __init__(self, runtime: OperationRuntime) -> None:
-        self.runtime = runtime
-        self.store: StorePort = RuntimeStoreAdapter(runtime)
-        self.events: EventPort = RuntimeEventAdapter(runtime)
-        self.tools: ToolPort = RuntimeToolAdapter(runtime)
-        from ..application.agent_service import AgentService
-
-        self.service = AgentService(runtime=runtime, tool_port=self.tools)
-
-    @staticmethod
-    def _compat_view(view: Any) -> OperationView:
-        return OperationView(
-            run=view.run,
-            goal=view.goal,
-            evidence=tuple(view.evidence),
-            terminal=view.terminal,
-            next_action=view.next_action,
-            missing_capabilities=tuple(view.missing_capabilities),
-            handoff=dict(view.handoff),
-        )
-
-    def start(
-        self,
-        *,
-        session_id: str,
-        objective: str,
-        targets: Sequence[str] | None = None,
-        workflow_hint: str = "",
-        starting_context: Mapping[str, Any] | None = None,
-        constraints: Mapping[str, Any] | None = None,
-        success_predicates: Sequence[Mapping[str, Any]] = (),
-        max_actions: int = 64,
-        max_retries_per_action: int = 2,
-    ) -> Run:
-        return self.service.start(
-            {
-                "session_id": session_id,
-                "objective": objective,
-                "targets": tuple(targets or ()),
-                "workflow_hint": workflow_hint,
-                "starting_context": dict(starting_context or {}),
-                "constraints": dict(constraints or {}),
-                "success_predicates": tuple(success_predicates),
-                "max_actions": max_actions,
-                "max_retries_per_action": max_retries_per_action,
-            }
-        ).single.run
-
-    def run(self, run_id: str, *, max_actions: int | None = None) -> OperationView:
-        return self._compat_view(self.service.run(run_id, max_actions=max_actions))
-
-    def status(self, run_id: str) -> OperationView:
-        return self._compat_view(self.service.status(run_id))
-
-    def cancel(self, run_id: str, *, reason: str = "user_requested") -> OperationView:
-        return self._compat_view(self.service.cancel(run_id, reason=reason))
-
-    def submit_observation(
-        self,
-        *,
-        run_id: str,
-        action_id: str,
-        output: Any,
-        tool: str = "host-agent",
-        usage: Mapping[str, Any] | None = None,
-        idempotency_key: str = "",
-        continue_run: bool = True,
-        max_actions: int | None = None,
-    ) -> OperationView:
-        return self._compat_view(
-            self.service.submit_observation(
-                run_id,
-                {
-                    "action_id": action_id,
-                    "output": output,
-                    "tool": tool,
-                    "usage": dict(usage or {}),
-                    "idempotency_key": idempotency_key,
-                    "continue_run": continue_run,
-                    "max_actions": max_actions,
-                },
-            )
-        )

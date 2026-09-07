@@ -19,9 +19,7 @@ CODEX_ROOT = REPO_ROOT / "codex"
 if str(CODEX_ROOT) not in sys.path:
     sys.path.insert(0, str(CODEX_ROOT))
 
-from redteam_agent import workflows as workflow_package
-
-WORKFLOWS_ROOT = Path(workflow_package.__file__).resolve().parent
+WORKFLOWS_ROOT = REPO_ROOT / "src" / "redteam_agent" / "workflows"
 
 from redteam_agent.runtime import (
     DurableStore,

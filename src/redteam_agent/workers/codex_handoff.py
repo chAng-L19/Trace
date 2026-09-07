@@ -36,14 +36,7 @@ class CodexHandoffWorker:
         return result
 
     def reconcile(self, idempotency_key: str) -> WorkerResult | None:
-        with self.records.store.connection() as connection:
-            rows = connection.execute(
-                "SELECT * FROM worker_tasks WHERE worker_kind=? AND idempotency_key=?",
-                (self.kind, idempotency_key),
-            ).fetchall()
-        if len(rows) != 1:
-            return None
-        return self.records._from_row(rows[0]).result
+        return self.records.reconcile_kind(self.kind, idempotency_key)
 
     def cancel(self, task_id: str) -> bool:
         record = self.records.get(task_id)

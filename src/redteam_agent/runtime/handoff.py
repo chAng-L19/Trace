@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Mapping
 from uuid import uuid4
 
+from .model_common import _utc_datetime
 from .models import TaskAttempt, utc_now
 
 if TYPE_CHECKING:
@@ -64,16 +65,6 @@ class HandoffRecord:
             "attempt_id": self.attempt_id,
             "contract_hash": self.contract_hash,
         }
-
-
-def _utc_datetime(value: Any) -> datetime | None:
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
 
 
 def _expiry(created_at: str, ttl_seconds: float) -> str:

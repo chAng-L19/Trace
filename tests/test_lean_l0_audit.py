@@ -17,9 +17,7 @@ def test_l0_audit_freezes_complexity_and_candidate_references() -> None:
     assert all(item["lines"] <= 800 for item in metrics["files_over_800_lines"])
     candidates = report["deletion_candidates"]
     assert set(candidates) >= {
-        "OperationRuntimeAdapter",
         "AdaptivePlanner",
         "Scheduler",
         "WorkflowRegistry",
     }
-    assert candidates["OperationRuntimeAdapter"]["references"]

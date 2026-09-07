@@ -162,6 +162,16 @@ class WorkerStore:
             ).fetchone()
         return self._from_row(row) if row is not None else None
 
+    def reconcile_kind(self, worker_kind: str, idempotency_key: str) -> WorkerResult | None:
+        with self.store.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM worker_tasks WHERE worker_kind=? AND idempotency_key=?",
+                (worker_kind, idempotency_key),
+            ).fetchall()
+        if len(rows) != 1:
+            return None
+        return self._from_row(rows[0]).result
+
     def records(self, run_id: str) -> tuple[WorkerTaskRecord, ...]:
         with self.store.connection() as connection:
             rows = connection.execute(

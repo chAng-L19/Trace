@@ -8,7 +8,7 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
-def _utc_datetime(value: str) -> datetime | None:
+def _utc_datetime(value: Any) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except (TypeError, ValueError):
@@ -39,4 +39,3 @@ def _mapping(value: Any) -> Mapping[str, Any]:
 
 def _sequence(value: Any) -> tuple[Any, ...] | list[Any]:
     return value if isinstance(value, (list, tuple)) else ()
-
