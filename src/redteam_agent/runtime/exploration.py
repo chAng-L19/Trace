@@ -16,10 +16,28 @@ class ExplorationValidationError(ValueError):
 class ExplorationLedger:
     """Append-only, model-authored tactical ledger with runtime invariants."""
 
-    def __init__(self, store: Any, artifacts: Any, evidence_graph: Any) -> None:
+    def __init__(
+        self,
+        store: Any,
+        artifacts: Any,
+        evidence_graph: Any,
+        *,
+        journal: Any | None = None,
+    ) -> None:
         self.store = store
         self.artifacts = artifacts
         self.evidence_graph = evidence_graph
+        self.journal = journal
+
+    def _records(self, run_id: str) -> tuple[ExplorationRecord, ...]:
+        if self.journal is not None:
+            return self.journal.exploration_records(run_id)
+        return self.store.exploration_records(run_id)
+
+    def _attempts(self, run_id: str) -> tuple[Any, ...]:
+        if self.journal is not None:
+            return self.journal.tactical_attempts(run_id)
+        return self.store.tactical_attempts(run_id)
 
     def record(self, value: ExplorationRecord | Mapping[str, Any]) -> ExplorationRecord:
         record = value if isinstance(value, ExplorationRecord) else ExplorationRecord.from_dict(value)
@@ -29,7 +47,7 @@ class ExplorationLedger:
         target = record.target or (state.goal.targets[0] if state.goal.targets else "")
         if target and state.goal.targets and target not in state.goal.targets:
             raise ExplorationValidationError(f"exploration_target_out_of_scope:{target}")
-        records = self.store.exploration_records(record.run_id)
+        records = self._records(record.run_id)
         by_id = {item.record_id: item for item in records}
         for parent_id in record.parent_record_ids:
             parent = by_id.get(parent_id)
@@ -105,7 +123,7 @@ class ExplorationLedger:
             return ()
         saved: list[ExplorationRecord] = []
         existing_by_id = {
-            item.record_id: item for item in self.store.exploration_records(run_id)
+            item.record_id: item for item in self._records(run_id)
         }
         for index, raw in enumerate(raw_records):
             if not isinstance(raw, Mapping):
@@ -138,7 +156,7 @@ class ExplorationLedger:
     def current(self, run_id: str) -> tuple[ExplorationRecord, ...]:
         latest: dict[str, ExplorationRecord] = {}
         order: list[str] = []
-        for record in self.store.exploration_records(run_id):
+        for record in self._records(run_id):
             if record.hypothesis_id not in latest:
                 order.append(record.hypothesis_id)
             latest[record.hypothesis_id] = record
@@ -146,8 +164,8 @@ class ExplorationLedger:
 
     def projection(self, run_id: str, *, limit: int = 32) -> Mapping[str, Any]:
         current = self.current(run_id)
-        records = self.store.exploration_records(run_id)
-        attempts = self.store.tactical_attempts(run_id)
+        records = self._records(run_id)
+        attempts = self._attempts(run_id)
         repeated = self.repeated_actions(run_id)
         selected = current[-max(1, int(limit)) :]
         return {
@@ -192,7 +210,7 @@ class ExplorationLedger:
     def repeated_actions(self, run_id: str) -> list[Mapping[str, Any]]:
         counts: dict[str, int] = {}
         last: dict[str, str] = {}
-        for attempt in self.store.tactical_attempts(run_id):
+        for attempt in self._attempts(run_id):
             counts[attempt.action_fingerprint] = counts.get(attempt.action_fingerprint, 0) + 1
             last[attempt.action_fingerprint] = attempt.attempt_id
         return [
@@ -267,9 +285,9 @@ class ExplorationLedger:
         state = self.store.load_operation(run_id)
         if state is None:
             raise KeyError(f"operation_not_found:{run_id}")
-        records = self.store.exploration_records(run_id)
+        records = self._records(run_id)
         current = self.current(run_id)
-        attempts = self.store.tactical_attempts(run_id)
+        attempts = self._attempts(run_id)
         evidence = self.evidence_graph.list(run_id)
         artifact_refs = list(
             dict.fromkeys(
@@ -326,7 +344,12 @@ class ExplorationLedger:
             dict.fromkeys(str(item) for item in source_message_ids if str(item))
         )
         messages_by_id = {
-            item.message_id: item for item in self.store.conversation_messages(run_id)
+            item.message_id: item
+            for item in (
+                self.journal.conversation_messages(run_id)
+                if self.journal is not None
+                else self.store.conversation_messages(run_id)
+            )
         }
         missing_messages = [item for item in selected_message_ids if item not in messages_by_id]
         if missing_messages:
@@ -348,8 +371,17 @@ class ExplorationLedger:
         }
         source_hash = contract_hash(source_projection)
         digest_hash = contract_hash(digest)
+        if self.journal is not None:
+            for existing in self.journal.recon_digests(run_id):
+                if existing.source_hash == source_hash:
+                    return existing
+        digest_identity = {
+            "source_hash": source_hash,
+            "parent_entry_id": self.journal.leaf_id(run_id) if self.journal is not None else None,
+            "branch_id": self.journal.active_branch_id(run_id) if self.journal is not None else "",
+        }
         record = ReconDigestRecord(
-            digest_id="recon-digest-" + source_hash[:32],
+            digest_id="recon-digest-" + contract_hash(digest_identity)[:32],
             run_id=run_id,
             source_record_ids=tuple(item.record_id for item in records),
             source_message_ids=selected_message_ids,

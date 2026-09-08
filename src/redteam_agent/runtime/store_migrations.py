@@ -371,6 +371,57 @@ def _migration_9_tactical_exploration(context: Any, connection: sqlite3.Connecti
             )
 
 
+def _migration_10_session_journal(context: Any, connection: sqlite3.Connection) -> None:
+    execute_sql_script(
+        connection,
+        """
+        CREATE TABLE IF NOT EXISTS session_journal_entries (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT, entry_id TEXT NOT NULL UNIQUE,
+            run_id TEXT NOT NULL, parent_entry_id TEXT, branch_id TEXT NOT NULL,
+            entry_type TEXT NOT NULL, raw_table TEXT NOT NULL, raw_id TEXT NOT NULL,
+            raw_hash TEXT NOT NULL, created_at TEXT NOT NULL,
+            UNIQUE(run_id, raw_table, raw_id),
+            FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE,
+            FOREIGN KEY(parent_entry_id) REFERENCES session_journal_entries(entry_id)
+        );
+        CREATE TABLE IF NOT EXISTS session_journal_heads (
+            run_id TEXT NOT NULL, branch_id TEXT NOT NULL, leaf_entry_id TEXT,
+            PRIMARY KEY(run_id, branch_id),
+            FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE,
+            FOREIGN KEY(leaf_entry_id) REFERENCES session_journal_entries(entry_id)
+        );
+        CREATE TABLE IF NOT EXISTS session_journal_state (
+            run_id TEXT PRIMARY KEY, active_branch_id TEXT NOT NULL,
+            version INTEGER NOT NULL, updated_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_journal_run
+            ON session_journal_entries(run_id, sequence);
+        CREATE INDEX IF NOT EXISTS idx_session_journal_parent
+            ON session_journal_entries(run_id, parent_entry_id, sequence);
+        """,
+    )
+    source_count = sum(
+        int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        for table in (
+            "operation_events",
+            "conversation_messages",
+            "context_summaries",
+            "model_requests",
+            "model_responses",
+            "model_observations",
+            "exploration_records",
+            "recon_digests",
+            "tactical_attempts",
+        )
+    )
+    indexed_count = int(
+        connection.execute("SELECT COUNT(*) FROM session_journal_entries").fetchone()[0]
+    )
+    if indexed_count != source_count:
+        context._backfill_session_journal(connection)
+
+
 MIGRATIONS = (
     Migration(1, "base_runtime_schema", _migration_1_base),
     Migration(2, "operation_cas_and_lease_fencing", _migration_2_cas_and_fencing),
@@ -381,6 +432,7 @@ MIGRATIONS = (
     Migration(7, "content_addressed_artifact_store", _migration_7_artifact_cas),
     Migration(8, "isolated_worker_plane", _migration_8_worker_plane),
     Migration(9, "thin_tactical_exploration_ledger", _migration_9_tactical_exploration),
+    Migration(10, "transparent_session_journal", _migration_10_session_journal),
 )
 
 

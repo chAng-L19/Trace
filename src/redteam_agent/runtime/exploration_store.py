@@ -41,6 +41,15 @@ class ExplorationStoreMixin:
                     record.created_at,
                 ),
             )
+            self._insert_journal_entry(
+                connection,
+                run_id=record.run_id,
+                entry_type="exploration",
+                raw_table="exploration_records",
+                raw_id=record.record_id,
+                raw_json=serialized,
+                created_at=record.created_at,
+            )
         return record
 
     def exploration_records(self, run_id: str) -> tuple[ExplorationRecord, ...]:
@@ -91,6 +100,15 @@ class ExplorationStoreMixin:
                     serialized,
                     record.created_at,
                 ),
+            )
+            self._insert_journal_entry(
+                connection,
+                run_id=record.run_id,
+                entry_type="recon_digest",
+                raw_table="recon_digests",
+                raw_id=record.digest_id,
+                raw_json=serialized,
+                created_at=record.created_at,
             )
         return record
 
@@ -176,6 +194,15 @@ class ExplorationStoreMixin:
                     serialized,
                     record.created_at,
                 ),
+            )
+            self._insert_journal_entry(
+                connection,
+                run_id=record.run_id,
+                entry_type="tactical_attempt",
+                raw_table="tactical_attempts",
+                raw_id=record.attempt_id,
+                raw_json=serialized,
+                created_at=record.created_at,
             )
         return record, True
 

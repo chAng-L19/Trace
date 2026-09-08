@@ -38,6 +38,15 @@ class ModelStoreMixin:
                     record.created_at,
                 ),
             )
+            self._insert_journal_entry(
+                connection,
+                run_id=record.run_id,
+                entry_type="model_request",
+                raw_table="model_requests",
+                raw_id=record.request_id,
+                raw_json=serialized,
+                created_at=record.created_at,
+            )
 
     def save_model_response(self, record: ModelResponseRecord) -> None:
         serialized = _dump(record.to_dict())
@@ -72,6 +81,15 @@ class ModelStoreMixin:
                     serialized,
                     record.created_at,
                 ),
+            )
+            self._insert_journal_entry(
+                connection,
+                run_id=record.run_id,
+                entry_type="model_response",
+                raw_table="model_responses",
+                raw_id=record.request_id,
+                raw_json=serialized,
+                created_at=record.created_at,
             )
 
     def save_model_stream_event(self, event: ModelStreamEvent) -> None:
@@ -127,6 +145,15 @@ class ModelStoreMixin:
                     serialized,
                     record.created_at,
                 ),
+            )
+            self._insert_journal_entry(
+                connection,
+                run_id=record.run_id,
+                entry_type="model_observation",
+                raw_table="model_observations",
+                raw_id=record.observation_id,
+                raw_json=serialized,
+                created_at=record.created_at,
             )
 
     def model_requests(self, run_id: str) -> tuple[ModelRequestRecord, ...]:

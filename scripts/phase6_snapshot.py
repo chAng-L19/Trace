@@ -19,10 +19,10 @@ from redteam_agent.application import ToolObservationProjector  # noqa: E402
 from redteam_agent.core import ExplorationRecord, ToolResult  # noqa: E402
 from redteam_agent.runtime import ExplorationLedger  # noqa: E402
 from redteam_agent.runtime.durable_store import DurableStore  # noqa: E402
-from redteam_agent.runtime.store_common import SCHEMA_VERSION  # noqa: E402
 
 
 SNAPSHOT_FILE = "thin_tactical_loop.json"
+PHASE6_SCHEMA_VERSION = 9
 PHASE6_TABLES = ("exploration_records", "recon_digests", "tactical_attempts")
 
 
@@ -55,7 +55,7 @@ def _schema() -> Mapping[str, Any]:
                     "ORDER BY name"
                 ).fetchall()
             ]
-    return {"version": SCHEMA_VERSION, "tables": tables, "indexes": indexes}
+    return {"version": PHASE6_SCHEMA_VERSION, "tables": tables, "indexes": indexes}
 
 
 def _contract() -> Mapping[str, Any]:

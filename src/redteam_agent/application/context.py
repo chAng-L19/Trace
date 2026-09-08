@@ -45,10 +45,12 @@ class ConversationLedger:
         store: Any,
         artifacts: Any | None = None,
         projector: ToolObservationProjector | None = None,
+        journal: Any | None = None,
     ) -> None:
         self.store = store
         self.artifacts = artifacts
         self.projector = projector or ToolObservationProjector()
+        self.journal = journal
 
     def append(
         self,
@@ -197,22 +199,41 @@ class ConversationLedger:
         }
 
     def messages(self, run_id: str) -> tuple[ConversationMessageRecord, ...]:
+        if self.journal is not None:
+            return self.journal.conversation_messages(run_id)
         return self.store.conversation_messages(run_id)
 
 
 class TraceableCompactor:
-    def __init__(self, store: Any) -> None:
+    def __init__(self, store: Any, *, journal: Any | None = None) -> None:
         self.store = store
+        self.journal = journal
 
     def compact(
         self,
         run_id: str,
         message_ids: Sequence[str] = (),
     ) -> ContextSummaryRecord | None:
-        all_messages = self.store.conversation_messages(run_id)
+        all_messages = (
+            self.journal.conversation_messages(run_id)
+            if self.journal is not None
+            else self.store.conversation_messages(run_id)
+        )
         by_id = {item.message_id: item for item in all_messages}
         if message_ids:
-            selected = tuple(by_id[item] for item in message_ids)
+            requested = {by_id[item].message_id for item in message_ids}
+            selected = tuple(
+                item
+                for group in ContextSelector._atomic_groups(
+                    tuple(
+                        item
+                        for item in all_messages
+                        if item.source_type != "model_request_projection"
+                    )
+                )
+                if any(item.message_id in requested for item in group)
+                for item in group
+            )
         else:
             selected = tuple(
                 item
@@ -224,7 +245,20 @@ class TraceableCompactor:
         if any(item.protected for item in selected):
             raise ValueError("protected_context_cannot_be_compacted")
         source_hash = self.store.context_source_hash(selected)
-        summary_id = "summary-" + source_hash[:32]
+        active_summaries = (
+            self.journal.context_summaries(run_id)
+            if self.journal is not None
+            else self.store.context_summaries(run_id)
+        )
+        for existing in active_summaries:
+            if existing.source_hash == source_hash:
+                return existing
+        summary_identity = {
+            "source_hash": source_hash,
+            "parent_entry_id": self.journal.leaf_id(run_id) if self.journal is not None else None,
+            "branch_id": self.journal.active_branch_id(run_id) if self.journal is not None else "",
+        }
+        summary_id = "summary-" + contract_hash(summary_identity)[:32]
         for existing in self.store.context_summaries(run_id):
             if existing.summary_id == summary_id:
                 return existing
@@ -549,7 +583,7 @@ class ContextSelector:
             "cache_read_tokens": None,
             "cache_write_tokens": None,
         }
-        responses = self.service.runtime.store.model_responses(run_id)
+        responses = self.service.journal.model_responses(run_id)
         if not responses:
             return result
         usage = responses[-1].usage
@@ -567,7 +601,7 @@ class ContextSelector:
         return result
 
     def store_summaries(self, run_id: str) -> tuple[ContextSummaryRecord, ...]:
-        return self.service.runtime.store.context_summaries(run_id)
+        return self.service.journal.context_summaries(run_id)
 
     def _protected_context(self, view: AgentRunView) -> dict[str, Any]:
         state = self.service.runtime.store.load_operation(view.run.run_id)
@@ -578,6 +612,7 @@ class ContextSelector:
             for item in view.evidence
             if item.verified and item.trust in {"runtime_verified", "derived_verified"}
         ]
+        recon_digests = self.service.journal.recon_digests(view.run.run_id)
         return {
             "original_goal": {
                 "goal_id": view.goal.goal_id,
@@ -597,9 +632,7 @@ class ContextSelector:
                 "retained_tactical_state": self._retained_tactical_state(view.run.run_id),
                 "tactical_ledger": self.service.exploration.projection(view.run.run_id),
                 "latest_recon_digest": (
-                    dict(self.service.runtime.store.recon_digests(view.run.run_id)[-1].digest)
-                    if self.service.runtime.store.recon_digests(view.run.run_id)
-                    else {}
+                    dict(recon_digests[-1].digest) if recon_digests else {}
                 ),
             },
             "critical_evidence_refs": verified_refs,

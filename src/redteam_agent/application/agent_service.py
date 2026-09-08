@@ -16,6 +16,7 @@ from ..runtime.worker_store import WorkerStore
 from ..runtime.operation_result import OperationResult
 from ..runtime.operation_runtime import OperationRuntime
 from ..runtime.exploration import ExplorationLedger
+from ..runtime.session_journal import SessionJournal
 from ..workers import (
     CodexHandoffWorker,
     DockerWorkerAdapter,
@@ -62,13 +63,19 @@ class AgentService:
             assert root is not None
             self.runtime = OperationRuntime(root=root)
         resolved_tool_port = tool_port or RuntimeToolAdapter(self.runtime)
+        self.journal = SessionJournal(self.runtime.store)
         self.exploration = ExplorationLedger(
             self.runtime.store,
             self.runtime.artifacts,
             self.runtime.evidence_graph,
+            journal=self.journal,
         )
-        self.conversation = ConversationLedger(self.runtime.store, self.runtime.artifacts)
-        self.context_compactor = TraceableCompactor(self.runtime.store)
+        self.conversation = ConversationLedger(
+            self.runtime.store,
+            self.runtime.artifacts,
+            journal=self.journal,
+        )
+        self.context_compactor = TraceableCompactor(self.runtime.store, journal=self.journal)
         self.context_selector = ContextSelector(self, self.conversation, self.context_compactor)
         self.worker_records = WorkerStore(self.runtime.store)
         self.workspaces = WorkspaceManager(self.runtime.root, self.runtime.store)
@@ -327,6 +334,37 @@ class AgentService:
             raise KeyError(f"operation_not_found:{run_id}")
         return self.conversation.messages(run_id)
 
+    def session_entries(self, run_id: str):
+        return self.journal.entries(run_id)
+
+    def session_tree(self, run_id: str):
+        return self.journal.tree(run_id)
+
+    def export_session(self, run_id: str):
+        return self.journal.export(run_id)
+
+    def replay_session(self, run_id: str, leaf_id: str | None = None):
+        return self.journal.replay(run_id, leaf_id)
+
+    def branch_session(
+        self,
+        run_id: str,
+        from_entry_id: str,
+        *,
+        expected_leaf_id: str | None = None,
+    ):
+        return self.journal.branch(
+            run_id,
+            from_entry_id,
+            expected_leaf_id=expected_leaf_id,
+        )
+
+    def fork_session(self, run_id: str, from_entry_id: str, branch_id: str):
+        return self.journal.fork(run_id, from_entry_id, branch_id)
+
+    def checkout_session(self, run_id: str, branch_id: str):
+        return self.journal.checkout(run_id, branch_id)
+
     def select_context(self, run_id: str, *, max_messages: int = 32) -> ContextSelection:
         return self.context_selector.select(self.status(run_id), max_messages=max_messages)
 
@@ -395,7 +433,7 @@ class AgentService:
     def exploration_records(self, run_id: str):
         if self.runtime.store.load_operation(run_id) is None:
             raise KeyError(f"operation_not_found:{run_id}")
-        return self.runtime.store.exploration_records(run_id)
+        return self.journal.exploration_records(run_id)
 
     def exploration_state(self, run_id: str):
         if self.runtime.store.load_operation(run_id) is None:
@@ -411,4 +449,4 @@ class AgentService:
     def recon_digests(self, run_id: str):
         if self.runtime.store.load_operation(run_id) is None:
             raise KeyError(f"operation_not_found:{run_id}")
-        return self.runtime.store.recon_digests(run_id)
+        return self.journal.recon_digests(run_id)

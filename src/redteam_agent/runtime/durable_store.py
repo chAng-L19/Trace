@@ -28,6 +28,7 @@ from .model_store import ModelStoreMixin
 from .conversation_store import ConversationStoreMixin
 from .budget_store import BudgetStoreMixin
 from .exploration_store import ExplorationStoreMixin
+from .session_journal import JournalStoreMixin
 
 __all__ = [
     "DurableStore",
@@ -50,6 +51,7 @@ class DurableStore(
     ConversationStoreMixin,
     BudgetStoreMixin,
     ExplorationStoreMixin,
+    JournalStoreMixin,
     StoreSchemaMixin,
 ):
     def __init__(self, root: Path) -> None:
@@ -96,16 +98,26 @@ class DurableStore(
         payload["state_version"] = version
         return payload
 
-    @staticmethod
     def _insert_event(
+        self,
         connection: sqlite3.Connection,
         run_id: str,
         event_type: str,
         payload: Mapping[str, Any],
     ) -> None:
-        connection.execute(
+        created_at = utc_now()
+        cursor = connection.execute(
             "INSERT INTO operation_events(run_id, event_type, payload_json, created_at) VALUES(?, ?, ?, ?)",
-            (run_id, event_type, _dump(dict(payload)), utc_now()),
+            (run_id, event_type, _dump(dict(payload)), created_at),
+        )
+        self._insert_journal_entry(
+            connection,
+            run_id=run_id,
+            entry_type=f"event:{event_type}",
+            raw_table="operation_events",
+            raw_id=str(cursor.lastrowid),
+            raw_json=_dump({"event_type": event_type, "payload": dict(payload)}),
+            created_at=created_at,
         )
 
     def _recover_snapshot(self, connection: sqlite3.Connection, run_id: str) -> Mapping[str, Any] | None:

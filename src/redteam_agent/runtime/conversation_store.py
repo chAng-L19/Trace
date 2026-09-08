@@ -58,6 +58,15 @@ class ConversationStoreMixin:
                     assigned.created_at,
                 ),
             )
+            self._insert_journal_entry(
+                connection,
+                run_id=assigned.run_id,
+                entry_type="message",
+                raw_table="conversation_messages",
+                raw_id=assigned.message_id,
+                raw_json=_dump(assigned.to_dict()),
+                created_at=assigned.created_at,
+            )
             return assigned
 
     def conversation_messages(self, run_id: str) -> tuple[ConversationMessageRecord, ...]:
@@ -112,6 +121,15 @@ class ConversationStoreMixin:
                     serialized,
                     record.created_at,
                 ),
+            )
+            self._insert_journal_entry(
+                connection,
+                run_id=record.run_id,
+                entry_type="compaction",
+                raw_table="context_summaries",
+                raw_id=record.summary_id,
+                raw_json=serialized,
+                created_at=record.created_at,
             )
 
     def context_summaries(self, run_id: str) -> tuple[ContextSummaryRecord, ...]:
