@@ -31,7 +31,7 @@ from .models import (
 )
 from .plan import PlanRevision
 from .review import ReviewEngine
-from .scheduler import Scheduler
+from .scheduler import NextActionPolicy
 from .tool_broker import ToolBroker
 from .verifier import SemanticVerifier, VerificationDecision
 class ActionExecutor(ExecutorActionsMixin, ExecutorTrustMixin):
@@ -571,7 +571,7 @@ class ActionExecutor(ExecutorActionsMixin, ExecutorTrustMixin):
             state.action_status[action.action_id] = "pending"
             state.status = "running"
             event_type = "action_fallback_scheduled"
-        elif action.tool_strategy == "capability_coverage" and Scheduler.ensemble_satisfied(state, action):
+        elif action.tool_strategy == "capability_coverage" and NextActionPolicy.ensemble_satisfied(state, action):
             state.action_status[action.action_id] = "completed"
             state.status = "running"
             state.current_action_id = ""

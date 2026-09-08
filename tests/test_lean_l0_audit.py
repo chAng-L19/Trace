@@ -18,6 +18,6 @@ def test_l0_audit_freezes_complexity_and_candidate_references() -> None:
     candidates = report["deletion_candidates"]
     assert set(candidates) >= {
         "AdaptivePlanner",
-        "Scheduler",
+        "NextActionPolicy",
         "WorkflowRegistry",
     }

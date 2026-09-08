@@ -21,7 +21,7 @@ UNCERTAIN_ATTEMPT_STATUSES = {"prepared", "running", "uncertain", "reconciling",
 
 
 @dataclass(frozen=True)
-class ScheduleDecision:
+class NextActionProposal:
     action: ActionSpec | None
     descriptor: ToolDescriptor | None = None
     reason: str = ""
@@ -29,7 +29,7 @@ class ScheduleDecision:
     uncertain_attempt: TaskAttempt | None = None
 
 
-class Scheduler:
+class NextActionPolicy:
     def __init__(self, broker: ToolBroker) -> None:
         self.broker = broker
 
@@ -101,7 +101,7 @@ class Scheduler:
         *,
         facts: Sequence[FactRecord] = (),
         attempts: Sequence[TaskAttempt] = (),
-    ) -> ScheduleDecision:
+    ) -> NextActionProposal:
         scoped_attempts = tuple(
             item
             for item in attempts
@@ -112,7 +112,7 @@ class Scheduler:
         uncertain = self.uncertain_attempt(scoped_attempts)
         if uncertain is not None:
             action = next((item for item in workflow.actions if item.action_id == uncertain.action_id), None)
-            return ScheduleDecision(
+            return NextActionProposal(
                 action=action,
                 reason="attempt_reconcile_required",
                 uncertain_attempt=uncertain,
@@ -134,20 +134,30 @@ class Scheduler:
             ranked.append((-self._rank(state, action, descriptor), index, action.action_id, action, descriptor))
 
         if not ranked:
-            return ScheduleDecision(action=None, reason="no_ready_action")
+            return NextActionProposal(action=None, reason="no_ready_action")
         ranked.sort(key=lambda item: (item[0], item[1], item[2]))
         _, _, _, action, descriptor = ranked[0]
         if descriptor is None:
-            return ScheduleDecision(
+            return NextActionProposal(
                 action=action,
                 reason="capability_missing",
                 missing_capabilities=tuple(action.required_capabilities),
             )
-        return ScheduleDecision(action=action, descriptor=descriptor, reason="ready")
+        return NextActionProposal(action=action, descriptor=descriptor, reason="ready")
 
     @staticmethod
     def ensemble_satisfied(state: OperationState, action: ActionSpec) -> bool:
         return len(state.action_tools_succeeded.get(action.action_id, ())) >= action.min_tool_results
 
 
-__all__ = ["ScheduleDecision", "Scheduler", "TERMINAL_ATTEMPT_STATUSES", "UNCERTAIN_ATTEMPT_STATUSES"]
+Scheduler = NextActionPolicy
+ScheduleDecision = NextActionProposal
+
+__all__ = [
+    "NextActionPolicy",
+    "NextActionProposal",
+    "ScheduleDecision",
+    "Scheduler",
+    "TERMINAL_ATTEMPT_STATUSES",
+    "UNCERTAIN_ATTEMPT_STATUSES",
+]

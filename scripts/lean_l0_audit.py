@@ -20,7 +20,7 @@ CANDIDATES = (
     "RuntimeEventAdapter",
     "RuntimeToolAdapter",
     "AdaptivePlanner",
-    "Scheduler",
+    "NextActionPolicy",
     "WorkflowRegistry",
     "TacticalLoopMixin",
 )

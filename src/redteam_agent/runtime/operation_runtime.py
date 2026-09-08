@@ -24,7 +24,7 @@ from .operation_result import (
     _goal_contract_payload,
 )
 from .review import ReviewEngine
-from .scheduler import Scheduler
+from .scheduler import NextActionPolicy
 from .security import CredentialVault
 from .terminal_judge import TerminalJudge
 from .tool_broker import ToolBroker
@@ -69,7 +69,7 @@ class OperationRuntime(
         self.terminal_judge = terminal_judge or TerminalJudge()
         self.planner = planner or AdaptivePlanner()
         self.review_engine = ReviewEngine()
-        self.scheduler = Scheduler(self.broker)
+        self.scheduler = NextActionPolicy(self.broker)
         self.action_timeout_cap = max(0.1, float(action_timeout_cap)) if action_timeout_cap is not None else None
         self.owner = f"runtime-{uuid4().hex}"
         self._credential_vault = CredentialVault()

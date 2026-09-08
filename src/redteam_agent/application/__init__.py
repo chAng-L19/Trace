@@ -8,7 +8,7 @@ from .contracts import (
     StartRequest,
 )
 from .lifecycle import ALLOWED_RUN_TRANSITIONS, CANONICAL_RUN_STATUSES, validate_run_transition
-from .model_loop import ModelIntegrityError, ModelInterruptedError, ModelLoop, ModelLoopError
+from .model_loop import AgentLoop, ModelIntegrityError, ModelInterruptedError, ModelLoop, ModelLoopError
 from ..runtime.model_records import ModelObservationRecord, ModelRequestRecord, ModelResponseRecord
 from .context import (
     ContextSelection,
@@ -23,6 +23,7 @@ __all__ = [
     "AgentEvent",
     "AgentRunView",
     "AgentService",
+    "AgentLoop",
     "AgentStartResult",
     "BudgetDelta",
     "CANONICAL_RUN_STATUSES",

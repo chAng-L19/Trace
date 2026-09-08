@@ -33,7 +33,7 @@ from .contracts import (
     StartRequest,
 )
 from .lifecycle import validate_run_transition
-from .model_loop import ModelLoop
+from .model_loop import AgentLoop
 from .context import ContextSelection, ContextSelector, ConversationLedger, TraceableCompactor
 
 
@@ -97,8 +97,8 @@ class AgentService:
                 records=self.worker_records,
             )
             self.workers = WorkerManager(workers, records=self.worker_records)
-        self.model_loop = (
-            ModelLoop(
+        self.agent_loop = (
+            AgentLoop(
                 service=self,
                 model=model_port,
                 tools=resolved_tool_port,
@@ -110,6 +110,10 @@ class AgentService:
             if model_port is not None
             else None
         )
+
+    @property
+    def model_loop(self) -> AgentLoop | None:
+        return self.agent_loop
 
     @staticmethod
     def _view(result: OperationResult) -> AgentRunView:

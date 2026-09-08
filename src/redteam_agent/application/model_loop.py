@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 import hashlib
 import threading
-import tempfile
-from pathlib import Path
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -29,53 +27,12 @@ from ..runtime.security import safe_error_text
 from ..runtime.conversation_records import DiagnosticArtifactRecord
 from .contracts import AgentRunView, Observation
 from ..runtime.model_records import ModelObservationRecord, ModelRequestRecord, ModelResponseRecord
-from .tactical_loop import TacticalLoopMixin
 from .model_integrity import ModelIntegrityMixin
+from .agent_loop_support import record_tactical_attempts, record_tactical_update
+from .stream_accumulator import StreamTextAccumulator
 
 MAX_INLINE_MODEL_OBSERVATION_BYTES = 64 * 1024
 MAX_INLINE_MODEL_STREAM_BYTES = 64 * 1024
-
-
-class _StreamTextAccumulator:
-    def __init__(self) -> None:
-        handle = tempfile.NamedTemporaryFile(prefix="redteam-model-stream-", suffix=".txt", delete=False)
-        self.path = Path(handle.name)
-        self._handle = handle
-        self.byte_count = 0
-        self._head = bytearray()
-        self._tail = bytearray()
-
-    def append(self, value: Any) -> None:
-        raw = str(value).encode("utf-8", errors="replace")
-        self._handle.write(raw)
-        self.byte_count += len(raw)
-        edge = 16 * 1024
-        if len(self._head) < edge:
-            self._head.extend(raw[: edge - len(self._head)])
-        self._tail.extend(raw)
-        if len(self._tail) > edge:
-            del self._tail[:-edge]
-
-    def close(self) -> None:
-        if not self._handle.closed:
-            self._handle.flush()
-            self._handle.close()
-
-    def inline_text(self) -> str:
-        self.close()
-        return self.path.read_text(encoding="utf-8", errors="replace")
-
-    def preview(self) -> dict[str, Any]:
-        return {
-            "byte_count": self.byte_count,
-            "head": bytes(self._head).decode("utf-8", errors="replace"),
-            "tail": bytes(self._tail).decode("utf-8", errors="replace"),
-            "truncated": self.byte_count > len(self._head) + len(self._tail),
-        }
-
-    def discard(self) -> None:
-        self.close()
-        self.path.unlink(missing_ok=True)
 
 
 class ModelLoopError(RuntimeError):
@@ -90,8 +47,8 @@ class ModelInterruptedError(ModelLoopError):
     pass
 
 
-class ModelLoop(TacticalLoopMixin, ModelIntegrityMixin):
-    """Runtime-owned model orchestration with durable provider boundaries."""
+class AgentLoop(ModelIntegrityMixin):
+    """Single model-led loop from context selection through verified observation."""
 
     def __init__(
         self,
@@ -226,6 +183,34 @@ class ModelLoop(TacticalLoopMixin, ModelIntegrityMixin):
             for call_id in calls:
                 self.tools.cancel(call_id)
 
+    def _record_tactical_update(
+        self,
+        view: AgentRunView,
+        request: ModelRequest,
+        response: ModelResponse,
+    ) -> Mapping[str, Any] | None:
+        return record_tactical_update(self, view, request, response)
+
+    def _record_tactical_attempts(
+        self,
+        view: AgentRunView,
+        request: ModelRequest,
+        response: ModelResponse,
+        results: Sequence[ToolResult],
+        *,
+        artifact_ids: Mapping[str, str],
+        tactical_update: Mapping[str, Any] | None,
+    ) -> None:
+        record_tactical_attempts(
+            self,
+            view,
+            request,
+            response,
+            results,
+            artifact_ids=artifact_ids,
+            tactical_update=tactical_update,
+        )
+
     def _model_turn(self, view: AgentRunView) -> tuple[ModelResponse, ModelRequest]:
         last_error: BaseException | None = None
         for attempt in range(self.max_retries + 1):
@@ -356,7 +341,7 @@ class ModelLoop(TacticalLoopMixin, ModelIntegrityMixin):
         return self.model.complete(request)
 
     def _invoke_stream(self, request: ModelRequest) -> ModelResponse:
-        accumulator = _StreamTextAccumulator()
+        accumulator = StreamTextAccumulator()
         tool_calls: list[Mapping[str, Any]] = []
         usage: Mapping[str, Any] = {}
         structured: Mapping[str, Any] = {}
@@ -479,7 +464,7 @@ class ModelLoop(TacticalLoopMixin, ModelIntegrityMixin):
         accumulator = getattr(threading.current_thread(), "model_partial_stream", None)
         partial_text = ""
         partial_artifact: Mapping[str, Any] = {}
-        if isinstance(accumulator, _StreamTextAccumulator):
+        if isinstance(accumulator, StreamTextAccumulator):
             if accumulator.byte_count <= MAX_INLINE_MODEL_STREAM_BYTES:
                 partial_text = accumulator.inline_text()
             else:
@@ -794,3 +779,14 @@ class ModelLoop(TacticalLoopMixin, ModelIntegrityMixin):
                 bucket.discard(item)
                 if not bucket:
                     registry.pop(run_id, None)
+
+
+ModelLoop = AgentLoop
+
+__all__ = [
+    "AgentLoop",
+    "ModelIntegrityError",
+    "ModelInterruptedError",
+    "ModelLoop",
+    "ModelLoopError",
+]
