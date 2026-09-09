@@ -22,9 +22,10 @@ promotion.
 | Code audit | `code-search`, `python-ast-audit` | `pathlib`, `re`, Python `ast` |
 | Cloud | `cloud-inventory` | Read-only locally installed AWS/Azure/GCP CLI invocation |
 
-`binary-radare2`, `frida-processes` and `cloud-inventory` report a bounded
-availability result when their optional local executable/package is absent;
-they never cause an implicit download or execute a shell command.
+`binary-radare2` and `cloud-inventory` report a bounded availability result
+when their optional local executable or credentials are absent; the Frida
+Python runtime is installed as a project dependency. None of these adapters
+cause an implicit download or execute an unbounded shell command.
 
 ## Invariants
 
@@ -54,6 +55,7 @@ they never cause an implicit download or execute a shell command.
 
 ```text
 capstone 5.x
+frida 17.x
 playwright 1.62.x
 ```
 
