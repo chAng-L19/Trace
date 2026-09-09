@@ -1,4 +1,6 @@
-# Codex Red-Team Agent
+# Trace
+
+Trace 是证据驱动、可持久恢复、面向强模型战术能力的专业红队 Agent Harness。
 
 证据驱动、可持久恢复、面向强模型战术能力的专业红队 Agent Harness。
 

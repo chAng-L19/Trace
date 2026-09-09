@@ -1,4 +1,7 @@
-# codex-redteam-agent 第一性原理演进计划
+# Trace 第一性原理演进计划
+
+技术兼容标识：仓库 `codex-redteam-agent`，Python 包 `redteam_agent`。
+MCP `serverInfo.name` 继续使用 `redteam-agent-runtime`，作为兼容协议标识。
 
 > 本文件是当前权威计划；`docs/architecture/lean-transparent-refactor.md` 只提供
 > 架构背景和参考映射。每个阶段完成时，必须在同一提交中更新本文件的状态、验收

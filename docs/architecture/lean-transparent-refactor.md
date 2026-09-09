@@ -2,7 +2,7 @@
 
 ## 目标
 
-将 `codex-redteam-agent` 从“多个成熟子系统叠加的 Runtime”收敛为一个可解释、
+将 **Trace**（技术仓库 `codex-redteam-agent`）从“多个成熟子系统叠加的 Runtime”收敛为一个可解释、
 可恢复、可扩展但不臃肿的强模型 Harness：
 
 ```text
