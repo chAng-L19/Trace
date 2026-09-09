@@ -55,6 +55,7 @@ compileall: passed
 wheel: built
 self-test: terminal success
 MCP initialize/tools/list: passed; 5 public tools
+GitHub Actions: `.github/workflows/ci.yml` added for push/PR validation on Python 3.11–3.13
 ```
 
 ## 当前总计划

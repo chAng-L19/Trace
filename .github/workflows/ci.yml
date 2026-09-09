@@ -1,0 +1,42 @@
+name: Trace CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install package and test dependencies
+        run: python -m pip install --upgrade pip && python -m pip install ".[dev]"
+      - name: Install Chromium for browser fixtures
+        run: python -m playwright install --with-deps chromium
+      - name: Compile source
+        run: python -m compileall -q src scripts tests
+      - name: Verify dependency consistency
+        run: python -m pip check
+      - name: Run test suite
+        run: python -m pytest -q
+      - name: Run Trace self-test
+        run: python -m redteam_agent self-test
+      - name: Build wheel
+        run: python -m pip wheel . --no-deps --wheel-dir dist
