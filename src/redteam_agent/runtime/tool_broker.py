@@ -41,7 +41,6 @@ class ToolBroker(McpBrokerMixin):
         self._reconcilers: dict[str, Adapter] = {}
         self._clients: dict[str, StdioMcpClient | HttpMcpClient] = {}
         self._run_clients: dict[tuple[str, str], StdioMcpClient | HttpMcpClient] = {}
-        self._run_resources: dict[tuple[str, str], set[str]] = {}
         self._active_call_clients: dict[str, StdioMcpClient | HttpMcpClient] = {}
         self._server_configs: dict[str, McpServerSpec] = {}
         self._server_status: dict[str, dict[str, Any]] = {}
@@ -387,15 +386,6 @@ class ToolBroker(McpBrokerMixin):
                     )
                 else:
                     output = client.call_tool(descriptor.name, arguments, timeout=effective_timeout)
-                spec = self._server_configs.get(descriptor.server)
-                if spec is not None:
-                    self._track_run_resource(
-                        spec,
-                        run_id=run_id,
-                        tool_name=descriptor.name,
-                        arguments=arguments,
-                        output=output,
-                    )
             if isinstance(output, Mapping) and output.get("isError") is True:
                 self._record_result(qualified, success=False, latency_ms=(time.monotonic() - started_clock) * 1000, error="mcp_tool_error")
                 return ToolCallResult(

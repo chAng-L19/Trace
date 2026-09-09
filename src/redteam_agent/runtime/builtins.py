@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .tool_broker import ToolBroker
+from .open_source_tools import register_open_source_tools
 
 
 _VERIFIED_TRUST = {"runtime_verified", "tool_verified"}
@@ -376,6 +377,9 @@ def report_builder(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def register_builtin_tools(broker: ToolBroker) -> None:
+    # These adapters are in-process integrations.  External MCP servers remain
+    # optional extensions and are never required for the default capability set.
+    register_open_source_tools(broker)
     broker.register_adapter(
         name="local-target-inspector",
         capabilities=("target_intake", "code_analysis", "source_inventory", "environment_inventory"),

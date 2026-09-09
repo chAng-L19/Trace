@@ -120,64 +120,6 @@ PRESET_DEFAULTS: dict[str, Mapping[str, Any]] = {
             "browser_take_screenshot",
         ),
     },
-    "ida": {
-        "scope": "run",
-        "startup_timeout_seconds": 120.0,
-        "tool_timeout_seconds": 180.0,
-        "include_tools": (
-            "idb_*",
-            "server_health",
-            "list_funcs",
-            "list_globals",
-            "imports*",
-            "lookup_funcs",
-            "func_query",
-            "entity_query",
-            "decompile",
-            "disasm",
-            "func_profile",
-            "analyze_function",
-            "analyze_component",
-            "trace_data_flow",
-            "xrefs_to",
-            "xref_query",
-            "callees",
-            "callgraph",
-            "basic_blocks",
-            "find*",
-            "get_string",
-            "get_bytes",
-            "get_int",
-            "read_struct",
-            "type_query",
-            "stack_frame",
-            "int_convert",
-        ),
-        "read_only_tools": (
-            "idb_list",
-            "server_health",
-            "list_*",
-            "imports*",
-            "lookup_funcs",
-            "func_query",
-            "entity_query",
-            "decompile",
-            "disasm",
-            "func_profile",
-            "analyze_*",
-            "trace_data_flow",
-            "*xref*",
-            "callees",
-            "callgraph",
-            "basic_blocks",
-            "find*",
-            "get_*",
-            "read_struct",
-            "type_query",
-            "stack_frame",
-            "int_convert",
-        ),
-    },
 }
 
 
@@ -192,28 +134,8 @@ PLAYWRIGHT_CAPABILITIES: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 
-IDA_CAPABILITIES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("idb_*", ("binary_reverse", "environment_inventory")),
-    ("server_health", ("binary_reverse", "environment_inventory")),
-    ("list_*", ("binary_reverse", "binary_inventory")),
-    ("imports*", ("binary_reverse", "binary_inventory")),
-    ("*decomp*", ("binary_reverse", "decompile")),
-    ("disasm*", ("binary_reverse", "disassemble")),
-    ("*xref*", ("binary_reverse", "graph_analysis")),
-    ("callgraph", ("binary_reverse", "graph_analysis")),
-    ("callees", ("binary_reverse", "graph_analysis")),
-    ("basic_blocks", ("binary_reverse", "graph_analysis")),
-    ("debug*", ("binary_reverse", "binary_debug")),
-    ("get_register*", ("binary_reverse", "binary_debug")),
-    ("patch*", ("binary_reverse", "binary_modify")),
-    ("rename*", ("binary_reverse", "binary_modify")),
-    ("set_*", ("binary_reverse", "binary_modify")),
-    ("*", ("binary_reverse",)),
-)
-
-
 def profile_capabilities(preset: str, tool_name: str) -> tuple[str, ...]:
-    rules = PLAYWRIGHT_CAPABILITIES if preset == "playwright" else IDA_CAPABILITIES if preset == "ida" else ()
+    rules = PLAYWRIGHT_CAPABILITIES if preset.casefold() == "playwright" else ()
     capabilities: list[str] = []
     for pattern, offered in rules:
         if fnmatch.fnmatchcase(tool_name.casefold(), pattern.casefold()):

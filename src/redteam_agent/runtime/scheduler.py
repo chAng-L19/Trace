@@ -130,6 +130,14 @@ class NextActionPolicy:
             if not self._dependency_facts_valid(state, workflow, action, facts):
                 continue
             exclusions = self.tool_exclusions(state, action.action_id)
+            # A capability-coverage action has an explicit lower bound. Once
+            # that bound is met, return the action without another descriptor
+            # so the executor can close the ensemble immediately. This keeps
+            # newly registered adapters from turning a one-result action into
+            # an unbounded probe across every matching capability.
+            if action.tool_strategy == "capability_coverage" and self.ensemble_satisfied(state, action):
+                ranked.append((-self._rank(state, action, None), index, action.action_id, action, None))
+                continue
             descriptor = self.broker.select(action.required_capabilities, exclude=exclusions)
             ranked.append((-self._rank(state, action, descriptor), index, action.action_id, action, descriptor))
 

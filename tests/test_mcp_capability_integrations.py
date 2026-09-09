@@ -66,20 +66,6 @@ class _FakeMcpClient:
     ) -> Mapping[str, Any]:
         del timeout
         self.calls.append((name, dict(arguments), cancellation_id))
-        if name == "idb_open":
-            return {
-                "structuredContent": {
-                    "success": True,
-                    "session": {"session_id": str(arguments.get("preferred_session_id") or "db-1")},
-                }
-            }
-        if name == "idb_close":
-            return {
-                "structuredContent": {
-                    "success": True,
-                    "session_id": str(arguments.get("database") or ""),
-                }
-            }
         return {"structuredContent": {"tool": name, "arguments": dict(arguments)}}
 
     def consume_tools_changed(self) -> bool:
@@ -122,27 +108,6 @@ def fake_mcp(monkeypatch: pytest.MonkeyPatch):
                 "inputSchema": {"type": "object"},
             },
         ],
-        "ida": [
-            {
-                "name": "idb_open",
-                "description": "Open a binary database",
-                "inputSchema": {
-                    "type": "object",
-                    "required": ["input_path"],
-                    "properties": {"input_path": {"type": "string"}},
-                },
-            },
-            {
-                "name": "decompile",
-                "description": "Decompile a function",
-                "inputSchema": {"type": "object"},
-            },
-            {
-                "name": "rename_local",
-                "description": "Rename a local variable",
-                "inputSchema": {"type": "object"},
-            },
-        ],
     }
     monkeypatch.setattr(broker_module, "StdioMcpClient", _FakeMcpClient)
     monkeypatch.setattr(mcp_broker_module, "StdioMcpClient", _FakeMcpClient)
@@ -157,18 +122,12 @@ preset = "playwright"
 scope = "run"
 command = "npx"
 args = ["@playwright/mcp@0.0.79", "--isolated"]
-
-[mcp_servers.ida]
-preset = "ida"
-scope = "run"
-command = "uv"
-args = ["run", "idalib-mcp", "--stdio"]
 """.strip(),
         encoding="utf-8",
     )
 
 
-def test_playwright_and_ida_presets_expose_high_value_bounded_catalog(
+def test_playwright_preset_exposes_high_value_bounded_catalog(
     tmp_path: Path,
     fake_mcp: None,
 ) -> None:
@@ -187,14 +146,7 @@ def test_playwright_and_ida_presets_expose_high_value_bounded_catalog(
         descriptors["playwright:browser_snapshot"].capabilities
     )
 
-    assert "ida:idb_open" in descriptors
-    assert "ida:decompile" in descriptors
-    assert "ida:rename_local" not in descriptors
-    assert descriptors["ida:idb_open"].side_effecting is True
-    assert descriptors["ida:decompile"].side_effecting is False
-    assert {"binary_reverse", "decompile"} <= set(descriptors["ida:decompile"].capabilities)
     assert broker.server_statuses()["playwright"]["status"] == "catalogued"
-    assert broker.server_statuses()["ida"]["scope"] == "run"
 
 
 def test_run_scoped_mcp_clients_are_isolated_reused_and_closed(
@@ -239,39 +191,6 @@ def test_run_scoped_mcp_clients_are_isolated_reused_and_closed(
     assert run_b.process.closed is False
     broker.close()
     assert run_b.process.closed is True
-
-
-def test_ida_run_cleanup_only_closes_sessions_opened_by_that_run(
-    tmp_path: Path,
-    fake_mcp: None,
-) -> None:
-    config = tmp_path / "config.toml"
-    _config(config)
-    broker = ToolBroker()
-    broker.bind_workspace_root(tmp_path / "runtime" / "workspaces")
-    descriptors = {item.qualified_name: item for item in broker.discover_from_configs((config,))}
-
-    opened = broker.call(
-        descriptors["ida:idb_open"],
-        {"input_path": "fixture.bin", "preferred_session_id": "run-db"},
-        run_id="run-ida",
-    )
-    assert opened.status == "success"
-    ida_client = _FakeMcpClient.instances[-1]
-    reports = broker.close_run("run-ida")
-
-    assert reports == (
-        {
-            "server": "ida",
-            "preset": "ida",
-            "resources_discovered": 1,
-            "resources_closed": ["run-db"],
-            "errors": [],
-            "status": "closed",
-        },
-    )
-    assert ("idb_close", {"database": "run-db", "save": True}, "") in ida_client.calls
-    assert ida_client.process.closed is True
 
 
 def test_run_client_tool_change_notification_refreshes_catalog(
@@ -358,25 +277,6 @@ env = { PROFILE = "two" }
     assert len(_FakeMcpClient.instances) == 2
 
 
-def test_ida_free_installer_is_not_started_as_an_mcp_server(
-    tmp_path: Path,
-    fake_mcp: None,
-) -> None:
-    config = tmp_path / "config.toml"
-    config.write_text(
-        """
-[mcp_servers.ida]
-preset = "ida"
-command = "ida-free-pc_94_x64win.exe"
-""".strip(),
-        encoding="utf-8",
-    )
-    broker = ToolBroker()
-    broker.discover_from_configs((config,))
-    assert broker.server_statuses()["ida"]["error"] == "ida_installer_not_mcp_server"
-    assert _FakeMcpClient.instances == []
-
-
 def test_mcp_spec_expands_environment_and_run_placeholders(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -400,7 +300,11 @@ def test_mcp_spec_expands_environment_and_run_placeholders(
     assert spec.args[0] == "--run=run-1"
     assert str(tmp_path / "workspace") in spec.args[1]
     assert spec.env["TOKEN"] == "fixture-token"
-    assert profile_capabilities("ida", "decompile") == ("binary_reverse", "decompile")
+    assert profile_capabilities("playwright", "browser_snapshot") == (
+        "browser_automation",
+        "dom_snapshot",
+        "page_fetch",
+    )
 
 
 def test_stdio_mcp_roots_and_cancellation_protocol(tmp_path: Path) -> None:

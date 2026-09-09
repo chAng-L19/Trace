@@ -523,7 +523,11 @@ class ActionExecutor(ExecutorActionsMixin, ExecutorTrustMixin):
         exclusions = tuple(dict.fromkeys((*state.action_tools_tried.get(action.action_id, ()), *succeeded)))
         additional = (
             self.broker.select(action.required_capabilities, exclude=exclusions)
-            if action.tool_strategy == "capability_coverage" and len(succeeded) < action.max_tool_results
+            if (
+                action.tool_strategy == "capability_coverage"
+                and len(succeeded) < action.min_tool_results
+                and len(succeeded) < action.max_tool_results
+            )
             else None
         )
         if additional is not None:

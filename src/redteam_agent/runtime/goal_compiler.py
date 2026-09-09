@@ -63,7 +63,7 @@ WORKFLOW_MARKERS: tuple[tuple[str, frozenset[str]], ...] = (
     ),
     (
         "binary-mobile-analysis",
-        frozenset({"apk", "android", "ios", "binary", "firmware", "ida", "jadx", "逆向", "二进制", "固件", "移动端"}),
+        frozenset({"apk", "android", "ios", "binary", "firmware", "ghidra", "radare2", "rizin", "capstone", "frida", "jadx", "逆向", "二进制", "固件", "移动端"}),
     ),
     (
         "source-assisted-review",

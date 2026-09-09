@@ -23,7 +23,7 @@ Runtime：作用域、凭据、预算、幂等、CAS、Lease、Evidence lineage�
 | OpenCode | `7774461bbf7bd0600070cdede4fe8b9d9f301bf4` | MCP 状态、工具目录、连接生命周期 |
 | `cc_src` | 本地参考 | scoped config、取消、缓存失效、Token-aware 输出 |
 | Playwright MCP | `7e0457a7cbf88823bf0146d12c46ae12c6818247` | accessibility snapshot、隔离 browser、read-only annotations |
-| IDA Pro MCP | `3349ae30c6eb7fa1c14b158ff71bfc7c3081bb51` | explicit database、profile、supervisor/worker、cursor/cancel |
+| Capstone / radare2 / Rizin / Frida | 开源工具适配 | 反汇编、二进制元数据、字符串、动态进程和控制流分析 |
 
 ## 已完成基线
 
@@ -39,20 +39,14 @@ Transcript/Context/Budget、Worker Plane、CAS Artifact Store、Lease/Fencing、
 
 ### Phase 6.1
 
-已完成：run-scoped Playwright/IDA Pro MCP、roots、工具目录刷新、取消、资源清理、
-`mcp-doctor` 和 Token-efficient capability catalog。
-
-### Phase 6.2
-
-已完成可行性结论：IDA Free 安装器和 GUI 不作为项目内置后端；IDA Free 不提供满足
-本项目结构化、可取消、可验证 Agent 集成所需的 API/插件能力。用户自行接入 IDA Pro
-MCP；项目只维护通用 `ida` 配置与 adapter。
+已完成：run-scoped Playwright MCP、roots、工具目录刷新、取消、资源清理、
+`mcp-doctor`、Token-efficient capability catalog，以及默认注册的开源工具 Adapter。
 
 当前基线：
 
 ```text
-HEAD: 99288e9 fix: remove unsupported ida free bridge
-pytest: 280 passed, 1 skipped
+HEAD: 53c5112 feat: add run-scoped tool registry
+pytest: 307 passed, 1 skipped
 compileall: passed
 ```
 
@@ -105,7 +99,8 @@ compileall: passed
 3. 保留一个最强主模型和一个 AgentLoop，不做固定 Specialist 流水线。
 4. 工具默认 selected/catalog，强模型可显式 expand；不因省 Token 隐藏可用能力。
 5. Projection、summary、report 都是导航投影，不能冒充 Evidence。
-6. IDA 由用户自行通过 `ida` MCP preset 接入；不安装、不打包、不模拟 IDA Free。
+6. 逆向能力优先使用内置 Capstone、二进制解析、字符串提取、Frida 和 radare2/Rizin
+   Adapter；外部 MCP 只作为可选扩展，不是默认能力来源。
 
 ## 迁移规则
 
@@ -122,7 +117,6 @@ compileall: passed
 ```text
 docs/acceptance/phase-0.md ... phase-6.md   历史基线
 docs/acceptance/phase-6.1.md                Stateful MCP
-docs/acceptance/phase-6.2.md                IDA Free feasibility
 docs/acceptance/lean-L0.md                  Lean L0 complexity/behavior freeze
 docs/acceptance/lean-l0-audit.json         Lean L0 machine-readable audit
 docs/acceptance/lean-L1.md                  Lean L1 canonical entry acceptance

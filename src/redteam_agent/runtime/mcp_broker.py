@@ -77,18 +77,6 @@ class McpBrokerMixin:
                         "preset": spec.preset,
                     }
                     continue
-                command_name = Path(spec.command).name.casefold() if spec.command else ""
-                if spec.preset == "ida" and command_name.startswith("ida-free-pc"):
-                    error = "ida_installer_not_mcp_server"
-                    self._record_discovery_error(f"server:{server_name}", error)
-                    self._server_status[server_name] = {
-                        "status": "failed",
-                        "transport": spec.transport,
-                        "scope": spec.scope,
-                        "preset": spec.preset,
-                        "error": error,
-                    }
-                    continue
                 if spec.transport not in {"stdio", "http"} or (
                     spec.transport == "stdio" and not spec.command
                 ) or (spec.transport == "http" and not spec.url):
@@ -126,7 +114,6 @@ class McpBrokerMixin:
             for client in self._clients.values():
                 client.close()
             self._clients.clear()
-            self._run_resources.clear()
             self._server_configs.clear()
             self._server_status.clear()
             self._capability_overrides.clear()
@@ -301,40 +288,6 @@ class McpBrokerMixin:
             self._descriptors.pop(qualified, None)
         self._register_mcp_tools(spec, tools)
 
-    @staticmethod
-    def _structured_content(output: Any) -> Mapping[str, Any]:
-        if not isinstance(output, Mapping):
-            return {}
-        structured = output.get("structuredContent")
-        return structured if isinstance(structured, Mapping) else output
-
-    def _track_run_resource(
-        self,
-        spec: McpServerSpec,
-        *,
-        run_id: str,
-        tool_name: str,
-        arguments: Mapping[str, Any],
-        output: Any,
-    ) -> None:
-        if spec.preset != "ida" or not run_id:
-            return
-        key = (spec.name, run_id)
-        if tool_name == "idb_open":
-            session = self._structured_content(output).get("session")
-            if isinstance(session, Mapping):
-                session_id = str(session.get("session_id") or "").strip()
-                if session_id:
-                    self._run_resources.setdefault(key, set()).add(session_id)
-        elif tool_name == "idb_close":
-            session_id = str(arguments.get("database") or "").strip()
-            if session_id:
-                resources = self._run_resources.get(key)
-                if resources is not None:
-                    resources.discard(session_id)
-                    if not resources:
-                        self._run_resources.pop(key, None)
-
     def _restart_server(self, server_name: str) -> None:
         with self._lifecycle_lock:
             spec = self._server_configs.get(server_name)
@@ -378,44 +331,19 @@ class McpBrokerMixin:
                     key[0],
                     self._run_clients.pop(key),
                     self._server_configs.get(key[0]),
-                    sorted(self._run_resources.pop(key, set())),
                 )
                 for key in [key for key in self._run_clients if key[1] == run_id]
             ]
-        for server_name, client, spec, resources in detached:
-            closed: list[str] = []
-            errors: list[Mapping[str, str]] = []
-            if spec is not None and spec.preset == "ida":
-                for session_id in resources:
-                    try:
-                        result = client.call_tool(
-                            "idb_close",
-                            {"database": session_id, "save": True},
-                            timeout=spec.tool_timeout_seconds,
-                        )
-                        structured = self._structured_content(result)
-                        if structured.get("error"):
-                            errors.append(
-                                {
-                                    "resource": session_id,
-                                    "error": safe_error_text(structured.get("error")),
-                                }
-                            )
-                        else:
-                            closed.append(session_id)
-                    except Exception as exc:
-                        errors.append(
-                            {"resource": session_id, "error": safe_error_text(exc)}
-                        )
+        for server_name, client, spec in detached:
             client.close()
             reports.append(
                 {
                     "server": server_name,
                     "preset": spec.preset if spec is not None else "",
-                    "resources_discovered": len(resources),
-                    "resources_closed": closed,
-                    "errors": errors,
-                    "status": "closed" if not errors else "closed_with_errors",
+                    "resources_discovered": 0,
+                    "resources_closed": [],
+                    "errors": [],
+                    "status": "closed",
                 }
             )
         return tuple(reports)
@@ -430,7 +358,6 @@ class McpBrokerMixin:
             self._clients.clear()
             leftovers = tuple(self._run_clients.values())
             self._run_clients.clear()
-            self._run_resources.clear()
         for client in (*shared, *leftovers):
             client.close()
 

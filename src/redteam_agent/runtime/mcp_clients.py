@@ -49,7 +49,7 @@ CAPABILITY_MARKERS: dict[str, frozenset[str]] = {
     "port_scan": frozenset({"nmap", "masscan", "port", "scan"}),
     "http_fingerprint": frozenset({"fingerprint", "wappalyzer", "httpx", "technology"}),
     "cve_search": frozenset({"cve", "vulnerability", "nvd"}),
-    "binary_reverse": frozenset({"ida", "ghidra", "radare", "rizin", "disassemble", "decompile", "binary"}),
+    "binary_reverse": frozenset({"ghidra", "radare", "rizin", "capstone", "frida", "disassemble", "decompile", "binary"}),
     "apk_decompile": frozenset({"jadx", "apk", "android", "decompile"}),
     "android_static_analysis": frozenset({"jadx", "apk", "android", "manifest"}),
     "code_analysis": frozenset({"code", "source", "repository", "audit", "search"}),

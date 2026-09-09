@@ -10,7 +10,10 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "codex-redteam-mode contributors" }]
-dependencies = []
+dependencies = [
+  "capstone>=5.0,<6",
+  "playwright>=1.62,<1.63",
+]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
@@ -31,4 +34,3 @@ redteam_agent = ["workflows/*.toml"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
-

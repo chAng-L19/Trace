@@ -22,8 +22,8 @@ lineage、清理和终态。轻量化只减少重复状态和重复编排，不�
 当前基线：
 
 ```text
-HEAD: 99288e9 fix: remove unsupported ida free bridge
-pytest: 280 passed, 1 skipped
+HEAD: 53c5112 feat: add run-scoped tool registry
+pytest: 307 passed, 1 skipped
 compileall: passed
 Python: 3.12 baseline
 ```
@@ -273,10 +273,10 @@ Finding 必须引用 raw observation、影响证明、负向控制、目标和�
 
 ### L9：MCP/Worker 适配器瘦身
 
-动作：保持现有 Playwright/IDA Pro run-scoped MCP；将 transport、registry、worker execution
+动作：保持现有 Playwright run-scoped MCP；将 transport、registry、worker execution
 和 lifecycle cleanup 只保留一条路径；Docker/Codex 为显式 adapter，默认不加载。
 
-验收：五个公开 MCP 工具 schema 兼容；Playwright 真实 fixture；IDA 配置级验收；worker
+验收：五个公开 MCP 工具 schema 兼容；Playwright 真实 fixture；内置开源工具验收；worker
 重启、取消、幂等、workspace/credential 隔离通过；没有隐藏全局 client。
 
 ### L10：删除旧编排与发布门

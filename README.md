@@ -13,7 +13,9 @@
 - SHA-256 Artifact Store、FTS5、完整原始输出和有界模型投影；
 - Phase 6 薄战术循环、append-only ExplorationLedger、分支重开和 ReconDigest；
 - ToolRegistry 按能力/风险选择工具，支持目录 revision、按需 expand 和运行级可见性；
-- run-scoped MCP Capability Plane，内置 Playwright preset、roots、取消、目录刷新和资源清理；
+- 内置开源工具面：HTTP、DNS、TCP 探测、Playwright 浏览器、Capstone 反汇编、
+  二进制信息/字符串、radare2/Rizin、Frida、源码搜索、Python AST 和云账号只读清单；
+- 通用 run-scoped MCP Capability Plane，支持 roots、取消、目录刷新和资源清理；
 - EvidenceGraph、SemanticVerifier、TerminalJudge 和五个公开 MCP 工具。
 
 模型负责假设生成、工具选择、局部搜索和战术优先级；Runtime 只负责确定性不变量、证据晋升、清理和终态裁决。
@@ -22,13 +24,13 @@
 
 ```powershell
 python -m redteam_agent self-test
-python -m redteam_agent mcp -- --root .\state
+python -m redteam_agent.runtime.mcp_transport --root .\state
 redteam-agent mcp-doctor --config .\config.toml
 ```
 
-`config.toml.example` 提供官方 Playwright MCP 配置。Playwright preset 默认保留完整交互
-能力但优先暴露高价值工具；逆向后端通过用户自己的 MCP 配置或本地 Ghidra/radare2/
-Frida 工具接入，不绑定 IDA 安装器或 GUI。
+默认 `OperationRuntime` 直接注册上述工具，不依赖 `config.toml`。Playwright 和 Capstone
+通过 Python API 调用，radare2/Rizin、Frida 和云 CLI 在本机存在时由内置 Adapter 直接
+执行。`config.toml.example` 仅保留通用 MCP 扩展示例。
 
 开发测试：
 
