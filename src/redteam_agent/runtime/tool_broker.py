@@ -337,7 +337,7 @@ class ToolBroker(McpBrokerMixin):
         started_at = utc_now()
         started_clock = time.monotonic()
         qualified = descriptor.qualified_name
-        call_id = f"call-{hashlib.sha256(f'{qualified}\0{time.time_ns()}'.encode()).hexdigest()[:24]}"
+        call_id = "call-" + hashlib.sha256(f"{qualified}\0{time.time_ns()}".encode()).hexdigest()[:24]
         input_hash = self.canonical_hash(arguments)
         schema_error = self._schema_error(descriptor.input_schema, arguments)
         if schema_error:
