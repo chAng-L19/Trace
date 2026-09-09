@@ -22,7 +22,7 @@ lineage、清理和终态。轻量化只减少重复状态和重复编排，不�
 当前基线：
 
 ```text
-HEAD: 53c5112 feat: add run-scoped tool registry
+HEAD: 1458ad9 chore: install frida runtime for reverse adapter
 pytest: 307 passed, 1 skipped
 compileall: passed
 Python: 3.12 baseline
@@ -206,7 +206,7 @@ facade；禁止新增直接调用 Runtime 内部 mixin 的代码；建立 `Agent
 `AgentService`；fake-runtime fallback 仅用于协议测试。`OperationRuntimeAdapter` 已降为
 转发 shim，Store/Event/Tool adapter 的删除延后到 L2/L4。
 
-### L2：SessionJournal 与透明树
+### L2：SessionJournal 与透明树（已通过）
 
 动作：把 transcript、exploration、recon digest、model request/observation、events
 统一为 run-bound journal projections；增加 parent/leaf/branch、session info、raw
@@ -215,7 +215,10 @@ entry refs；SQLite 仍是唯一写入源。
 验收：任意时点可导出完整 session tree；resume/fork/branch/replay 结果稳定；原始消息
 和 Artifact 不丢失；跨 run 引用被拒绝；Journal 不直接晋升 Evidence。
 
-### L3：单一 AgentLoop
+当前结果：`SessionJournal` 已覆盖 session tree、branch/leaf、transcript 和事件投影，
+对应恢复、分支和不可变记录测试通过。
+
+### L3：单一 AgentLoop（已通过）
 
 动作：把 ModelLoop/TacticalLoop/部分 Scheduler 路径合并为一个明确循环：
 
@@ -230,7 +233,10 @@ Planner 只生成 `NextActionProposal`，Runtime 只验证 proposal；不再存�
 验收：强模型可在一个 gate 内连续搜索；动态分支/重开保持；预算、幂等、Lease、Evidence
 语义不变；相同 Fake Provider 测试覆盖文本/structured/tool/parallel/stream/cancel。
 
-### L4：ToolRegistry 与按需可见工具
+当前结果：模型循环和战术循环已收敛为同一应用路径，Fake Provider、流式、并行工具、
+取消和恢复测试通过。
+
+### L4：ToolRegistry 与开源工具直接集成（已通过）
 
 动作：将 MCP/builtin/worker tool 统一进入 registry；默认只传 selected definitions 和
 一行 snippet；提供 `tools.expand`/profile；记录 tool source、schema hash、catalog
@@ -239,7 +245,11 @@ revision、visibility reason。
 验收：默认 prompt tool token 下降至少 30%；expand 后能力完整；未知 tool 不可调用；
 tool-list change 可恢复；side-effect annotation 不可由模型覆写。
 
-### L5：BoundedOutput 与 Artifact streaming
+当前结果：默认运行时直接注册 16 个开源工具，Playwright/Capstone/Frida 使用 Python
+API，radare2/Rizin 和云 CLI 使用内置受控 Adapter；无 IDA/IDB 能力残留，工具目录、
+副作用标记、schema hash 和回归测试通过。
+
+### L5：BoundedOutput 与 Artifact streaming（下一阶段）
 
 动作：实现 Pi 风格 `BoundedOutput`：head/tail、行数/字节双限制、增量 decoder、raw
 CAS 文件、truncation metadata；所有 Local/MCP/Codex/HTTP 输出统一经过该 seam。
