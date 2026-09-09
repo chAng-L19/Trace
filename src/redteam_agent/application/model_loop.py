@@ -28,12 +28,16 @@ from ..runtime.conversation_records import DiagnosticArtifactRecord
 from .contracts import AgentRunView, Observation
 from ..runtime.model_records import ModelObservationRecord, ModelRequestRecord, ModelResponseRecord
 from .model_integrity import ModelIntegrityMixin
-from .agent_loop_support import record_tactical_attempts, record_tactical_update
+from .agent_loop_support import (
+    handle_tool_expand,
+    record_tactical_attempts,
+    record_tactical_update,
+    tool_catalog_summary,
+)
 from .stream_accumulator import StreamTextAccumulator
 
 MAX_INLINE_MODEL_OBSERVATION_BYTES = 64 * 1024
 MAX_INLINE_MODEL_STREAM_BYTES = 64 * 1024
-
 
 class ModelLoopError(RuntimeError):
     pass
@@ -105,6 +109,9 @@ class AgentLoop(ModelIntegrityMixin):
             )
             if budget_view.run.status == "paused_budget":
                 return budget_view
+            if handle_tool_expand(self, run_id, response):
+                view = self.service.status(run_id)
+                continue
             if not response.tool_calls:
                 return budget_view
             results = self._execute_tool_calls(
@@ -239,26 +246,34 @@ class AgentLoop(ModelIntegrityMixin):
             view,
             max_context_tokens=capabilities.max_context_tokens,
         )
-        messages = selection.messages
-        definitions = (
-            tuple(sorted(self.tools.discover(), key=lambda item: item.qualified_name))
-            if self.tools is not None
-            else ()
-        )
-        tool_catalog = self._tool_catalog(definitions)
-        tools = tuple(
-            {
-                "type": "function",
-                "name": item.qualified_name,
-                "description": item.description,
-                "input_schema": dict(item.input_schema),
-            }
-            for item in definitions
+        catalog = None
+        definitions = ()
+        if self.tools is not None:
+            catalog_builder = getattr(self.tools, "catalog", None)
+            if callable(catalog_builder):
+                catalog = catalog_builder(view.run.run_id, capabilities=view.missing_capabilities)
+                definitions = tuple(sorted(catalog.tools, key=lambda item: item.qualified_name))
+            else:
+                definitions = tuple(sorted(self.tools.discover(), key=lambda item: item.qualified_name))
+        tool_catalog = tool_catalog_summary(definitions)
+        prompt_builder = getattr(self.tools, "prompt_definitions", None)
+        tools = (
+            tuple(prompt_builder(catalog))
+            if catalog is not None and callable(prompt_builder)
+            else tuple(
+                {
+                    "type": "function",
+                    "name": item.qualified_name,
+                    "description": item.description,
+                    "input_schema": dict(item.input_schema),
+                }
+                for item in definitions
+            )
         )
         return ModelRequest(
             request_id=f"model-request-{uuid4().hex}",
             run_id=view.run.run_id,
-            messages=messages,
+            messages=selection.messages,
             tools=tools,
             response_schema={
                 "type": "object",
@@ -273,6 +288,11 @@ class AgentLoop(ModelIntegrityMixin):
                             "records": {"type": "array", "items": {"type": "object"}},
                         },
                         "additionalProperties": True,
+                    },
+                    "tools_expand": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Request omitted tools by qualified-name glob; use [] for all tools.",
                     },
                 },
                 "additionalProperties": True,
@@ -292,28 +312,11 @@ class AgentLoop(ModelIntegrityMixin):
                 "cache_write_tokens": selection.cache_write_tokens,
                 "context_overflow_tokens": selection.context_overflow_tokens,
                 "tool_catalog_total": len(definitions),
+                "tool_catalog_revision": catalog.revision if catalog is not None else "",
+                "tool_catalog_expanded": catalog.expanded if catalog is not None else False,
                 "tool_catalog": tool_catalog,
             },
         )
-
-    @staticmethod
-    def _tool_catalog(definitions: Sequence[Any]) -> Mapping[str, Any]:
-        grouped: dict[str, dict[str, Any]] = {}
-        for item in definitions:
-            server = grouped.setdefault(
-                item.server,
-                {
-                    "tool_count": 0,
-                    "capabilities": [],
-                    "preset": str(item.metadata.get("mcp_preset") or ""),
-                    "scope": str(item.metadata.get("mcp_scope") or ""),
-                },
-            )
-            server["tool_count"] += 1
-            server["capabilities"] = sorted(
-                set(server["capabilities"]) | set(item.capabilities)
-            )
-        return grouped
 
     def _save_request(self, request: ModelRequest) -> None:
         capabilities = self.model.capabilities()

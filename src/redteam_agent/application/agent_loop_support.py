@@ -8,7 +8,42 @@ from ..runtime.exploration_records import TacticalAttemptRecord
 from ..runtime.model_common import utc_now
 
 
-def record_tactical_update(loop: Any, view: Any, request: ModelRequest, response: ModelResponse) -> Mapping[str, Any] | None:
+def tool_catalog_summary(definitions: Sequence[Any]) -> Mapping[str, Any]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for item in definitions:
+        server = grouped.setdefault(
+            item.server,
+            {
+                "tool_count": 0,
+                "capabilities": [],
+                "preset": str(item.metadata.get("mcp_preset") or ""),
+                "scope": str(item.metadata.get("mcp_scope") or ""),
+            },
+        )
+        server["tool_count"] += 1
+        server["capabilities"] = sorted(set(server["capabilities"]) | set(item.capabilities))
+    return grouped
+
+
+def handle_tool_expand(loop: Any, run_id: str, response: ModelResponse) -> bool:
+    requested = response.structured_output.get("tools_expand")
+    if requested is None:
+        return False
+    if not isinstance(requested, Sequence) or isinstance(requested, (str, bytes)):
+        return False
+    selectors = tuple(str(item) for item in requested if isinstance(item, str))
+    if len(selectors) != len(requested):
+        return False
+    loop.service.expand_tools(run_id, selectors)
+    return True
+
+
+def record_tactical_update(
+    loop: Any,
+    view: Any,
+    request: ModelRequest,
+    response: ModelResponse,
+) -> Mapping[str, Any] | None:
     update = response.structured_output.get("tactical_update")
     if not isinstance(update, Mapping):
         return None
@@ -31,10 +66,13 @@ def record_tactical_attempts(
         for index, item in enumerate(response.tool_calls)
         if isinstance(item, Mapping)
     }
-    capabilities_by_tool = {
-        item.qualified_name: tuple(item.capabilities)
-        for item in (loop.tools.discover() if loop.tools is not None else ())
-    }
+    discover_for = getattr(loop.tools, "discover_for", None) if loop.tools is not None else None
+    available = (
+        discover_for(view.run.run_id, capabilities=view.missing_capabilities)
+        if callable(discover_for)
+        else (loop.tools.discover() if loop.tools is not None else ())
+    )
+    capabilities_by_tool = {item.qualified_name: tuple(item.capabilities) for item in available}
     active_hypothesis = str((tactical_update or {}).get("active_hypothesis_id") or "unscoped")
     target = view.goal.targets[0] if view.goal.targets else ""
     for result in results:

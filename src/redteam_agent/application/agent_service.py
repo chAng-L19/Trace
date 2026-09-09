@@ -17,6 +17,7 @@ from ..runtime.operation_result import OperationResult
 from ..runtime.operation_runtime import OperationRuntime
 from ..runtime.exploration import ExplorationLedger
 from ..runtime.session_journal import SessionJournal
+from ..runtime.tool_registry import ToolRegistry
 from ..workers import (
     CodexHandoffWorker,
     DockerWorkerAdapter,
@@ -62,7 +63,11 @@ class AgentService:
         else:
             assert root is not None
             self.runtime = OperationRuntime(root=root)
-        resolved_tool_port = tool_port or RuntimeToolAdapter(self.runtime)
+        resolved_tool_port = ToolRegistry(
+            tool_port or RuntimeToolAdapter(self.runtime),
+            store=self.runtime.store,
+        )
+        self.tools = resolved_tool_port
         self.journal = SessionJournal(self.runtime.store)
         self.exploration = ExplorationLedger(
             self.runtime.store,
@@ -337,6 +342,19 @@ class AgentService:
         if self.runtime.store.load_operation(run_id) is None:
             raise KeyError(f"operation_not_found:{run_id}")
         return self.conversation.messages(run_id)
+
+    def tool_catalog(self, run_id: str, *, capabilities: tuple[str, ...] = (), profile: str = ""):
+        if self.runtime.store.load_operation(run_id) is None:
+            raise KeyError(f"operation_not_found:{run_id}")
+        return self.tools.catalog(run_id, capabilities=capabilities, profile=profile)
+
+    def expand_tools(self, run_id: str, selectors: tuple[str, ...] = ()):
+        if self.runtime.store.load_operation(run_id) is None:
+            raise KeyError(f"operation_not_found:{run_id}")
+        return self.tools.expand(run_id, selectors)
+
+    def refresh_tools(self, *, force: bool = False):
+        return self.tools.refresh(force=force)
 
     def session_entries(self, run_id: str):
         return self.journal.entries(run_id)

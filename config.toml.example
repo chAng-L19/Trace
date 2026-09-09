@@ -17,14 +17,3 @@ command = "npx"
 args = ["-y", "@playwright/mcp@0.0.79", "--isolated", "--headless", "--image-responses=omit", "--codegen=none", "--block-service-workers", "--output-dir={workspace}/playwright-output", "--output-max-size=52428800"]
 startup_timeout_seconds = 120
 tool_timeout_seconds = 120
-
-# Requires IDA Pro 8.3+ with idalib activated and uv on PATH. Each analysis run
-# receives its own MCP supervisor connection; every IDA tool call still names
-# the database explicitly, so database state is never inferred globally.
-[mcp_servers.ida]
-preset = "ida"
-scope = "run"
-command = "uv"
-args = ["run", "idalib-mcp", "--stdio", "--max-workers", "4"]
-startup_timeout_seconds = 180
-tool_timeout_seconds = 180

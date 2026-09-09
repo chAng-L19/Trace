@@ -39,6 +39,7 @@ from .scheduler import NextActionPolicy, NextActionProposal
 from .store_migrations import MigrationReport, SchemaMigrationError
 from .terminal_judge import TerminalJudge
 from .tool_broker import ToolBroker
+from .tool_registry import ToolCatalog, ToolRegistry, ToolVisibility, ToolVisibilityPolicy
 from .verifier import SemanticVerifier
 from .workflow_registry import WorkflowRegistry
 
@@ -92,6 +93,10 @@ __all__ = [
     "TerminalDecision",
     "TerminalJudge",
     "ToolBroker",
+    "ToolCatalog",
+    "ToolRegistry",
+    "ToolVisibility",
+    "ToolVisibilityPolicy",
     "ToolCallResult",
     "ToolDescriptor",
     "WorkflowRegistry",
