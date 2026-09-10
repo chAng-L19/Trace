@@ -17,6 +17,7 @@ from .context import (
     TraceableCompactor,
 )
 from .tool_projection import ToolObservationProjection, ToolObservationProjector
+from .bounded_output import BoundedOutput
 
 __all__ = [
     "ALLOWED_RUN_TRANSITIONS",
@@ -42,5 +43,6 @@ __all__ = [
     "TraceableCompactor",
     "ToolObservationProjection",
     "ToolObservationProjector",
+    "BoundedOutput",
     "validate_run_transition",
 ]

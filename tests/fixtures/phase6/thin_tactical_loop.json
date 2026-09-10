@@ -355,15 +355,15 @@
         },
         "authority": "complete_tool_result",
         "byte_count": 512,
-        "output_byte_count": 229,
-        "output_sha256": "2a2a0e1d1781156a9719ba0753071b17eb705c9a2173a3e5b97785afe42a3595",
+        "output_byte_count": 209,
+        "output_sha256": "b071d64595de758fb6847e4d02444d97c03fb6abbe5ec93fff15d5db5e218af3",
         "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
       },
       "retryable": false,
       "status": "success",
       "tool_name": "fixture:http"
     },
-    "raw_bytes": 229,
+    "raw_bytes": 209,
     "semantic_fields": [
       "status_code",
       "headers",

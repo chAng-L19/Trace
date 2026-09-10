@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from ..core import ToolResult
+from .bounded_output import BoundedOutput
 
 
 MAX_PROJECTION_STRING = 2048
@@ -35,12 +36,9 @@ class ToolObservationProjector:
         *,
         raw_artifact: Mapping[str, Any],
     ) -> ToolObservationProjection:
-        raw = json.dumps(
-            result.output,
-            ensure_ascii=False,
-            sort_keys=True,
-            default=str,
-        ).encode("utf-8")
+        bounded = BoundedOutput.capture_json(result.output)
+        output_stats = bounded.preview()
+        bounded.discard()
         output = result.output
         semantic: dict[str, Any] = {}
         if isinstance(output, Mapping):
@@ -91,10 +89,10 @@ class ToolObservationProjector:
             },
             "raw": {
                 "artifact": dict(raw_artifact),
-                "byte_count": int(raw_artifact.get("byte_count") or len(raw)),
-                "sha256": str(raw_artifact.get("content_hash") or hashlib.sha256(raw).hexdigest()),
-                "output_byte_count": len(raw),
-                "output_sha256": hashlib.sha256(raw).hexdigest(),
+                "byte_count": int(raw_artifact.get("byte_count") or output_stats["byte_count"]),
+                "sha256": str(raw_artifact.get("content_hash") or output_stats["content_hash"]),
+                "output_byte_count": int(output_stats["byte_count"]),
+                "output_sha256": str(output_stats["content_hash"]),
                 "authority": "complete_tool_result",
             },
             "metadata": {
@@ -105,8 +103,8 @@ class ToolObservationProjector:
         }
         return ToolObservationProjection(
             content=content,
-            raw_bytes=len(raw),
-            raw_sha256=hashlib.sha256(raw).hexdigest(),
+            raw_bytes=int(output_stats["byte_count"]),
+            raw_sha256=str(output_stats["content_hash"]),
             semantic_fields=tuple(semantic),
         )
 

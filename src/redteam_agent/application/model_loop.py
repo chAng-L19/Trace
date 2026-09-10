@@ -35,6 +35,7 @@ from .agent_loop_support import (
     tool_catalog_summary,
 )
 from .stream_accumulator import StreamTextAccumulator
+from .bounded_output import BoundedOutput
 
 MAX_INLINE_MODEL_OBSERVATION_BYTES = 64 * 1024
 MAX_INLINE_MODEL_STREAM_BYTES = 64 * 1024
@@ -632,29 +633,32 @@ class AgentLoop(ModelIntegrityMixin):
             {"request_id": request.request_id, "call_id": call.call_id}
         )[:32]
         durable_observation = {"tool_result": normalized.to_dict()}
-        encoded = json.dumps(
-            durable_observation, ensure_ascii=False, sort_keys=True, default=str
-        ).encode("utf-8")
         artifact_id = ""
-        if len(encoded) > MAX_INLINE_MODEL_OBSERVATION_BYTES:
-            artifact = self.service.runtime.artifacts.put_json(
-                normalized.to_dict(),
-                run_id=view.run.run_id,
-                artifact_type="model_observation_tool_result",
-                preview={
-                    "request_id": request.request_id,
-                    "call_id": call.call_id,
-                    "tool_name": call.tool_name,
-                    "status": normalized.status,
-                    "output_hash": output_hash,
-                    "byte_count": len(encoded),
-                },
-                metadata={"action_id": view.next_action},
-            )
-            artifact_id = artifact.artifact_id
-            durable_observation = {
-                "tool_result_artifact": self.service.runtime.artifacts.project(artifact)
-            }
+        bounded = BoundedOutput.capture_json(normalized.to_dict())
+        try:
+            if bounded.byte_count > MAX_INLINE_MODEL_OBSERVATION_BYTES:
+                bounded.close()
+                artifact = self.service.runtime.artifacts.put_file(
+                    bounded.path,
+                    run_id=view.run.run_id,
+                    artifact_type="model_observation_tool_result",
+                    media_type="application/json",
+                    preview={
+                        "request_id": request.request_id,
+                        "call_id": call.call_id,
+                        "tool_name": call.tool_name,
+                        "status": normalized.status,
+                        "output_hash": output_hash,
+                        **bounded.preview(),
+                    },
+                    metadata={"action_id": view.next_action},
+                )
+                artifact_id = artifact.artifact_id
+                durable_observation = {
+                    "tool_result_artifact": self.service.runtime.artifacts.project(artifact)
+                }
+        finally:
+            bounded.discard()
         self.service.runtime.store.save_model_observation(
             ModelObservationRecord(
                 observation_id=observation_id,

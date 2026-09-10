@@ -31,10 +31,11 @@ Runtime：作用域、凭据、预算、幂等、CAS、Lease、Evidence lineage�
 
 ## 已完成基线
 
-### Phase 0–5
+### Phase 0–5 与 L5
 
 已完成：基线冻结、Core Contracts、AgentService 生命周期、Provider-agnostic ModelLoop、
 Transcript/Context/Budget、Worker Plane、CAS Artifact Store、Lease/Fencing、幂等和恢复。
+L5 已在独立分支 `feat/l5-bounded-output` 完成，等待 Pull Request 合并到 `main`。
 
 ### Phase 6
 
@@ -49,8 +50,7 @@ Transcript/Context/Budget、Worker Plane、CAS Artifact Store、Lease/Fencing、
 当前基线：
 
 ```text
-HEAD: 1458ad9 chore: install frida runtime for reverse adapter
-pytest: 307 passed, 1 skipped
+pytest: 311 passed, 1 skipped
 compileall: passed
 wheel: built
 self-test: terminal success
@@ -67,7 +67,7 @@ GitHub Actions: `.github/workflows/ci.yml` added for push/PR validation on Pytho
 | L2 | SessionJournal 透明会话树 | 已通过 |
 | L3 | 单一 AgentLoop | 已通过 |
 | L4 | ToolRegistry 与开源工具直接集成 | 已通过 |
-| L5 | BoundedOutput 与流式 Artifact | 下一阶段 |
+| L5 | BoundedOutput 与流式 Artifact | 已通过 |
 | L6 | ContextBudget 与可追溯 Compaction | 部分完成 |
 | L7 | ResourceResolver 与透明扩展 | 待执行 |
 | L8 | EvidenceGate 收敛 | 待执行 |
@@ -124,7 +124,7 @@ IDA/IDB 能力。
 调用；tools-list 变化可恢复；副作用标注不可被模型覆盖；16 个内置开源工具在确定性
 fixture 上通过；IDA/IDB 搜索无结果；MCP 五个公开工具 schema 保持兼容。
 
-### L5：BoundedOutput 与流式 Artifact（下一阶段）
+### L5：BoundedOutput 与流式 Artifact（已通过）
 
 交付：实现统一 `BoundedOutput` seam，采用 head/tail、行数/字节双限制、增量解码、
 原始输出 SHA-256 CAS 和截断元数据；Local/MCP/Codex/HTTP 输出全部经过该 seam。
@@ -132,6 +132,13 @@ fixture 上通过；IDA/IDB 搜索无结果；MCP 五个公开工具 schema 保�
 验收：大输出不会令 `OperationState` 无界增长；raw Artifact 始终完整且可回读；
 projection 不冒充 raw；UTF-8 边界、二进制、超时、取消、进程崩溃和重复恢复均通过；
 工具结果输入 Token 中位数下降至少 40%，能力覆盖和终态准确率不下降。
+
+当前结果：`BoundedOutput` 统一模型流、工具结果、Local Worker 和 MCP Worker 的输出处理，
+使用增量 JSON 编码、UTF-8 增量解码、head/tail、行数/字节双限制、SHA-256 和截断原因；
+完整内容写入 CAS，SQLite/Transcript 只保存有界 projection。新增 UTF-8 分片、二进制、
+超大工具结果、Local Worker 完整 stdout 和 CAS 回读测试；全量回归为 311 passed, 1 skipped。
+当前 L5 验收中的“工具结果输入 Token 中位数下降 40%”需要 L11 固定评测集完成统计，
+本阶段已验证 projection 有界和原始能力不丢失，L6 继续处理上下文窗口级压缩。
 
 ### L6：ContextBudget 与可追溯 Compaction（部分完成）
 

@@ -249,13 +249,18 @@ tool-list change 可恢复；side-effect annotation 不可由模型覆写。
 API，radare2/Rizin 和云 CLI 使用内置受控 Adapter；无 IDA/IDB 能力残留，工具目录、
 副作用标记、schema hash 和回归测试通过。
 
-### L5：BoundedOutput 与 Artifact streaming（下一阶段）
+### L5：BoundedOutput 与 Artifact streaming（已通过）
 
 动作：实现 Pi 风格 `BoundedOutput`：head/tail、行数/字节双限制、增量 decoder、raw
 CAS 文件、truncation metadata；所有 Local/MCP/Codex/HTTP 输出统一经过该 seam。
 
 验收：大输出不造成 OperationState 增长；projection 永不替代 raw artifact；UTF-8 边界、
 二进制、超时、取消和进程崩溃均可恢复；工具结果 token 中位数下降至少 40%。
+
+当前结果：`application/bounded_output.py` 已成为模型流、工具结果、Local Worker 和 MCP
+Worker 的共享实现；raw bytes 始终进入 CAS，SQLite/Transcript 只保留带 hash、行数、字节
+限制和截断原因的 projection。UTF-8 分片、二进制、超大工具结果、Worker 完整 stdout 和
+恢复回读测试通过；输入 Token 的固定评测统计留到 L11，避免用单个 fixture 伪造中位数结论。
 
 ### L6：Context Budget 与可追溯 Compaction
 
