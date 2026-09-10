@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ..application.bounded_output import BoundedOutput
 from ..core import ToolCall, ToolPort, WorkerResult, WorkerTask, contract_hash
 from ..runtime.artifact_store import ArtifactStore
 from ..runtime.worker_store import WORKER_TERMINAL_STATUSES, WorkerStore
@@ -74,18 +75,25 @@ class McpWorker:
                 )
             else:
                 try:
-                    artifact = self.artifacts.put_json(
-                        tool_result.to_dict(),
-                        run_id=task.run_id,
-                        artifact_type="mcp_tool_result",
-                        preview={
-                            "status": tool_result.status,
-                            "tool_name": tool_result.tool_name,
-                            "output_hash": contract_hash(tool_result.output),
-                        },
-                        metadata={"task_id": task.task_id, "tool_name": tool_name},
-                        parents=task.required_artifacts,
-                    )
+                    bounded = BoundedOutput.capture_json(tool_result.to_dict())
+                    try:
+                        bounded.close()
+                        artifact = self.artifacts.put_file(
+                            bounded.path,
+                            run_id=task.run_id,
+                            artifact_type="mcp_tool_result",
+                            media_type="application/json",
+                            preview={
+                                "status": tool_result.status,
+                                "tool_name": tool_result.tool_name,
+                                "output_hash": contract_hash(tool_result.output),
+                                **bounded.preview(),
+                            },
+                            metadata={"task_id": task.task_id, "tool_name": tool_name},
+                            parents=task.required_artifacts,
+                        )
+                    finally:
+                        bounded.discard()
                 except Exception as exc:
                     result = WorkerResult(
                         task_id=task.task_id,

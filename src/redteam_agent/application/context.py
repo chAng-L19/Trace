@@ -14,10 +14,8 @@ from ..runtime.conversation_records import (
 )
 from ..runtime.model_common import utc_now
 from .contracts import AgentRunView, StartRequest
+from .bounded_output import BoundedOutput
 from .tool_projection import ToolObservationProjector
-
-MAX_INLINE_TOOL_RESULT_BYTES = 64 * 1024
-
 
 @dataclass(frozen=True, slots=True)
 class ContextSelection:
@@ -136,23 +134,26 @@ class ConversationLedger:
         artifact_ids: dict[str, str] = {}
         for result in results:
             content = result.to_dict()
-            encoded = json.dumps(
-                content, ensure_ascii=False, sort_keys=True, default=str
-            ).encode("utf-8")
             if self.artifacts is not None:
                 preview = self._tool_result_preview(result)
-                artifact = self.artifacts.put_json(
-                    content,
-                    run_id=run_id,
-                    artifact_type="model_tool_result",
-                    preview=preview,
-                    metadata={
-                        "request_id": request_id,
-                        "call_id": result.call_id,
-                        "tool_name": result.tool_name,
-                        "output_hash": result.output_hash,
-                    },
-                )
+                bounded = BoundedOutput.capture_json(content)
+                try:
+                    bounded.close()
+                    artifact = self.artifacts.put_file(
+                        bounded.path,
+                        run_id=run_id,
+                        artifact_type="model_tool_result",
+                        media_type="application/json",
+                        preview={**preview, **bounded.preview()},
+                        metadata={
+                            "request_id": request_id,
+                            "call_id": result.call_id,
+                            "tool_name": result.tool_name,
+                            "output_hash": result.output_hash,
+                        },
+                    )
+                finally:
+                    bounded.discard()
                 artifact_projection = self.artifacts.project(artifact)
                 raw_reference = {
                     key: artifact_projection[key]
@@ -184,18 +185,18 @@ class ConversationLedger:
 
     @staticmethod
     def _tool_result_preview(result: ToolResult) -> Mapping[str, Any]:
-        rendered = json.dumps(
-            result.output, ensure_ascii=False, sort_keys=True, default=str
-        ).encode("utf-8")
-        edge = 16 * 1024
+        bounded = BoundedOutput.capture_json(result.output)
+        stats = bounded.preview()
+        bounded.discard()
         return {
             "call_id": result.call_id,
             "tool_name": result.tool_name,
             "status": result.status,
-            "output_bytes": len(rendered),
-            "head": rendered[:edge].decode("utf-8", errors="replace"),
-            "tail": rendered[-edge:].decode("utf-8", errors="replace") if len(rendered) > edge else "",
-            "truncated": len(rendered) > edge * 2,
+            "output_bytes": stats["byte_count"],
+            "head": stats["head"],
+            "tail": stats["tail"],
+            "truncated": stats["truncated"],
+            "truncation_reason": stats["truncation_reason"],
         }
 
     def messages(self, run_id: str) -> tuple[ConversationMessageRecord, ...]:

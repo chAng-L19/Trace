@@ -10,6 +10,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from ..application.bounded_output import BoundedOutput
 from ..core import WorkerResult, WorkerTask
 from ..runtime.artifact_store import ArtifactStore
 from ..runtime.worker_store import WORKER_TERMINAL_STATUSES, WorkerStore
@@ -21,26 +22,7 @@ PREVIEW_EDGE_BYTES = 16 * 1024
 
 
 def _bounded_file_preview(path: Path, *, edge_bytes: int = PREVIEW_EDGE_BYTES) -> dict[str, Any]:
-    byte_count = path.stat().st_size
-    line_count = 0
-    last_byte = b""
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            line_count += chunk.count(b"\n")
-            last_byte = chunk[-1:]
-    with path.open("rb") as stream:
-        head = stream.read(edge_bytes)
-        tail = b""
-        if byte_count > edge_bytes:
-            stream.seek(max(0, byte_count - edge_bytes))
-            tail = stream.read(edge_bytes)
-    return {
-        "head": head.decode("utf-8", errors="replace"),
-        "tail": tail.decode("utf-8", errors="replace"),
-        "byte_count": byte_count,
-        "line_count": line_count + (1 if byte_count and last_byte != b"\n" else 0),
-        "truncated": byte_count > edge_bytes * 2,
-    }
+    return BoundedOutput.preview_file(path, max_bytes=edge_bytes * 2)
 
 
 class LocalWorker:
