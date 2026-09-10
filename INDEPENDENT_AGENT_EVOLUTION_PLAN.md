@@ -176,7 +176,7 @@ hash 固定选择结果。资源只进入 ContextSelector 的 system projection 
 metadata，不能直接写入 Scope、Evidence 或 Terminal。Resource metadata 纳入 Context
 snapshot、source hash 和 context metrics，资源投影不重复写入 Transcript。
 
-L7 验收结果：目标资源测试 24 项通过；全量回归 317 passed、1 skipped；compileall、
+L7 验收结果：L7 相关目标回归（ResourceResolver、上下文预算与压缩）24 项通过；全量回归 317 passed、1 skipped；compileall、
 pip check、Phase 5 snapshot check、wheel、source self-test 和 MCP initialize/tools/list
 全部通过；生产 Python 模块均不超过 800 行。固定评测集上的 Token 中位数与模型能力指标
 仍按 L11 统一测量，本阶段不虚构统计结论。
