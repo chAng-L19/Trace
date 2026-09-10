@@ -52,7 +52,6 @@ class ModelIntegrityError(ModelLoopError):
 class ModelInterruptedError(ModelLoopError):
     pass
 
-
 class AgentLoop(ModelIntegrityMixin):
     """Single model-led loop from context selection through verified observation."""
 
@@ -310,6 +309,10 @@ class AgentLoop(ModelIntegrityMixin):
                 "context_overflow_tokens": selection.context_overflow_tokens,
                 "context_compaction_ids": list(selection.compaction_ids),
                 "context_overflow_retry": max(0, int(overflow_retry)),
+                "resource_index_hash": selection.resource_index_hash,
+                "resource_selection_hash": selection.resource_selection_hash,
+                "resource_ids": list(selection.resource_ids),
+                "resource_tokens": selection.resource_tokens,
                 "tool_catalog_total": len(definitions),
                 "tool_catalog_revision": catalog.revision if catalog is not None else "",
                 "tool_catalog_expanded": catalog.expanded if catalog is not None else False,

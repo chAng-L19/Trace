@@ -95,7 +95,11 @@
         "cache_write_tokens",
         "context_overflow_tokens",
         "compaction_ids",
-        "overflow_retry"
+        "overflow_retry",
+        "resource_index_hash",
+        "resource_selection_hash",
+        "resource_ids",
+        "resource_tokens"
       ],
       "prepare_model_context": [
         "view",

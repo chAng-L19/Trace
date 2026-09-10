@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from ..adapters.runtime_mapping import (
     evidence_from_runtime,
@@ -36,6 +36,7 @@ from .contracts import (
 from .lifecycle import validate_run_transition
 from .model_loop import AgentLoop
 from .context import ContextSelection, ContextSelector, ConversationLedger, TraceableCompactor
+from .resources import ResourceIndex, ResourceResolver, ResourceSelection
 
 
 class AgentService:
@@ -63,6 +64,7 @@ class AgentService:
         else:
             assert root is not None
             self.runtime = OperationRuntime(root=root)
+        self.resources = ResourceResolver()
         resolved_tool_port = ToolRegistry(
             tool_port or RuntimeToolAdapter(self.runtime),
             store=self.runtime.store,
@@ -392,6 +394,36 @@ class AgentService:
             self.status(run_id),
             max_messages=max_messages,
             turn_boundary=True,
+        )
+
+    def resource_index(self, run_id: str) -> ResourceIndex:
+        view = self.status(run_id)
+        roots = view.goal.constraints.get("resource_roots", ())
+        if isinstance(roots, (str, bytes)) or not isinstance(roots, Sequence):
+            roots = ()
+        return self.resources.index(roots)
+
+    def resource_selection(
+        self,
+        run_id: str,
+        *,
+        token_budget: int = 4096,
+    ) -> ResourceSelection:
+        view = self.status(run_id)
+        constraints = view.goal.constraints
+        requested = constraints.get("resources", ())
+        disabled = constraints.get("disabled_resources", ())
+        requested_values = () if isinstance(requested, (str, bytes)) else requested
+        disabled_values = () if isinstance(disabled, (str, bytes)) else disabled
+        if not isinstance(requested_values, Sequence):
+            requested_values = ()
+        if not isinstance(disabled_values, Sequence):
+            disabled_values = ()
+        return self.resources.select(
+            self.resource_index(run_id),
+            requested=tuple(str(item) for item in requested_values),
+            disabled=tuple(str(item) for item in disabled_values),
+            token_budget=token_budget,
         )
 
     def compact_context(self, run_id: str, message_ids: tuple[str, ...] = ()):

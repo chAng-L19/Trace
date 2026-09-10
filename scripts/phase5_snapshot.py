@@ -151,6 +151,10 @@ def generate_document() -> dict[str, Any]:
                     "context_overflow_tokens",
                     "compaction_ids",
                     "overflow_retry",
+                    "resource_index_hash",
+                    "resource_selection_hash",
+                    "resource_ids",
+                    "resource_tokens",
                 ],
             },
             "worker_adapters": {
