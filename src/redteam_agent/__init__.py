@@ -8,6 +8,7 @@ from .application import (
     AgentService,
     BudgetDelta,
     ContextBudget,
+    ResourceResolver,
     ModelIntegrityError,
     ModelInterruptedError,
     ModelLoop,

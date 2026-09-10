@@ -69,7 +69,7 @@ GitHub Actions: `.github/workflows/ci.yml` added for push/PR validation on Pytho
 | L4 | ToolRegistry 与开源工具直接集成 | 已通过 |
 | L5 | BoundedOutput 与流式 Artifact | 已通过 |
 | L6 | ContextBudget 与可追溯 Compaction | 已通过（结构验收） |
-| L7 | ResourceResolver 与透明扩展 | 待执行 |
+| L7 | ResourceResolver 与透明扩展 | 已通过 |
 | L8 | EvidenceGate 收敛 | 待执行 |
 | L9 | MCP/Worker 适配器瘦身 | 部分完成 |
 | L10 | 删除旧编排与发布门 | 待执行 |
@@ -159,7 +159,7 @@ turn boundary 压缩；保护 Goal、未满足条款、活动分支、关键 Evi
 snapshot；全量回归为 `315 passed, 1 skipped`，compileall、pip check、wheel、self-test
 均通过。固定评测集上的 35% Token 指标仍留到 L11，不用单个 fixture 推断中位数。
 
-### L7：ResourceResolver 与透明扩展（待执行）
+### L7：ResourceResolver 与透明扩展（已通过）
 
 交付：统一加载 `AGENTS.md`、项目 context、skill、Capability Pack 和 MCP instructions；
 记录来源、优先级、hash、token cost；hook 只能产生 Runtime 校验的 proposal。
@@ -167,6 +167,19 @@ snapshot；全量回归为 `315 passed, 1 skipped`，compileall、pip check、wh
 验收：资源加载可解释、可禁用、可复现；错误或恶意资源不能改变 scope、Evidence 或
 Terminal；同一 cwd/session 两次 hash 一致；未选资源不进入 prompt；资源 Token 受预算
 约束。
+
+当前结果：新增 `ResourceResolver`，统一索引 `AGENTS.md`、项目 context、skill、
+Capability Pack 和 MCP instruction；每项资源记录来源、优先级、UTF-8 内容 hash、字节数
+和估算 Token 成本。默认只选择 `agents` 与 `project_context`，其余资源必须显式匹配；
+支持禁用 pattern、Token budget、缺失/编码/大小/符号链接诊断，并用确定性 index/selection
+hash 固定选择结果。资源只进入 ContextSelector 的 system projection 和 ModelRequest
+metadata，不能直接写入 Scope、Evidence 或 Terminal。Resource metadata 纳入 Context
+snapshot、source hash 和 context metrics，资源投影不重复写入 Transcript。
+
+L7 验收结果：L7 相关目标回归（ResourceResolver、上下文预算与压缩）24 项通过；全量回归 317 passed、1 skipped；compileall、
+pip check、Phase 5 snapshot check、wheel、source self-test 和 MCP initialize/tools/list
+全部通过；生产 Python 模块均不超过 800 行。固定评测集上的 Token 中位数与模型能力指标
+仍按 L11 统一测量，本阶段不虚构统计结论。
 
 ### L8：EvidenceGate 收敛（待执行）
 

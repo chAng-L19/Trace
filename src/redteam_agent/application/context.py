@@ -15,8 +15,8 @@ from ..runtime.conversation_records import (
 from ..runtime.model_common import utc_now
 from .contracts import AgentRunView, StartRequest
 from .bounded_output import BoundedOutput
+from .resources import resource_context_metadata, resource_context_projection
 from .tool_projection import ToolObservationProjector
-
 @dataclass(frozen=True, slots=True)
 class ContextBudget:
     """The single context-window budget used by selection and compaction."""
@@ -55,7 +55,6 @@ class ContextBudget:
     def available_tokens(self) -> int:
         return max(0, self.window_tokens - self.reserved_output_tokens)
 
-
 @dataclass(frozen=True, slots=True)
 class ContextSelection:
     run_id: str
@@ -76,7 +75,10 @@ class ContextSelection:
     context_overflow_tokens: int = 0
     compaction_ids: tuple[str, ...] = ()
     overflow_retry: int = 0
-
+    resource_index_hash: str = ""
+    resource_selection_hash: str = ""
+    resource_ids: tuple[str, ...] = ()
+    resource_tokens: int = 0
 
 class ConversationLedger:
     def __init__(
@@ -90,7 +92,6 @@ class ConversationLedger:
         self.artifacts = artifacts
         self.projector = projector or ToolObservationProjector()
         self.journal = journal
-
     def append(
         self,
         *,
@@ -245,7 +246,6 @@ class ConversationLedger:
             return self.journal.conversation_messages(run_id)
         return self.store.conversation_messages(run_id)
 
-
 class TraceableCompactor:
     def __init__(self, store: Any, *, journal: Any | None = None) -> None:
         self.store = store
@@ -332,7 +332,6 @@ class TraceableCompactor:
         self.store.save_context_summary(record)
         return record
 
-
 class ContextSelector:
     def __init__(
         self,
@@ -411,7 +410,6 @@ class ContextSelector:
             force_compaction=force_compaction,
             overflow_retry=overflow_retry,
         )
-
     def select(
         self,
         view: AgentRunView,
@@ -444,6 +442,11 @@ class ContextSelector:
         usage = self._latest_usage(view.run.run_id)
         window = budget.window_tokens
         reserve = budget.reserved_output_tokens
+        resource_budget = max(0, min(8192, window // 8 if window else 4096))
+        resource_selection = self.service.resource_selection(
+            view.run.run_id,
+            token_budget=resource_budget,
+        )
         system_invariant = (
             "You are the primary tactical agent. Runtime owns deterministic invariants, "
             "evidence promotion, budgets, cleanup, and terminal decisions. The current "
@@ -467,6 +470,11 @@ class ContextSelector:
                     },
                 }
             ]
+        )
+        fixed_projection = resource_context_projection(
+            resource_selection,
+            fixed_projection,
+            stable_prefix=stable_prefix,
         )
         fixed_tokens = self._estimate_tokens(fixed_projection)
         groups = self._atomic_groups(unprotected)
@@ -548,6 +556,8 @@ class ContextSelector:
             {"message_id": item.message_id, "content_hash": item.content_hash}
             for item in source_messages
         ]
+        resource_metadata = resource_context_metadata(resource_selection)
+        source_projection.append(resource_metadata)
         projected: list[Mapping[str, Any]] = list(fixed_projection)
         projected.extend(
             {"role": item.role, "content": item.content}
@@ -609,6 +619,7 @@ class ContextSelector:
                 "context_overflow_tokens": overflow_tokens,
                 "compaction_ids": list(compaction_ids),
                 "overflow_retry": max(0, int(overflow_retry)),
+                **resource_metadata,
             },
         }
         context_hash = contract_hash(context)
@@ -647,6 +658,7 @@ class ContextSelector:
             context_overflow_tokens=overflow_tokens,
             compaction_ids=tuple(compaction_ids),
             overflow_retry=max(0, int(overflow_retry)),
+            **resource_metadata,
         )
 
     def _estimate_tokens(self, value: Any) -> int:

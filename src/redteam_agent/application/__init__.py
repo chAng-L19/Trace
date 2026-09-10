@@ -19,6 +19,7 @@ from .context import (
 )
 from .tool_projection import ToolObservationProjection, ToolObservationProjector
 from .bounded_output import BoundedOutput
+from .resources import ResourceDescriptor, ResourceIndex, ResourceIssue, ResourceResolver, ResourceSelection
 
 __all__ = [
     "ALLOWED_RUN_TRANSITIONS",
@@ -46,5 +47,10 @@ __all__ = [
     "ToolObservationProjection",
     "ToolObservationProjector",
     "BoundedOutput",
+    "ResourceDescriptor",
+    "ResourceIndex",
+    "ResourceIssue",
+    "ResourceResolver",
+    "ResourceSelection",
     "validate_run_transition",
 ]
