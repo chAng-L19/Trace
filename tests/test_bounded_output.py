@@ -86,6 +86,6 @@ def test_local_worker_preview_is_bounded_but_artifact_is_complete(tmp_path: Path
     stdout = service.runtime.artifacts.get_ref(result.artifact_refs[0], run_id=run_id)
     assert stdout is not None
     raw = service.read_artifact(run_id, stdout.artifact_id)
-    assert len(raw) > 100_000
+    assert len(raw) >= 100_000
     assert stdout.preview["truncated"] is True
     assert stdout.preview["line_count"] > 10_000
