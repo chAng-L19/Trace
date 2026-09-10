@@ -93,18 +93,26 @@
         "projection_bytes",
         "cache_read_tokens",
         "cache_write_tokens",
-        "context_overflow_tokens"
+        "context_overflow_tokens",
+        "compaction_ids",
+        "overflow_retry"
       ],
       "prepare_model_context": [
         "view",
-        "max_context_tokens"
+        "max_context_tokens",
+        "reserved_output_tokens",
+        "force_compaction",
+        "overflow_retry"
       ],
       "select": [
         "view",
         "max_messages",
         "max_context_tokens",
         "reserved_output_tokens",
-        "stable_prefix"
+        "stable_prefix",
+        "turn_boundary",
+        "force_compaction",
+        "overflow_retry"
       ]
     },
     "worker_adapters": {

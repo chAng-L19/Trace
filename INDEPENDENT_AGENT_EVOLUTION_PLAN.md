@@ -35,7 +35,7 @@ Runtime：作用域、凭据、预算、幂等、CAS、Lease、Evidence lineage�
 
 已完成：基线冻结、Core Contracts、AgentService 生命周期、Provider-agnostic ModelLoop、
 Transcript/Context/Budget、Worker Plane、CAS Artifact Store、Lease/Fencing、幂等和恢复。
-L5 已在独立分支 `feat/l5-bounded-output` 完成，等待 Pull Request 合并到 `main`。
+L5 已在独立分支 `feat/l5-bounded-output` 完成，并已通过 PR #2 合并到 `main`。
 
 ### Phase 6
 
@@ -50,7 +50,7 @@ L5 已在独立分支 `feat/l5-bounded-output` 完成，等待 Pull Request 合�
 当前基线：
 
 ```text
-pytest: 311 passed, 1 skipped
+pytest: 315 passed, 1 skipped
 compileall: passed
 wheel: built
 self-test: terminal success
@@ -68,7 +68,7 @@ GitHub Actions: `.github/workflows/ci.yml` added for push/PR validation on Pytho
 | L3 | 单一 AgentLoop | 已通过 |
 | L4 | ToolRegistry 与开源工具直接集成 | 已通过 |
 | L5 | BoundedOutput 与流式 Artifact | 已通过 |
-| L6 | ContextBudget 与可追溯 Compaction | 部分完成 |
+| L6 | ContextBudget 与可追溯 Compaction | 已通过（结构验收） |
 | L7 | ResourceResolver 与透明扩展 | 待执行 |
 | L8 | EvidenceGate 收敛 | 待执行 |
 | L9 | MCP/Worker 适配器瘦身 | 部分完成 |
@@ -136,11 +136,11 @@ projection 不冒充 raw；UTF-8 边界、二进制、超时、取消、进程�
 当前结果：`BoundedOutput` 统一模型流、工具结果、Local Worker 和 MCP Worker 的输出处理，
 使用增量 JSON 编码、UTF-8 增量解码、head/tail、行数/字节双限制、SHA-256 和截断原因；
 完整内容写入 CAS，SQLite/Transcript 只保存有界 projection。新增 UTF-8 分片、二进制、
-超大工具结果、Local Worker 完整 stdout 和 CAS 回读测试；全量回归为 311 passed, 1 skipped。
+超大工具结果、Local Worker 完整 stdout 和 CAS 回读测试；L5 合并后的全量回归为 315 passed, 1 skipped。
 当前 L5 验收中的“工具结果输入 Token 中位数下降 40%”需要 L11 固定评测集完成统计，
-本阶段已验证 projection 有界和原始能力不丢失，L6 继续处理上下文窗口级压缩。
+本阶段已验证 projection 有界和原始能力不丢失。
 
-### L6：ContextBudget 与可追溯 Compaction（部分完成）
+### L6：ContextBudget 与可追溯 Compaction（已通过，固定成本指标留至 L11）
 
 交付：统一 context window、reserve、keep-recent、action/token/time 预算；只在
 turn boundary 压缩；保护 Goal、未满足条款、活动分支、关键 Evidence、未验证假设和
@@ -149,6 +149,15 @@ turn boundary 压缩；保护 Goal、未满足条款、活动分支、关键 Evi
 验收：压缩不删除原始 Journal；tool-call/result 不被拆开；usage 缺失不伪造；半截
 流只进入诊断 Artifact；溢出最多一次可验证重试；相同模型/目标下输入 Token 下降至少
 35%，GoalContract 完成率不下降。
+
+当前结果：新增 `ContextBudget` 统一 context window、输出预留、keep-recent、估算比例和
+压缩重试策略；压缩仅在模型 turn boundary 或显式 context selection boundary 执行，普通
+投影路径不会隐式晋升摘要。请求组按 `request_id` 全局聚合，assistant tool-call 与 tool-result 即使被交错写入
+也保持原子；已纳入摘要来源的消息不会重复压缩。Provider 返回上下文溢出时最多进行一次
+强制压缩重试，请求元数据记录 retry 和 compaction IDs；原始 Journal、Artifact、Evidence
+和半截流诊断路径不变。新增 4 个上下文预算/原子性/重试测试，更新 Phase 5 contract
+snapshot；全量回归为 `315 passed, 1 skipped`，compileall、pip check、wheel、self-test
+均通过。固定评测集上的 35% Token 指标仍留到 L11，不用单个 fixture 推断中位数。
 
 ### L7：ResourceResolver 与透明扩展（待执行）
 
