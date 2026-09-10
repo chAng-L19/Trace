@@ -11,6 +11,7 @@ from .lifecycle import ALLOWED_RUN_TRANSITIONS, CANONICAL_RUN_STATUSES, validate
 from .model_loop import AgentLoop, ModelIntegrityError, ModelInterruptedError, ModelLoop, ModelLoopError
 from ..runtime.model_records import ModelObservationRecord, ModelRequestRecord, ModelResponseRecord
 from .context import (
+    ContextBudget,
     ContextSelection,
     ContextSelector,
     ConversationLedger,
@@ -38,6 +39,7 @@ __all__ = [
     "ModelRequestRecord",
     "ModelResponseRecord",
     "ContextSelection",
+    "ContextBudget",
     "ContextSelector",
     "ConversationLedger",
     "TraceableCompactor",

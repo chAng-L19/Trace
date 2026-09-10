@@ -149,6 +149,8 @@ def generate_document() -> dict[str, Any]:
                     "cache_read_tokens",
                     "cache_write_tokens",
                     "context_overflow_tokens",
+                    "compaction_ids",
+                    "overflow_retry",
                 ],
             },
             "worker_adapters": {

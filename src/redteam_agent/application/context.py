@@ -18,6 +18,45 @@ from .bounded_output import BoundedOutput
 from .tool_projection import ToolObservationProjector
 
 @dataclass(frozen=True, slots=True)
+class ContextBudget:
+    """The single context-window budget used by selection and compaction."""
+
+    window_tokens: int = 0
+    reserved_output_tokens: int = 0
+    keep_recent_messages: int = 32
+    fallback_bytes_per_token: int = 3
+    max_compaction_retries: int = 1
+
+    @classmethod
+    def from_values(
+        cls,
+        *,
+        window_tokens: int = 0,
+        reserved_output_tokens: int | None = None,
+        keep_recent_messages: int = 32,
+        fallback_bytes_per_token: int = 3,
+        max_compaction_retries: int = 1,
+    ) -> "ContextBudget":
+        window = max(0, int(window_tokens))
+        reserve = (
+            max(0, int(reserved_output_tokens))
+            if reserved_output_tokens is not None
+            else (max(1024, min(32768, window // 8)) if window else 0)
+        )
+        return cls(
+            window_tokens=window,
+            reserved_output_tokens=reserve,
+            keep_recent_messages=max(0, int(keep_recent_messages)),
+            fallback_bytes_per_token=max(1, int(fallback_bytes_per_token)),
+            max_compaction_retries=max(0, int(max_compaction_retries)),
+        )
+
+    @property
+    def available_tokens(self) -> int:
+        return max(0, self.window_tokens - self.reserved_output_tokens)
+
+
+@dataclass(frozen=True, slots=True)
 class ContextSelection:
     run_id: str
     messages: tuple[Mapping[str, Any], ...]
@@ -35,6 +74,8 @@ class ContextSelection:
     cache_read_tokens: int | None = None
     cache_write_tokens: int | None = None
     context_overflow_tokens: int = 0
+    compaction_ids: tuple[str, ...] = ()
+    overflow_retry: int = 0
 
 
 class ConversationLedger:
@@ -326,6 +367,9 @@ class ContextSelector:
         view: AgentRunView,
         *,
         max_context_tokens: int = 0,
+        reserved_output_tokens: int | None = None,
+        force_compaction: bool = False,
+        overflow_retry: int = 0,
     ) -> ContextSelection:
         run_id = view.run.run_id
         self.ledger.append(
@@ -361,7 +405,11 @@ class ContextSelector:
         return self.select(
             view,
             max_context_tokens=max_context_tokens,
+            reserved_output_tokens=reserved_output_tokens,
             stable_prefix=True,
+            turn_boundary=True,
+            force_compaction=force_compaction,
+            overflow_retry=overflow_retry,
         )
 
     def select(
@@ -372,8 +420,19 @@ class ContextSelector:
         max_context_tokens: int = 0,
         reserved_output_tokens: int | None = None,
         stable_prefix: bool = False,
+        turn_boundary: bool = False,
+        force_compaction: bool = False,
+        overflow_retry: int = 0,
     ) -> ContextSelection:
-        limit = self.default_max_messages if max_messages is None else max(0, int(max_messages))
+        budget = ContextBudget.from_values(
+            window_tokens=max_context_tokens,
+            reserved_output_tokens=reserved_output_tokens,
+            keep_recent_messages=(
+                self.default_max_messages if max_messages is None else max(0, int(max_messages))
+            ),
+            fallback_bytes_per_token=self.fallback_bytes_per_token,
+        )
+        limit = budget.keep_recent_messages
         messages = self.ledger.messages(view.run.run_id)
         candidates = tuple(
             item for item in messages if item.source_type != "model_request_projection"
@@ -383,12 +442,8 @@ class ContextSelector:
         protected_context = self._protected_context(view)
         protected_hash = contract_hash(protected_context)
         usage = self._latest_usage(view.run.run_id)
-        window = max(0, int(max_context_tokens))
-        reserve = (
-            max(0, int(reserved_output_tokens))
-            if reserved_output_tokens is not None
-            else (max(1024, min(32768, window // 8)) if window else 0)
-        )
+        window = budget.window_tokens
+        reserve = budget.reserved_output_tokens
         system_invariant = (
             "You are the primary tactical agent. Runtime owns deterministic invariants, "
             "evidence promotion, budgets, cleanup, and terminal decisions. The current "
@@ -415,7 +470,9 @@ class ContextSelector:
         )
         fixed_tokens = self._estimate_tokens(fixed_projection)
         groups = self._atomic_groups(unprotected)
-        if max_messages is not None:
+        if force_compaction and groups:
+            selected = tuple(groups[-1])
+        elif max_messages is not None:
             if not limit:
                 selected = ()
             else:
@@ -441,24 +498,49 @@ class ContextSelector:
                 consumed += group_tokens
             selected = tuple(item for group in reversed(chosen) for item in group)
         else:
-            selected = unprotected[-limit:] if limit else ()
+            if not limit:
+                selected = ()
+            else:
+                chosen_groups = []
+                count = 0
+                for group in reversed(groups):
+                    if chosen_groups and count + len(group) > limit:
+                        break
+                    chosen_groups.append(group)
+                    count += len(group)
+                selected = tuple(item for group in reversed(chosen_groups) for item in group)
         selected_ids = {item.message_id for item in selected}
         excluded = tuple(item for item in unprotected if item.message_id not in selected_ids)
         provider_context_tokens = usage.get("input_tokens")
-        should_compact = bool(excluded) and (
+        summaries_before = self.store_summaries(view.run.run_id)
+        summarized_ids = {
+            message_id
+            for summary in summaries_before
+            for message_id in summary.source_message_ids
+        }
+        compaction_candidates = tuple(
+            item for item in excluded if item.message_id not in summarized_ids
+        )
+        should_compact = turn_boundary and bool(compaction_candidates) and (
+            force_compaction
+            or (
             len(unprotected) > self.compaction_threshold
             or (window and (self._estimate_tokens([{"role": item.role, "content": item.content} for item in unprotected]) + fixed_tokens + reserve > window))
             or (window and isinstance(provider_context_tokens, int) and provider_context_tokens + reserve > window)
+            )
         )
+        compaction_ids: list[str] = []
         if should_compact:
-            self.compactor.compact(
+            summary = self.compactor.compact(
                 view.run.run_id,
-                [item.message_id for item in excluded],
+                [item.message_id for item in compaction_candidates],
             )
-            self.service.exploration.build_recon_digest(
-                view.run.run_id,
-                source_message_ids=tuple(item.message_id for item in excluded),
-            )
+            if summary is not None:
+                compaction_ids.append(summary.summary_id)
+                self.service.exploration.build_recon_digest(
+                    view.run.run_id,
+                    source_message_ids=tuple(item.message_id for item in compaction_candidates),
+                )
         summaries = self.store_summaries(view.run.run_id)
         chosen_summaries: tuple[ContextSummaryRecord, ...] = ()
         source_messages = (*protected_messages, *selected)
@@ -494,6 +576,13 @@ class ContextSelector:
             {"summary_id": item.summary_id, "summary_hash": item.summary_hash}
             for item in chosen_summaries
         )
+        for summary in chosen_summaries:
+            if summary.summary_id not in compaction_ids:
+                compaction_ids.append(summary.summary_id)
+        if force_compaction and summaries:
+            latest_summary_id = summaries[-1].summary_id
+            if latest_summary_id not in compaction_ids:
+                compaction_ids.append(latest_summary_id)
         source_hash = contract_hash(source_projection)
         projection_bytes = len(
             json.dumps(projected, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
@@ -518,6 +607,8 @@ class ContextSelector:
                 "cache_read_tokens": usage.get("cache_read_tokens"),
                 "cache_write_tokens": usage.get("cache_write_tokens"),
                 "context_overflow_tokens": overflow_tokens,
+                "compaction_ids": list(compaction_ids),
+                "overflow_retry": max(0, int(overflow_retry)),
             },
         }
         context_hash = contract_hash(context)
@@ -554,6 +645,8 @@ class ContextSelector:
             cache_read_tokens=usage.get("cache_read_tokens"),
             cache_write_tokens=usage.get("cache_write_tokens"),
             context_overflow_tokens=overflow_tokens,
+            compaction_ids=tuple(compaction_ids),
+            overflow_retry=max(0, int(overflow_retry)),
         )
 
     def _estimate_tokens(self, value: Any) -> int:
@@ -564,19 +657,18 @@ class ContextSelector:
     def _atomic_groups(
         messages: Sequence[ConversationMessageRecord],
     ) -> tuple[tuple[ConversationMessageRecord, ...], ...]:
-        groups: list[list[ConversationMessageRecord]] = []
-        keys: list[str] = []
+        groups: dict[str, list[ConversationMessageRecord]] = {}
+        order: list[str] = []
         for item in messages:
             request_id = str(item.metadata.get("request_id") or "")
             if not request_id and item.source_type == "model_response":
                 request_id = item.source_id
             key = f"request:{request_id}" if request_id else f"message:{item.message_id}"
-            if groups and keys[-1] == key:
-                groups[-1].append(item)
-            else:
-                keys.append(key)
-                groups.append([item])
-        return tuple(tuple(group) for group in groups)
+            if key not in groups:
+                groups[key] = []
+                order.append(key)
+            groups[key].append(item)
+        return tuple(tuple(groups[key]) for key in order)
 
     def _latest_usage(self, run_id: str) -> dict[str, int | None]:
         result: dict[str, int | None] = {

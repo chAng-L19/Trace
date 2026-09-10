@@ -36,6 +36,7 @@ from .agent_loop_support import (
 )
 from .stream_accumulator import StreamTextAccumulator
 from .bounded_output import BoundedOutput
+from .model_turn import run_model_turn
 
 MAX_INLINE_MODEL_OBSERVATION_BYTES = 64 * 1024
 MAX_INLINE_MODEL_STREAM_BYTES = 64 * 1024
@@ -54,6 +55,10 @@ class ModelInterruptedError(ModelLoopError):
 
 class AgentLoop(ModelIntegrityMixin):
     """Single model-led loop from context selection through verified observation."""
+
+    _integrity_error = ModelIntegrityError
+    _interrupted_error = ModelInterruptedError
+    _loop_error = ModelLoopError
 
     def __init__(
         self,
@@ -220,32 +225,23 @@ class AgentLoop(ModelIntegrityMixin):
         )
 
     def _model_turn(self, view: AgentRunView) -> tuple[ModelResponse, ModelRequest]:
-        last_error: BaseException | None = None
-        for attempt in range(self.max_retries + 1):
-            if self._is_cancelled(view.run.run_id):
-                raise ModelInterruptedError("model_loop_cancelled")
-            request = self._request(view, attempt=attempt)
-            self._save_request(request)
-            self._track(self._active_requests, view.run.run_id, request.request_id, add=True)
-            try:
-                response = self._invoke(request)
-                validated = self._validate_response(request, response)
-                return validated, request
-            except ModelIntegrityError:
-                raise
-            except BaseException as exc:
-                last_error = exc
-                self._save_failure_response(request, exc)
-            finally:
-                self._track(self._active_requests, view.run.run_id, request.request_id, add=False)
-        raise ModelLoopError(f"model_provider_retries_exhausted:{last_error}") from last_error
+        return run_model_turn(self, view)
 
-    def _request(self, view: AgentRunView, *, attempt: int) -> ModelRequest:
+    def _request(
+        self,
+        view: AgentRunView,
+        *,
+        attempt: int,
+        force_compaction: bool = False,
+        overflow_retry: int = 0,
+    ) -> ModelRequest:
         capabilities = self.model.capabilities()
         model_name = self.model_name or str(capabilities.metadata.get("model") or "")
         selection = self.service.context_selector.prepare_model_context(
             view,
             max_context_tokens=capabilities.max_context_tokens,
+            force_compaction=force_compaction,
+            overflow_retry=overflow_retry,
         )
         catalog = None
         definitions = ()
@@ -312,6 +308,8 @@ class AgentLoop(ModelIntegrityMixin):
                 "cache_read_tokens": selection.cache_read_tokens,
                 "cache_write_tokens": selection.cache_write_tokens,
                 "context_overflow_tokens": selection.context_overflow_tokens,
+                "context_compaction_ids": list(selection.compaction_ids),
+                "context_overflow_retry": max(0, int(overflow_retry)),
                 "tool_catalog_total": len(definitions),
                 "tool_catalog_revision": catalog.revision if catalog is not None else "",
                 "tool_catalog_expanded": catalog.expanded if catalog is not None else False,

@@ -388,7 +388,11 @@ class AgentService:
         return self.journal.checkout(run_id, branch_id)
 
     def select_context(self, run_id: str, *, max_messages: int = 32) -> ContextSelection:
-        return self.context_selector.select(self.status(run_id), max_messages=max_messages)
+        return self.context_selector.select(
+            self.status(run_id),
+            max_messages=max_messages,
+            turn_boundary=True,
+        )
 
     def compact_context(self, run_id: str, message_ids: tuple[str, ...] = ()):
         if self.runtime.store.load_operation(run_id) is None:
