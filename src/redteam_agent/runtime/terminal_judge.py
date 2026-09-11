@@ -3,8 +3,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from .evidence_gate import EvidenceGate
 from .models import EvidenceNode, GoalContract, OperationState, SuccessPredicate, TerminalDecision, WorkflowSpec
-from .evidence_trust import is_trusted_evidence
 
 
 class TerminalJudge:
@@ -19,21 +19,19 @@ class TerminalJudge:
         # Evidence is scoped to the active plan branch before any predicate or
         # lineage calculation. Verified completion requires durable provenance;
         # unbound legacy rows remain inspectable in storage but cannot terminate.
-        scoped_evidence = tuple(
-            node
-            for node in evidence
-            if node.provenance is not None
-            and node.run_id == state.run_id
-            and node.provenance.run_id == state.run_id
-            and node.provenance.branch_id == state.branch_id
-            and node.provenance.plan_revision <= state.plan_revision
+        scoped_evidence = EvidenceGate.eligible_evidence(
+            evidence,
+            run_id=state.run_id,
+            branch_id=state.branch_id,
+            max_plan_revision=state.plan_revision,
+            include_unverified=True,
         )
         predicates = tuple(workflow.terminal_predicates) + tuple(goal.success_predicates)
         satisfied: list[str] = []
         missing: list[str] = []
         evidence_by_type: dict[str, list[EvidenceNode]] = {}
         for node in scoped_evidence:
-            if is_trusted_evidence(node):
+            if EvidenceGate.trusted(node):
                 evidence_by_type.setdefault(node.artifact_type, []).append(node)
 
         for predicate in predicates:
@@ -49,7 +47,7 @@ class TerminalJudge:
 
         evidence_by_action: dict[str, list[EvidenceNode]] = {}
         for node in scoped_evidence:
-            if is_trusted_evidence(node):
+            if EvidenceGate.trusted(node):
                 evidence_by_action.setdefault(node.action_id, []).append(node)
         for action in workflow.actions:
             if action.optional:
@@ -90,7 +88,7 @@ class TerminalJudge:
         if not goal.targets:
             missing.append("goal_targets_present")
         else:
-            covered_targets = {node.target for node in scoped_evidence if is_trusted_evidence(node) and node.target}
+            covered_targets = {node.target for node in scoped_evidence if EvidenceGate.trusted(node) and node.target}
             for target in goal.targets:
                 if target not in covered_targets:
                     missing.append(f"target_evidence:{target}")
@@ -167,30 +165,7 @@ class TerminalJudge:
 
     @staticmethod
     def _lineage_error(evidence: Sequence[EvidenceNode]) -> str:
-        by_id = {node.evidence_id: node for node in evidence}
-        for node in evidence:
-            if any(parent_id not in by_id for parent_id in node.parent_ids):
-                return "evidence_lineage_missing_parent"
-        visiting: set[str] = set()
-        visited: set[str] = set()
-
-        def visit(evidence_id: str) -> bool:
-            if evidence_id in visiting:
-                return False
-            if evidence_id in visited:
-                return True
-            visiting.add(evidence_id)
-            for parent_id in by_id[evidence_id].parent_ids:
-                if not visit(parent_id):
-                    return False
-            visiting.remove(evidence_id)
-            visited.add(evidence_id)
-            return True
-
-        for evidence_id in by_id:
-            if not visit(evidence_id):
-                return "evidence_lineage_cycle"
-        return ""
+        return EvidenceGate.lineage_error(evidence)
 
     @staticmethod
     def _completion_artifacts(goal: GoalContract) -> set[str]:
@@ -205,7 +180,7 @@ class TerminalJudge:
         goal: GoalContract,
         evidence: Sequence[EvidenceNode],
     ) -> bool:
-        by_id = {node.evidence_id: node for node in evidence}
+        by_id = {node.evidence_id: node for node in evidence if EvidenceGate.trusted(node)}
         required = TerminalJudge._completion_artifacts(goal)
         for report in final_reports:
             stack = list(report.parent_ids)
@@ -231,7 +206,7 @@ class TerminalJudge:
         state: OperationState,
     ) -> bool:
         expected = {criterion.criterion_id: criterion for criterion in goal.success_criteria}
-        by_id = {node.evidence_id: node for node in evidence if is_trusted_evidence(node)}
+        by_id = {node.evidence_id: node for node in evidence if EvidenceGate.trusted(node)}
         required = TerminalJudge._completion_artifacts(goal)
         for report in final_reports:
             if not isinstance(report.payload, Mapping):
@@ -307,7 +282,7 @@ class TerminalJudge:
             for item in raw_contracts
             if isinstance(item, Mapping) and item.get("clause_id") and isinstance(item.get("required_artifacts"), list)
         } if isinstance(raw_contracts, (list, tuple)) else {}
-        by_id = {node.evidence_id: node for node in evidence if is_trusted_evidence(node)}
+        by_id = {node.evidence_id: node for node in evidence if EvidenceGate.trusted(node)}
         for report in final_reports:
             if not isinstance(report.payload, Mapping):
                 continue
@@ -402,27 +377,12 @@ class TerminalJudge:
         state: OperationState,
         target: str,
     ) -> set[str]:
-        stack = [str(item) for item in evidence_ids]
-        visited: set[str] = set()
-        supported: set[str] = set()
-        while stack:
-            evidence_id = stack.pop()
-            if evidence_id in visited:
-                continue
-            visited.add(evidence_id)
-            current = evidence_by_id.get(evidence_id)
-            if (
-                current is None
-                or not is_trusted_evidence(current)
-                or current.run_id != state.run_id
-                or current.target != target
-                or current.provenance is None
-                or current.provenance.run_id != state.run_id
-                or current.provenance.branch_id != state.branch_id
-            ):
-                continue
-            raw_support = current.payload.get("clause_support") if isinstance(current.payload, Mapping) else None
-            if isinstance(raw_support, Mapping) and clause_id in {str(item) for item in raw_support}:
-                supported.add(current.artifact_type)
-            stack.extend(current.parent_ids)
-        return supported
+        return EvidenceGate.clause_support_types(
+            evidence_ids,
+            clause_id,
+            evidence_by_id,
+            run_id=state.run_id,
+            branch_id=state.branch_id,
+            target=target,
+            max_plan_revision=state.plan_revision,
+        )

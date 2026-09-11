@@ -6,9 +6,7 @@ from typing import Any, Mapping, Sequence
 
 from .tool_broker import ToolBroker
 from .open_source_tools import register_open_source_tools
-
-
-_VERIFIED_TRUST = {"runtime_verified", "tool_verified"}
+from .evidence_gate import EvidenceGate
 
 
 def _evidence(arguments: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -17,8 +15,7 @@ def _evidence(arguments: Mapping[str, Any]) -> list[Mapping[str, Any]]:
         item
         for item in raw
         if isinstance(item, Mapping)
-        and item.get("verified") is True
-        and str(item.get("evidence_trust") or item.get("trust") or "runtime_verified") in _VERIFIED_TRUST
+        and EvidenceGate.trusted(item)
     ] if isinstance(raw, list) else []
 
 

@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import sqlite3
 from typing import Any, Mapping, Sequence, TYPE_CHECKING
 
+from .evidence_gate import EvidenceGate
 from .models import EvidenceNode, FactRecord, LeaseToken, OperationState, ReviewRecord, TaskAttempt, utc_now
-from .evidence_trust import is_trusted_evidence, valid_evidence_trust
 from .plan import PlanRevision
 
 if TYPE_CHECKING:
@@ -44,36 +42,23 @@ def commit_action_outcome(
         raise ValueError("evidence_requires_completed_attempt")
     for node in evidence:
         provenance = node.provenance
-        digest = hashlib.sha256(
-            json.dumps(
-                node.payload,
-                ensure_ascii=False,
-                sort_keys=True,
-                default=str,
-            ).encode("utf-8")
-        ).hexdigest()
+        digest = EvidenceGate.content_hash(node.payload)
+        valid_identity = EvidenceGate.valid_node_identity(
+            provenance,
+            run_id=attempt.run_id,
+            action_id=attempt.action_id,
+            target=node.target,
+            tool=attempt.tool,
+            attempt=attempt,
+            final_required=True,
+        )
         if (
-            node.run_id != attempt.run_id
-            or node.action_id != attempt.action_id
-            or not valid_evidence_trust(node)
+            not valid_identity
+            or not EvidenceGate.valid_trust(node)
             or node.content_hash != digest
             or node.target not in state.goal.targets
             or len(set(node.parent_ids)) != len(node.parent_ids)
             or provenance is None
-            or (
-                provenance.run_id,
-                provenance.branch_id,
-                provenance.plan_revision,
-                provenance.action_id,
-                provenance.attempt_id,
-            )
-            != (
-                attempt.run_id,
-                attempt.branch_id,
-                attempt.plan_revision,
-                attempt.action_id,
-                attempt.attempt_id,
-            )
             or provenance.tool != attempt.tool
             or provenance.tool_version != attempt.tool_version
             or provenance.input_hash != attempt.input_hash
@@ -118,8 +103,10 @@ def commit_action_outcome(
 
             pending_nodes = {node.evidence_id: node for node in evidence}
             for node in evidence:
+                node_provenance = node.provenance
+                parent_nodes: dict[str, EvidenceNode] = dict(pending_nodes)
                 for parent_id in node.parent_ids:
-                    parent = pending_nodes.get(parent_id)
+                    parent = parent_nodes.get(parent_id)
                     if parent is None:
                         parent_row = connection.execute(
                             "SELECT node_json FROM evidence_nodes WHERE evidence_id=? AND run_id=?",
@@ -130,16 +117,18 @@ def commit_action_outcome(
                             if parent_row is not None
                             else None
                         )
-                    if (
-                        parent is None
-                        or not is_trusted_evidence(parent)
-                        or parent.run_id != attempt.run_id
-                        or parent.target != node.target
-                        or parent.provenance is None
-                        or parent.provenance.branch_id != attempt.branch_id
-                        or parent.provenance.plan_revision > attempt.plan_revision
-                    ):
-                        raise ValueError("evidence_parent_scope_mismatch")
+                        if parent is not None:
+                            parent_nodes[parent_id] = parent
+                parent_result = EvidenceGate.validate_parent_ids(
+                    node.parent_ids,
+                    parent_nodes,
+                    run_id=attempt.run_id,
+                    target=node.target,
+                    provenance=node_provenance,
+                    require_trusted=True,
+                )
+                if not parent_result.passed:
+                    raise ValueError("evidence_parent_scope_mismatch")
 
             serialized_attempt = _dump(attempt.to_dict())
             cursor = connection.execute(

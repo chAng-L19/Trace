@@ -5,6 +5,7 @@ from dataclasses import replace
 from typing import Any, Mapping, Sequence
 
 from .model_common import utc_now
+from .evidence_gate import EvidenceGate
 from .model_state import (
     EvidenceNode,
     FactRecord,
@@ -14,7 +15,6 @@ from .model_state import (
     TaskAttempt,
     ToolCallResult,
 )
-from .evidence_trust import valid_evidence_trust
 from .plan import PlanRevision
 from .store_common import (
     ImmutableRecordError,
@@ -135,7 +135,7 @@ class DurableRecordStoreMixin:
         provenance = node.provenance
         if provenance is None:
             raise ValueError("evidence_provenance_required")
-        if not valid_evidence_trust(node):
+        if not EvidenceGate.valid_trust(node):
             raise ValueError("evidence_trust_invalid")
         serialized = _dump(node.to_dict())
         with self.transaction(immediate=True) as connection:
@@ -151,23 +151,14 @@ class DurableRecordStoreMixin:
             if (
                 attempt is None
                 or str(attempt_row["status"]) not in {"completed", "succeeded"}
-                or (
-                    attempt.run_id,
-                    attempt.branch_id,
-                    attempt.plan_revision,
-                    attempt.action_id,
-                    attempt.tool,
-                    attempt.tool_version,
-                    attempt.input_hash,
-                )
-                != (
-                    node.run_id,
-                    provenance.branch_id,
-                    provenance.plan_revision,
-                    node.action_id,
-                    node.tool,
-                    provenance.tool_version,
-                    provenance.input_hash,
+                or not EvidenceGate.valid_node_identity(
+                    provenance,
+                    run_id=node.run_id,
+                    action_id=node.action_id,
+                    target=node.target,
+                    tool=node.tool,
+                    attempt=attempt,
+                    final_required=True,
                 )
             ):
                 raise ValueError("evidence_attempt_identity_mismatch")
@@ -423,4 +414,3 @@ class DurableRecordStoreMixin:
         with self.connection() as connection:
             rows = connection.execute(query, tuple(parameters)).fetchall()
         return tuple(ReviewRecord.from_dict(_load(row["review_json"], {})) for row in rows)
-

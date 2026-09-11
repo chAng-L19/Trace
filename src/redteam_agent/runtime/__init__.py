@@ -7,6 +7,7 @@ from .durable_store import (
     StoreConflictError,
 )
 from .evidence_graph import EvidenceGraph
+from .evidence_gate import EvidenceGate, EvidenceGateDecision
 from .exploration import ExplorationLedger, ExplorationValidationError
 from .exploration_records import ReconDigestRecord, TacticalAttemptRecord
 from .facts import FactLedger, FactValidationError
@@ -48,6 +49,8 @@ __all__ = [
     "AdaptivePlanner",
     "DurableStore",
     "EvidenceGraph",
+    "EvidenceGate",
+    "EvidenceGateDecision",
     "ExplorationLedger",
     "ExplorationValidationError",
     "EvidenceNode",
