@@ -396,6 +396,36 @@ class DurableStore(
         with self.transaction(immediate=True) as connection:
             self._insert_event(connection, run_id, event_type, event)
 
+    def append_event_once(
+        self,
+        run_id: str,
+        event_type: str,
+        payload: Mapping[str, Any],
+        *,
+        identity_field: str,
+        fingerprint_field: str = "",
+    ) -> bool:
+        """Append an event once for an immutable identity/fingerprint pair."""
+        event = dict(payload)
+        identity = str(event.get(identity_field) or "")
+        if not identity:
+            raise ValueError(f"event_identity_required:{identity_field}")
+        fingerprint = str(event.get(fingerprint_field) or "") if fingerprint_field else ""
+        with self.transaction(immediate=True) as connection:
+            rows = connection.execute(
+                "SELECT payload_json FROM operation_events WHERE run_id=? AND event_type=?",
+                (run_id, event_type),
+            ).fetchall()
+            for row in rows:
+                existing = _load(row["payload_json"], {})
+                if not isinstance(existing, Mapping) or str(existing.get(identity_field) or "") != identity:
+                    continue
+                if fingerprint_field and str(existing.get(fingerprint_field) or "") != fingerprint:
+                    raise ImmutableRecordError(f"event_identity_conflict:{event_type}:{identity}")
+                return False
+            self._insert_event(connection, run_id, event_type, event)
+        return True
+
     def events(self, run_id: str, *, after_event_id: int = 0, limit: int = 200) -> tuple[dict[str, Any], ...]:
         bounded = max(1, min(1000, int(limit)))
         with self.connection() as connection:

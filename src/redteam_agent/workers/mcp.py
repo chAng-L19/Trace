@@ -121,18 +121,15 @@ class McpWorker:
         return result
 
     def reconcile(self, idempotency_key: str) -> WorkerResult | None:
-        with self.records.store.connection() as connection:
-            rows = connection.execute(
-                "SELECT * FROM worker_tasks WHERE worker_kind=? AND idempotency_key=?",
-                (self.kind, idempotency_key),
-            ).fetchall()
-        if len(rows) != 1:
-            return None
-        record = self.records._from_row(rows[0])
-        return record.result if record.status in WORKER_TERMINAL_STATUSES else None
+        return self.records.reconcile_kind(self.kind, idempotency_key)
 
     def cancel(self, task_id: str) -> bool:
         return self.tools.cancel(task_id)
+
+    def close(self) -> None:
+        close = getattr(self.tools, "close", None)
+        if callable(close):
+            close()
 
 
 __all__ = ["McpWorker"]

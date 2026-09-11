@@ -160,52 +160,30 @@ class McpBrokerMixin:
         return workspace
 
     def _discover_server(self, spec: McpServerSpec) -> None:
-        if spec.transport == "stdio":
-            self._discover_stdio(spec)
-        else:
-            self._discover_http(spec)
+        self._discover_client(spec)
 
     def _discover_stdio(self, spec: McpServerSpec) -> None:
-        server_name = spec.name
-        existing = self._clients.get(server_name)
-        if isinstance(existing, StdioMcpClient) and existing.process.poll() is None:
-            return
-        if existing is not None:
-            existing.close()
-            self._clients.pop(server_name, None)
-        try:
-            client = self._create_client(spec)
-            tools = client.list_tools()
-        except Exception as exc:
-            failed_client = locals().get("client")
-            if isinstance(failed_client, (StdioMcpClient, HttpMcpClient)):
-                failed_client.close()
-            self._record_discovery_error(f"server:{server_name}", exc)
-            self._server_status[server_name] = {
-                "status": "failed",
-                "transport": spec.transport,
-                "scope": spec.scope,
-                "preset": spec.preset,
-                "error": safe_error_text(exc),
-            }
-            return
-        if spec.scope == "shared":
-            self._clients[server_name] = client
-        else:
-            client.close()
-        self._register_mcp_tools(spec, tools)
+        self._discover_client(spec)
 
     def _discover_http(self, spec: McpServerSpec) -> None:
+        self._discover_client(spec)
+
+    def _discover_client(self, spec: McpServerSpec) -> None:
+        """Discover either transport through one shared lifecycle path."""
         server_name = spec.name
-        if server_name in self._clients:
-            return
+        existing = self._clients.get(server_name)
+        if existing is not None:
+            if not isinstance(existing, StdioMcpClient) or existing.process.poll() is None:
+                return
+            existing.close()
+            self._clients.pop(server_name, None)
+        client: StdioMcpClient | HttpMcpClient | None = None
         try:
             client = self._create_client(spec)
             tools = client.list_tools()
         except Exception as exc:
-            failed_client = locals().get("client")
-            if isinstance(failed_client, (StdioMcpClient, HttpMcpClient)):
-                failed_client.close()
+            if client is not None:
+                client.close()
             self._record_discovery_error(f"server:{server_name}", exc)
             self._server_status[server_name] = {
                 "status": "failed",
@@ -215,6 +193,7 @@ class McpBrokerMixin:
                 "error": safe_error_text(exc),
             }
             return
+        assert client is not None
         if spec.scope == "shared":
             self._clients[server_name] = client
         else:
@@ -299,6 +278,22 @@ class McpBrokerMixin:
             for qualified in [name for name, item in self._descriptors.items() if item.server == server_name]:
                 self._descriptors.pop(qualified, None)
             self._discover_server(spec)
+
+    def restart(self, server_name: str, *, run_id: str = "") -> bool:
+        """Restart one shared or run-scoped client without affecting other runs."""
+        with self._lifecycle_lock:
+            spec = self._server_configs.get(server_name)
+            if spec is None:
+                return False
+            if spec.scope == "shared":
+                self._restart_server(server_name)
+                return True
+            if not run_id:
+                raise ValueError(f"mcp_run_id_required:{server_name}")
+            client = self._run_clients.pop((server_name, run_id), None)
+            if client is not None:
+                client.close()
+            return True
 
     def _client_for(
         self,

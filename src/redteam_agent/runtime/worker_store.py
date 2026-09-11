@@ -170,7 +170,22 @@ class WorkerStore:
             ).fetchall()
         if len(rows) != 1:
             return None
-        return self._from_row(rows[0]).result
+        record = self._from_row(rows[0])
+        return record.result if record.status in WORKER_TERMINAL_STATUSES else None
+
+    def kinds_for_idempotency(self, idempotency_key: str) -> tuple[str, ...]:
+        """Return persisted adapter kinds before asking adapters to reconcile.
+
+        This keeps recovery scoped to the recorded task and lets low-frequency
+        adapters stay unloaded when no task can belong to them.
+        """
+        with self.store.connection() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT worker_kind FROM worker_tasks WHERE idempotency_key=? "
+                "ORDER BY worker_kind",
+                (idempotency_key,),
+            ).fetchall()
+        return tuple(str(row["worker_kind"]) for row in rows)
 
     def records(self, run_id: str) -> tuple[WorkerTaskRecord, ...]:
         with self.store.connection() as connection:

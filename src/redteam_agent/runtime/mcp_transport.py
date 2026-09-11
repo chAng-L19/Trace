@@ -291,7 +291,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         _serve_stdio(server, sys.stdin, sys.stdout)
     finally:
-        broker.close()
+        service.close()
     return 0
 
 

@@ -232,17 +232,7 @@ class LocalWorker:
         return self._finish(task, status, result)
 
     def reconcile(self, idempotency_key: str) -> WorkerResult | None:
-        matches = []
-        with self.records.store.connection() as connection:
-            rows = connection.execute(
-                "SELECT * FROM worker_tasks WHERE worker_kind=? AND idempotency_key=?",
-                (self.kind, idempotency_key),
-            ).fetchall()
-        for row in rows:
-            record = self.records._from_row(row)
-            if record.result is not None and record.status in WORKER_TERMINAL_STATUSES:
-                matches.append(record.result)
-        return matches[0] if len(matches) == 1 else None
+        return self.records.reconcile_kind(self.kind, idempotency_key)
 
     def cancel(self, task_id: str) -> bool:
         with self._lock:
@@ -262,6 +252,12 @@ class LocalWorker:
         if process.poll() is None:
             self._terminate_tree(process)
         return True
+
+    def close(self) -> None:
+        with self._lock:
+            task_ids = tuple(self._active)
+        for task_id in task_ids:
+            self.cancel(task_id)
 
     def _finish(self, task: WorkerTask, status: str, result: WorkerResult) -> WorkerResult:
         self.records.transition(

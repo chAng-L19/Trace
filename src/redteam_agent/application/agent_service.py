@@ -10,7 +10,7 @@ from ..adapters.runtime_mapping import (
     terminal_from_runtime,
 )
 from ..adapters.runtime import RuntimeToolAdapter
-from ..core import Event, ModelPort, ToolPort, WorkerPort, WorkerResult, WorkerTask
+from ..core import Event, ModelPort, ToolPort, WorkerPort, WorkerResult, WorkerTask, contract_hash
 from ..runtime.durable_store import StateVersionConflict, StoreConflictError
 from ..runtime.worker_store import WorkerStore
 from ..runtime.operation_result import OperationResult
@@ -33,6 +33,7 @@ from .contracts import (
     Observation,
     StartRequest,
 )
+from .bounded_output import BoundedOutput
 from .lifecycle import validate_run_transition
 from .model_loop import AgentLoop
 from .context import ContextSelection, ContextSelector, ConversationLedger, TraceableCompactor
@@ -95,15 +96,21 @@ class AgentService:
                     artifacts=self.runtime.artifacts,
                     records=self.worker_records,
                 ),
-                "codex_handoff": CodexHandoffWorker(records=self.worker_records),
-                "docker": DockerWorkerAdapter(records=self.worker_records),
             }
             workers["mcp"] = McpWorker(
                 tools=resolved_tool_port,
                 artifacts=self.runtime.artifacts,
                 records=self.worker_records,
             )
-            self.workers = WorkerManager(workers, records=self.worker_records)
+            self.workers = WorkerManager(
+                workers,
+                factories={
+                    "codex_handoff": lambda: CodexHandoffWorker(records=self.worker_records),
+                    "docker": lambda: DockerWorkerAdapter(records=self.worker_records),
+                },
+                capabilities={"codex_handoff": ("codex.handoff",)},
+                records=self.worker_records,
+            )
         self.agent_loop = (
             AgentLoop(
                 service=self,
@@ -443,7 +450,60 @@ class AgentService:
         result = self.workers.execute(resolved)
         for artifact_id in result.artifact_refs:
             self.runtime.artifacts.verify(artifact_id, run_id=resolved.run_id)
+        self._record_worker_observation(resolved, result)
         return result
+
+    def _record_worker_observation(self, task: WorkerTask, result: WorkerResult) -> None:
+        """Persist one bounded worker result projection for later model turns."""
+        bounded = BoundedOutput.capture_json(result.output)
+        try:
+            output_projection = bounded.preview()
+        finally:
+            bounded.discard()
+        result_projection = {
+            **result.to_dict(),
+            "output": output_projection,
+            "metadata": {
+                **dict(result.metadata),
+                "complete_output_artifacts": list(result.artifact_refs),
+            },
+        }
+        payload = {
+            "task_id": task.task_id,
+            "worker_kind": str(task.metadata.get("worker_kind") or task.capability.partition(".")[0]),
+            "action_id": str(task.metadata.get("action_id") or ""),
+            "idempotency_key": task.idempotency_key,
+            "result": result_projection,
+        }
+        observation_hash = contract_hash(payload)
+        self.runtime.store.append_event_once(
+            task.run_id,
+            "worker_observation_recorded",
+            {**payload, "observation_hash": observation_hash},
+            identity_field="task_id",
+            fingerprint_field="observation_hash",
+        )
+
+    def worker_observations(self, run_id: str) -> tuple[Mapping[str, Any], ...]:
+        if self.runtime.store.load_operation(run_id) is None:
+            raise KeyError(f"operation_not_found:{run_id}")
+        return tuple(
+            dict(item["payload"])
+            for item in self.runtime.store.events(run_id)
+            if item["event_type"] == "worker_observation_recorded"
+        )
+
+    def close(self) -> None:
+        close = getattr(self.workers, "close", None)
+        if callable(close):
+            close()
+        self.runtime.broker.close()
+
+    def __enter__(self) -> "AgentService":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.close()
 
     def worker_status(self, run_id: str, task_id: str):
         record = self.worker_records.get_for_run(task_id, run_id)
