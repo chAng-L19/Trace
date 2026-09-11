@@ -302,13 +302,14 @@ Finding 必须引用 raw observation、影响证明、负向控制、目标和�
 验收：生产文件 ≤80、代码 ≤16,000 行、单文件 ≤800 行；全量回归、快照、wheel、隔离安装、
 self-test、MCP initialize/tools/list 全部通过；旧调用方有明确迁移路径。
 
-### L11：透明度与成本评测
+### L11：透明度与成本评测（功能/成本门已通过）
 
 动作：增加 `session inspect/export`、`events --jsonl`、tool visibility explain、context
 usage、compaction boundary、evidence lineage 命令；固定 10 个 Web/API 与 5 个干净目标。
 
-验收：每个模型动作可解释；输入 token、工具 token、raw artifact、Evidence lineage 和终态
-都能导出；相同模型/预算对比 Phase 6 基线，token 至少下降 35%，完成率不下降，误成功率不升高。
+验收结果：每个模型动作可解释；输入 token、工具 token、raw artifact、Evidence lineage 和
+终态均可导出；10 场景固定评测相对 Phase 6 基线 Token 总量下降 62.8%，大型输出中位下降
+62.8%，完成率 100%，5 个干净目标误成功 0。生产代码行数预算仍为后续独立瘦身缺口。
 
 ## 迁移顺序与硬门
 

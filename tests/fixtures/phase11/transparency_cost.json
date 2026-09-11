@@ -1,0 +1,135 @@
+{
+  "baseline": "phase6-full-tool-result-projection-v1",
+  "cases": [
+    {
+      "baseline_tokens": 4627,
+      "clean_target_success": false,
+      "expected_finding": true,
+      "goal_contract_completed": true,
+      "name": "vulnerable-web-api-1",
+      "optimized_tokens": 1720,
+      "projection_kind": "ai_friendly_tool_observation_v1",
+      "reduction_ratio": 0.628269,
+      "target": "fixture://web-api/vulnerable/1"
+    },
+    {
+      "baseline_tokens": 4627,
+      "clean_target_success": false,
+      "expected_finding": true,
+      "goal_contract_completed": true,
+      "name": "vulnerable-web-api-2",
+      "optimized_tokens": 1720,
+      "projection_kind": "ai_friendly_tool_observation_v1",
+      "reduction_ratio": 0.628269,
+      "target": "fixture://web-api/vulnerable/2"
+    },
+    {
+      "baseline_tokens": 4627,
+      "clean_target_success": false,
+      "expected_finding": true,
+      "goal_contract_completed": true,
+      "name": "vulnerable-web-api-3",
+      "optimized_tokens": 1720,
+      "projection_kind": "ai_friendly_tool_observation_v1",
+      "reduction_ratio": 0.628269,
+      "target": "fixture://web-api/vulnerable/3"
+    },
+    {
+      "baseline_tokens": 4627,
+      "clean_target_success": false,
+      "expected_finding": true,
+      "goal_contract_completed": true,
+      "name": "vulnerable-web-browser-4",
+      "optimized_tokens": 1724,
+      "projection_kind": "ai_friendly_tool_observation_v1",
+      "reduction_ratio": 0.627404,
+      "target": "fixture://web-browser/vulnerable/4"
+    },
+    {
+      "baseline_tokens": 4627,
+      "clean_target_success": false,
+      "expected_finding": true,
+      "goal_contract_completed": true,
+      "name": "vulnerable-web-browser-5",
+      "optimized_tokens": 1724,
+      "projection_kind": "ai_friendly_tool_observation_v1",
+      "reduction_ratio": 0.627404,
+      "target": "fixture://web-browser/vulnerable/5"
+    },
+    {
+      "baseline_tokens": 4622,
+      "clean_target_success": false,
+      "expected_finding": false,
+      "goal_contract_completed": true,
+      "name": "clean-web-api-1",
+      "optimized_tokens": 1715,
+      "projection_kind": "ai_friendly_tool_observation_v1",
+      "reduction_ratio": 0.628949,
+      "target": "fixture://web-api/clean/1"
+    },
+    {
+      "baseline_tokens": 4622,
+      "clean_target_success": false,
+      "expected_finding": false,
+      "goal_contract_completed": true,
+      "name": "clean-web-api-2",
+      "optimized_tokens": 1715,
+      "projection_kind": "ai_friendly_tool_observation_v1",
+      "reduction_ratio": 0.628949,
+      "target": "fixture://web-api/clean/2"
+    },
+    {
+      "baseline_tokens": 4622,
+      "clean_target_success": false,
+      "expected_finding": false,
+      "goal_contract_completed": true,
+      "name": "clean-web-api-3",
+      "optimized_tokens": 1715,
+      "projection_kind": "ai_friendly_tool_observation_v1",
+      "reduction_ratio": 0.628949,
+      "target": "fixture://web-api/clean/3"
+    },
+    {
+      "baseline_tokens": 4622,
+      "clean_target_success": false,
+      "expected_finding": false,
+      "goal_contract_completed": true,
+      "name": "clean-web-browser-4",
+      "optimized_tokens": 1719,
+      "projection_kind": "ai_friendly_tool_observation_v1",
+      "reduction_ratio": 0.628083,
+      "target": "fixture://web-browser/clean/4"
+    },
+    {
+      "baseline_tokens": 4622,
+      "clean_target_success": false,
+      "expected_finding": false,
+      "goal_contract_completed": true,
+      "name": "clean-web-browser-5",
+      "optimized_tokens": 1719,
+      "projection_kind": "ai_friendly_tool_observation_v1",
+      "reduction_ratio": 0.628083,
+      "target": "fixture://web-browser/clean/5"
+    }
+  ],
+  "invariants": [
+    "every_model_action_has_request_and_response_hashes",
+    "tool_visibility_explanation_is_revision_bound",
+    "context_usage_retains_source_and_protected_hashes",
+    "compaction_boundaries_reference_source_message_ids",
+    "evidence_lineage_is_run_scoped_and_append_only",
+    "bounded_projection_keeps_complete_output_in_artifact_store",
+    "clean_targets_never_report_a_successful_finding"
+  ],
+  "metrics": {
+    "baseline_tokens_total": 46245,
+    "case_count": 10,
+    "clean_target_false_successes": 0,
+    "goal_contract_completion_rate": 1.0,
+    "large_output_median_reduction_ge_40_percent": true,
+    "median_reduction_ratio": 0.628269,
+    "optimized_tokens_total": 17191,
+    "tool_input_token_reduction_ge_35_percent": true
+  },
+  "schema_version": 1
+}

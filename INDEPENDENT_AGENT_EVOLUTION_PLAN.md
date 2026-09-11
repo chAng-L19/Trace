@@ -73,7 +73,7 @@ GitHub Actions: `.github/workflows/ci.yml` added for push/PR validation on Pytho
 | L8 | EvidenceGate 收敛 | 已通过 |
 | L9 | MCP/Worker 适配器瘦身 | 已通过 |
 | L10 | 删除旧编排与发布门 | 已通过（结构门；行数瘦身列入后续成本批次） |
-| L11 | 透明度、Token 与能力评测 | 待执行 |
+| L11 | 透明度、Token 与能力评测 | 已通过（功能/成本门；代码量预算缺口已记录） |
 
 ## 阶段交付与验收
 
@@ -235,14 +235,17 @@ installed self-test、MCP `initialize/tools/list`（5 个公开工具）全部�
 到唯一 canonical 模块。当前生产代码 `25,766` 行，未强行压缩到 `16,000` 行，以避免
 破坏 Runtime 不变量；该行数目标保留给后续 L11 成本/透明度批次的独立瘦身工作。
 
-### L11：透明度与成本评测（下一阶段）
+### L11：透明度与成本评测（已通过功能/成本验收）
 
 交付：`session inspect/export`、事件流、tool visibility explain、context usage、
 compaction boundary 和 Evidence lineage 查询；固定 Web/API 评测集与干净目标集。
 
-验收：每个模型动作、工具选择、Token、Artifact、Evidence 和终态可导出；相同模型/预算
-相对 Phase 6 基线 Token 至少下降 35%；GoalContract 完成率不下降；5 个干净目标零错误
-终态成功；结果可连续复现。
+验收结果：每个模型动作、工具选择、Token、Artifact、Evidence 和终态均可导出；固定
+10 场景评测中工具输入 Token 总量相对 Phase 6 基线下降 `62.8%`，大型输出中位下降
+`62.8%`；GoalContract 完成率 `100%`；5 个干净目标误成功 `0`；快照连续生成一致。
+新增查询均为只读、run-scoped，并保持原始 Transcript/Artifact/Observation/Evidence
+lineage 可回读。生产代码当前约 `24,207` 行，未达到全局 `16,000` 行预算；该缺口
+不通过删除不变量来掩盖，列为后续成本瘦身批次。
 
 ## 执行规约与 Ponytail
 

@@ -22,6 +22,7 @@ from .context import (
 from .tool_projection import ToolObservationProjection, ToolObservationProjector
 from .bounded_output import BoundedOutput
 from .resources import ResourceDescriptor, ResourceIndex, ResourceIssue, ResourceResolver, ResourceSelection
+from .transparency import SCHEMA_VERSION as TRANSPARENCY_SCHEMA_VERSION, TransparencyProjector
 
 __all__ = [
     "ALLOWED_RUN_TRANSITIONS",
@@ -54,5 +55,7 @@ __all__ = [
     "ResourceIssue",
     "ResourceResolver",
     "ResourceSelection",
+    "TRANSPARENCY_SCHEMA_VERSION",
+    "TransparencyProjector",
     "validate_run_transition",
 ]
