@@ -152,3 +152,9 @@ class RuntimeToolAdapter(ToolPort):
 
     def cancel(self, call_id: str) -> bool:
         return self.runtime.broker.cancel(call_id)
+
+    def restart(self, server: str, *, run_id: str = "") -> bool:
+        return self.runtime.broker.restart(server, run_id=run_id)
+
+    def close(self) -> None:
+        self.runtime.broker.close()

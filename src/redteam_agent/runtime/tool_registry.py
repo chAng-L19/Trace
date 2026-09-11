@@ -251,6 +251,21 @@ class ToolRegistry(ToolPort):
         self._last_revision.clear()
         return self.catalog()
 
+    def restart(self, server: str, *, run_id: str = "") -> bool:
+        restarter = getattr(self.delegate, "restart", None)
+        if not callable(restarter):
+            return False
+        restarted = bool(restarter(server, run_id=run_id))
+        if restarted:
+            self._last_revision.pop(run_id, None)
+            self._selected.pop(run_id, None)
+        return restarted
+
+    def close(self) -> None:
+        closer = getattr(self.delegate, "close", None)
+        if callable(closer):
+            closer()
+
     def invoke(self, call: ToolCall) -> ToolResult:
         rejected = self._rejected_call(call)
         if rejected is not None:

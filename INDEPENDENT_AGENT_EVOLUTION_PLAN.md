@@ -71,7 +71,7 @@ GitHub Actions: `.github/workflows/ci.yml` added for push/PR validation on Pytho
 | L6 | ContextBudget 与可追溯 Compaction | 已通过（结构验收） |
 | L7 | ResourceResolver 与透明扩展 | 已通过 |
 | L8 | EvidenceGate 收敛 | 已通过 |
-| L9 | MCP/Worker 适配器瘦身 | 部分完成 |
+| L9 | MCP/Worker 适配器瘦身 | 已通过 |
 | L10 | 删除旧编排与发布门 | 待执行 |
 | L11 | 透明度、Token 与能力评测 | 待执行 |
 
@@ -199,7 +199,7 @@ run/branch/target、缺父、环、跨目标、篡改 hash 和 Host assertion �
 wheel、隔离安装、source self-test、MCP initialize/tools/list（5 个公开工具）全部通过；
 生产 Python 文件均不超过 800 行。
 
-### L9：MCP/Worker 适配器瘦身（部分完成）
+### L9：MCP/Worker 适配器瘦身（已通过）
 
 交付：保留通用 run-scoped MCP、Local/MCP/Codex/Docker Worker adapter；收敛 transport、
 registry、执行、取消、重启和 cleanup 为单一路径；低频 Worker 延迟加载。
@@ -207,6 +207,20 @@ registry、执行、取消、重启和 cleanup 为单一路径；低频 Worker �
 验收：MCP 五工具 schema、Playwright fixture、worker 重启/取消/幂等、workspace/凭据
 隔离全部通过；无隐藏全局 client；工具结果自动回填 Observation；断线和重复提交不
 重复副作用。
+
+当前结果：`WorkerManager` 支持线程安全的工厂注册和按首次使用惰性加载，默认只实例化
+Local/MCP，Codex handoff 与 Docker 保留为低频工厂；统一 aliases、能力投影、定向
+reconcile、取消、restart 和 close。`WorkerStore.kinds_for_idempotency` 让恢复只触及
+持久记录对应的适配器，Local/MCP reconcile 共用 Store 终态过滤。MCP stdio/http discovery
+共用一条 client lifecycle 路径，新增 shared/run-scoped restart；ToolRegistry、Runtime
+ToolAdapter、AgentService 和 MCP transport 共用 close/restart 入口，无模块级全局 client。
+`AgentService.execute_worker` 以任务幂等身份写入一次 `worker_observation_recorded`
+事件，结果只作为 bounded Observation 投影，不直接晋升 Evidence；重复执行、重启和跨
+运行访问均保持幂等与作用域隔离。
+
+L9 验收结果：新增 4 项适配器收敛回归，专项与全量回归通过（326 passed、1 skipped）；
+`compileall`、Phase 5/6 snapshot、pip check、wheel、隔离安装、source self-test 和
+MCP initialize/tools/list（5 个公开工具）全部通过。生产 Python 文件均不超过 800 行。
 
 ### L10：删除旧编排与发布门（待执行）
 
