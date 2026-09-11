@@ -213,6 +213,79 @@ class EvidenceGraph:
                 return node
         return None
 
+    def lineage(
+        self,
+        run_id: str,
+        evidence_id: str,
+        *,
+        direction: str = "both",
+        include_payload: bool = True,
+    ) -> dict[str, Any]:
+        """Return a deterministic, run-scoped evidence lineage projection.
+
+        This is intentionally a query over the validated graph.  It does not
+        promote, rewrite, or infer evidence and therefore remains safe for
+        operator inspection and exports.
+        """
+        selected_direction = str(direction).casefold().strip()
+        if selected_direction not in {"ancestors", "descendants", "both"}:
+            raise ValueError("evidence_lineage_direction_invalid")
+        nodes = {item.evidence_id: item for item in self.list(run_id, include_unverified=True)}
+        root = nodes.get(str(evidence_id))
+        if root is None:
+            foreign = tuple(
+                item
+                for item in self.store.evidence(run_id)
+                if item.evidence_id == str(evidence_id)
+            )
+            if foreign:
+                raise ValueError(f"evidence_lineage_unvalidated:{evidence_id}")
+            raise KeyError(f"evidence_not_found:{evidence_id}")
+        children: dict[str, list[str]] = {key: [] for key in nodes}
+        for item in nodes.values():
+            for parent_id in item.parent_ids:
+                if parent_id in children:
+                    children[parent_id].append(item.evidence_id)
+        for values in children.values():
+            values.sort()
+
+        def walk(start: str, edges: Mapping[str, Sequence[str]]) -> list[str]:
+            result: list[str] = []
+            pending = list(sorted(edges.get(start, ())))
+            seen: set[str] = set()
+            while pending:
+                current = pending.pop(0)
+                if current in seen:
+                    continue
+                seen.add(current)
+                result.append(current)
+                pending.extend(sorted(edges.get(current, ())))
+            return result
+
+        parents = {key: list(item.parent_ids) for key, item in nodes.items()}
+        ancestors = walk(root.evidence_id, parents)
+        descendants = walk(root.evidence_id, children)
+
+        def render(item: EvidenceNode) -> dict[str, Any]:
+            payload = item.to_dict()
+            if not include_payload:
+                payload.pop("payload", None)
+            return payload
+
+        return {
+            "schema_version": 1,
+            "run_id": run_id,
+            "evidence_id": root.evidence_id,
+            "direction": selected_direction,
+            "node": render(root),
+            "ancestors": [render(nodes[item]) for item in ancestors]
+            if selected_direction in {"ancestors", "both"}
+            else [],
+            "descendants": [render(nodes[item]) for item in descendants]
+            if selected_direction in {"descendants", "both"}
+            else [],
+        }
+
     def _legacy_artifact_path(self, node: EvidenceNode) -> Path:
         safe_run = "".join(character if character.isalnum() or character in "._-" else "_" for character in node.run_id)
         safe_action = "".join(character if character.isalnum() or character in "._-" else "_" for character in node.action_id)

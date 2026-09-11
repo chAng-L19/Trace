@@ -244,6 +244,31 @@ class ToolRegistry(ToolPort):
         )
         return self.catalog(run_id)
 
+    def explain(self, run_id: str, *, tool_name: str = "") -> dict[str, Any]:
+        """Explain why tools are visible or deferred for one operation."""
+        catalog = self.catalog(run_id)
+        requested = str(tool_name).strip()
+        visibility = tuple(
+            item for item in catalog.visibility
+            if not requested or item.qualified_name == requested
+        )
+        if requested and not visibility:
+            raise KeyError(f"tool_not_found:{requested}")
+        selected = {
+            str(item.qualified_name): self._tool_signature(item)
+            for item in catalog.tools
+            if not requested or item.qualified_name == requested
+        }
+        return {
+            "schema_version": 1,
+            "run_id": run_id,
+            "revision": catalog.revision,
+            "expanded": catalog.expanded,
+            "estimated_prompt_bytes": catalog.estimated_prompt_bytes,
+            "tools": selected,
+            "visibility": [item.to_dict() for item in visibility],
+        }
+
     def refresh(self, *, force: bool = False) -> ToolCatalog:
         refresher = getattr(self.delegate, "refresh", None)
         if callable(refresher):

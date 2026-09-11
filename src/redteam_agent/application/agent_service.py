@@ -38,6 +38,7 @@ from .bounded_output import BoundedOutput
 from .model_loop import AgentLoop
 from .context import ContextSelection, ContextSelector, ConversationLedger, TraceableCompactor
 from .resources import ResourceIndex, ResourceResolver, ResourceSelection
+from .transparency import TransparencyProjector
 
 
 class AgentService:
@@ -85,6 +86,7 @@ class AgentService:
         )
         self.context_compactor = TraceableCompactor(self.runtime.store, journal=self.journal)
         self.context_selector = ContextSelector(self, self.conversation, self.context_compactor)
+        self.transparency = TransparencyProjector(self)
         self.worker_records = WorkerStore(self.runtime.store)
         self.workspaces = WorkspaceManager(self.runtime.root, self.runtime.store)
         if worker_port is not None:
@@ -373,6 +375,38 @@ class AgentService:
 
     def export_session(self, run_id: str):
         return self.journal.export(run_id)
+
+    def inspect_session(self, run_id: str, *, event_limit: int = 1000):
+        """Return a bounded, read-only operator view of one run."""
+        return self.transparency.inspect(run_id, event_limit=event_limit)
+
+    def export_transparency(self, run_id: str, *, event_limit: int = 10000):
+        """Export model, tool, context, artifact and evidence lineage metadata."""
+        return self.transparency.export(run_id, event_limit=event_limit)
+
+    def explain_tool_visibility(self, run_id: str, *, tool_name: str = ""):
+        if self.runtime.store.load_operation(run_id) is None:
+            raise KeyError(f"operation_not_found:{run_id}")
+        return self.tools.explain(run_id, tool_name=tool_name)
+
+    def context_usage(self, run_id: str):
+        report = self.inspect_session(run_id, event_limit=1)
+        return dict(report["context"])
+
+    def evidence_lineage(
+        self,
+        run_id: str,
+        evidence_id: str,
+        *,
+        direction: str = "both",
+        include_payload: bool = True,
+    ):
+        return self.runtime.evidence_graph.lineage(
+            run_id,
+            evidence_id,
+            direction=direction,
+            include_payload=include_payload,
+        )
 
     def replay_session(self, run_id: str, leaf_id: str | None = None):
         return self.journal.replay(run_id, leaf_id)
