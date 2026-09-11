@@ -14,7 +14,7 @@ from typing import Any, Mapping
 from .operation_runtime import OperationRuntime
 from .adaptive_planner import AdaptivePlanner
 from .handoff import DEFAULT_HANDOFF_TTL_SECONDS
-from .mcp_limits import MAX_OBSERVATION_BYTES, MAX_REQUEST_BYTES, MAX_TOOL_ARGUMENT_BYTES
+from .mcp_config import MAX_OBSERVATION_BYTES, MAX_REQUEST_BYTES, MAX_TOOL_ARGUMENT_BYTES
 from .mcp_tool_dispatch import RuntimeMcpToolDispatchMixin
 from .session_bridge import sync_session_summary
 from .security import safe_error_text

@@ -4,7 +4,7 @@ from uuid import uuid4
 
 from .durable_store import ImmutableRecordError, StateVersionConflict
 from .models import LeaseToken, OperationState, TerminalDecision, WorkflowSpec
-from .operation_result import OperationResult, TERMINAL_FAILURE_STATUSES
+from .terminal_judge import OperationResult, TERMINAL_FAILURE_STATUSES
 
 
 class OperationExecutionMixin:

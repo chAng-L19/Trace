@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from .durable_store import StoreConflictError
 from .models import LeaseToken, OperationState, RunBudget, SuccessPredicate, TaskAttempt, WorkflowSpec
-from .operation_result import OperationResult
+from .terminal_judge import OperationResult
 from .plan import PlanRevision
 from .security import find_secret_references, project_sensitive
 

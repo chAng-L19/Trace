@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -7,7 +9,7 @@ from pathlib import Path
 from typing import Iterator, Mapping, Sequence
 
 from .model_common import utc_now
-from .model_state import LeaseToken, OperationState
+from .model_state import LeaseToken, OperationState, ToolCallResult
 from .security import secure_directory, secure_file
 from .store_common import (
     MAX_HANDOFF_OBSERVATION_BYTES,
@@ -21,13 +23,11 @@ from .store_common import (
 )
 from .store_handoff import HandoffStoreMixin
 from .store_records import DurableRecordStoreMixin
-from .store_schema import StoreSchemaMixin
-from .store_migrations import MigrationReport, SchemaMigrationError
-from .service_store import ServiceStoreMixin
+from .store_migrations import MigrationReport, SchemaMigrationError, apply_migrations, migration_history
 from .model_store import ModelStoreMixin
 from .conversation_store import ConversationStoreMixin
 from .budget_store import BudgetStoreMixin
-from .exploration_store import ExplorationStoreMixin
+from .exploration import ExplorationStoreMixin
 from .session_journal import JournalStoreMixin
 
 __all__ = [
@@ -41,6 +41,115 @@ __all__ = [
     "StateVersionConflict",
     "StoreConflictError",
 ]
+
+
+BUDGET_DELTA_ACTION_ID = "__agent_service_budget_delta__"
+
+
+class ServiceStoreMixin:
+    """Durable budget-delta writes share the store transaction and lease."""
+
+    def apply_budget_delta_once(
+        self,
+        run_id: str,
+        *,
+        actions: int,
+        tokens: int,
+        time_seconds: float,
+        deadline: str,
+        acknowledge_missing_usage: bool,
+        idempotency_key: str,
+        lease_token: LeaseToken,
+    ) -> OperationState:
+        client_key = idempotency_key.strip()
+        if not client_key:
+            raise ValueError("budget_delta_idempotency_key_required")
+        if (lease_token.run_id, lease_token.action_id) != (run_id, "__operation__"):
+            raise LeaseLostError(f"lease_identity_mismatch:{run_id}:__operation__")
+        request = {"actions": int(actions), "tokens": int(tokens), "time_seconds": float(time_seconds), "deadline": str(deadline or ""), "acknowledge_missing_usage": bool(acknowledge_missing_usage)}
+        request_hash = hashlib.sha256(json.dumps(request, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        durable_key = hashlib.sha256(f"agent-service-budget\0{run_id}\0{client_key}".encode("utf-8")).hexdigest()
+        with self.transaction(immediate=True) as connection:
+            if not self._assert_lease(connection, lease_token):
+                raise LeaseLostError(f"lease_lost:{run_id}:__operation__:{lease_token.fencing_token}")
+            row = connection.execute("SELECT * FROM operations WHERE run_id=?", (run_id,)).fetchone()
+            if row is None:
+                raise KeyError(f"operation_not_found:{run_id}")
+            state = self._state_from_row(connection, row)
+            if state is None:
+                raise RuntimeError(f"operation_state_corrupt:{run_id}")
+            existing = connection.execute("SELECT action_id, result_json FROM action_results WHERE run_id=? AND idempotency_key=?", (run_id, durable_key)).fetchone()
+            if existing is not None:
+                result = ToolCallResult.from_dict(_load(existing["result_json"], {}))
+                if str(existing["action_id"]) != BUDGET_DELTA_ACTION_ID or result.input_hash != request_hash:
+                    raise ImmutableRecordError(f"budget_delta_idempotency_conflict:{run_id}:{durable_key}")
+                return state
+            if state.status in {"completed", "failed", "failed_integrity", "cancelled"}:
+                raise ValueError(f"operation_terminal:{state.status}")
+            changed = state.budget.apply_delta(**request)
+            if state.status == "paused_budget" and not state.budget.exhaustion_reason():
+                state.status = "running"
+            current_version = int(row["version"])
+            if changed:
+                next_version = current_version + 1
+                state.state_version, state.updated_at = next_version, utc_now()
+                snapshot = self._snapshot_payload(state, next_version)
+                cursor = connection.execute("UPDATE operations SET session_id=?, goal_id=?, workflow_id=?, status=?, state_json=?, version=?, updated_at=? WHERE run_id=? AND version=?", (state.session_id, state.goal.goal_id, state.workflow_id, state.status, _dump(snapshot), next_version, state.updated_at, run_id, current_version))
+                if cursor.rowcount != 1:
+                    raise StateVersionConflict(f"state_version_conflict:{run_id}:{current_version}")
+            else:
+                snapshot = self._snapshot_payload(state, state.state_version)
+            output = {"kind": "budget_delta", "changed": changed, "state_version": state.state_version, "request_hash": request_hash}
+            output_hash = hashlib.sha256(json.dumps(output, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+            result = ToolCallResult(status="success", output=output, tool="agent-service:budget-delta", call_id=f"budget-delta-{durable_key[:24]}", input_hash=request_hash, output_hash=output_hash, tool_version="agent-service-v1")
+            connection.execute("INSERT INTO action_results(run_id, action_id, idempotency_key, result_json, created_at) VALUES(?, ?, ?, ?, ?)", (run_id, BUDGET_DELTA_ACTION_ID, durable_key, _dump(result.to_dict()), utc_now()))
+            self._insert_event(connection, run_id, "budget_delta_applied", {**request, "idempotency_hash": durable_key, "changed": changed, "state_version": state.state_version, "state_snapshot": snapshot})
+            return state
+
+
+class StoreSchemaMixin:
+    @staticmethod
+    def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
+        return {str(row["name"]) for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
+
+    def _initialize(self) -> None:
+        with self.transaction(immediate=True) as connection:
+            self._migration_report = apply_migrations(self, connection)
+
+    @property
+    def migration_report(self) -> MigrationReport:
+        return self._migration_report
+
+    def schema_version(self) -> int:
+        with self.connection() as connection:
+            return int(connection.execute("PRAGMA user_version").fetchone()[0])
+
+    def migration_history(self) -> tuple[tuple[int, str], ...]:
+        with self.connection() as connection:
+            return migration_history(connection)
+
+    def _migrate_evidence_table(self, connection: sqlite3.Connection) -> None:
+        row = connection.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='evidence_nodes'").fetchone()
+        table_sql = str(row["sql"] or "") if row else ""
+        if "unique(run_id,action_id,artifact_type,tool,content_hash)" not in "".join(table_sql.casefold().split()) and "tool" in self._columns(connection, "evidence_nodes"):
+            return
+        legacy = "evidence_nodes_schema2"
+        connection.execute(f"DROP TABLE IF EXISTS {legacy}")
+        connection.execute(f"ALTER TABLE evidence_nodes RENAME TO {legacy}")
+        connection.execute("""
+            CREATE TABLE evidence_nodes (
+                evidence_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, action_id TEXT NOT NULL,
+                artifact_type TEXT NOT NULL, tool TEXT NOT NULL, content_hash TEXT NOT NULL,
+                node_json TEXT NOT NULL, created_at TEXT NOT NULL,
+                FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE
+            )
+            """)
+        columns = self._columns(connection, legacy)
+        for legacy_row in connection.execute(f"SELECT * FROM {legacy}").fetchall():
+            payload = _load(legacy_row["node_json"], {})
+            tool = str(legacy_row["tool"]) if "tool" in columns else str((payload or {}).get("tool") or "legacy")
+            connection.execute("INSERT OR IGNORE INTO evidence_nodes VALUES(?, ?, ?, ?, ?, ?, ?, ?)", (legacy_row["evidence_id"], legacy_row["run_id"], legacy_row["action_id"], legacy_row["artifact_type"], tool, legacy_row["content_hash"], legacy_row["node_json"], legacy_row["created_at"]))
+        connection.execute(f"DROP TABLE {legacy}")
 
 
 class DurableStore(

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any, Mapping
 
-from .mcp_limits import MAX_OBSERVATION_BYTES
+from .mcp_config import MAX_OBSERVATION_BYTES
 from .session_bridge import sync_session_summary
 
 

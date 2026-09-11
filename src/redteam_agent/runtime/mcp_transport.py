@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Mapping
 
 from .adaptive_planner import AdaptivePlanner
 from .handoff import DEFAULT_HANDOFF_TTL_SECONDS
-from .mcp_limits import MAX_REQUEST_BYTES
+from .mcp_config import MAX_REQUEST_BYTES
 from .operation_runtime import OperationRuntime
 from .tool_broker import ToolBroker
 

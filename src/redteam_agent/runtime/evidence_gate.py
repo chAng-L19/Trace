@@ -10,11 +10,51 @@ consistent while leaving persistence and business predicates at their boundaries
 import hashlib
 import json
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import asdict, dataclass
+from typing import Any, Callable
+from uuid import uuid4
 
-from .evidence_trust import is_trusted_evidence, valid_evidence_trust
-from .models import EvidenceNode, EvidenceProvenance, TaskAttempt, ToolCallResult
+from .models import EvidenceNode, EvidenceProvenance, GatePredicate, ReviewRecord, TaskAttempt, ToolCallResult
+
+
+HOST_ASSERTED = "host_asserted"
+RUNTIME_VERIFIED = "runtime_verified"
+TOOL_VERIFIED = "tool_verified"
+VERIFIED_TRUST_LEVELS = frozenset({RUNTIME_VERIFIED, TOOL_VERIFIED})
+
+
+def direct_trust(source: str) -> str:
+    return RUNTIME_VERIFIED if source == "registered-adapter" else TOOL_VERIFIED
+
+
+def is_trusted_evidence(node: Any) -> bool:
+    return bool(getattr(node, "verified", False) and str(getattr(node, "trust", "")) in VERIFIED_TRUST_LEVELS and not str(getattr(node, "tool", "")).startswith("host:"))
+
+
+def is_host_assertion(node: Any) -> bool:
+    return bool(not getattr(node, "verified", True) and str(getattr(node, "trust", "")) == HOST_ASSERTED and str(getattr(node, "artifact_type", "")) == "host_observation" and str(getattr(node, "tool", "")).startswith("host:"))
+
+
+def valid_evidence_trust(node: Any) -> bool:
+    return is_trusted_evidence(node) or is_host_assertion(node)
+
+
+def host_assertion_metadata(nodes: Sequence[Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "evidence_id": str(getattr(node, "evidence_id", "")),
+            "run_id": str(getattr(node, "run_id", "")),
+            "branch_id": str(getattr(getattr(node, "provenance", None), "branch_id", "")),
+            "plan_revision": int(getattr(getattr(node, "provenance", None), "plan_revision", 0) or 0),
+            "action_id": str(getattr(node, "action_id", "")),
+            "target": str(getattr(node, "target", "")),
+            "content_hash": str(getattr(node, "content_hash", "")),
+            "trust": HOST_ASSERTED,
+            "verified": False,
+        }
+        for node in nodes
+        if is_host_assertion(node)
+    ]
 
 
 @dataclass(frozen=True)
@@ -417,4 +457,82 @@ class EvidenceGate:
         return EvidenceGateDecision(True, "finding_evidence_valid")
 
 
-__all__ = ["EvidenceGate", "EvidenceGateDecision"]
+class GateEvaluationError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class GateResult:
+    gate_id: str
+    passed: bool
+    actual: Any
+    expected: Any
+    operator: str
+    decision: str
+    reason: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def _resolve(context: Mapping[str, Any], reference: str) -> Any:
+    if reference in context:
+        return context[reference]
+    current: Any = context
+    for part in reference.split("."):
+        if isinstance(current, Mapping) and part in current:
+            current = current[part]
+        else:
+            return None
+    return current
+
+
+def _compare(actual: Any, operator: str, expected: Any) -> bool:
+    if operator == "exists":
+        return actual not in (None, False, "", [], {}, ())
+    if operator == "eq":
+        return actual == expected
+    if operator == "ne":
+        return actual != expected
+    if operator == "contains":
+        try:
+            return expected in actual
+        except TypeError:
+            return False
+    if operator == "in":
+        try:
+            return actual in expected
+        except TypeError:
+            return False
+    try:
+        return {"gte": actual >= expected, "gt": actual > expected, "lte": actual <= expected, "lt": actual < expected}[operator]
+    except KeyError as exc:
+        raise GateEvaluationError(f"gate_operator_unknown:{operator}") from exc
+    except TypeError:
+        return False
+
+
+class ReviewEngine:
+    def __init__(self, predicates: Mapping[str, Callable[[Sequence[Any], Mapping[str, Any]], Any]] | None = None) -> None:
+        self.predicates = dict(predicates or {})
+
+    def evaluate_gate(self, gate: GatePredicate, context: Mapping[str, Any]) -> GateResult:
+        values = tuple(_resolve(context, item) for item in gate.inputs)
+        handler = self.predicates.get(gate.predicate)
+        actual = handler(values, context) if handler else context.get(gate.predicate, values[0] if len(values) == 1 else values)
+        passed = _compare(actual, gate.operator, gate.expected)
+        return GateResult(gate.gate_id, passed, actual, gate.expected, gate.operator, gate.on_pass if passed else gate.on_fail, gate.description)
+
+    def review(self, *, run_id: str, branch_id: str, plan_revision: int, scope: str, subject_id: str, gates: Sequence[GatePredicate], context: Mapping[str, Any], evidence_ids: Sequence[str] = (), reviewer: str = "runtime") -> ReviewRecord:
+        results = tuple(self.evaluate_gate(gate, context) for gate in gates)
+        failures = tuple(item for item in results if not item.passed)
+        decision = "pass" if not failures else "fail" if any(item.decision in {"abort", "fail", "stop"} for item in failures) else "replan"
+        reason = "all_gates_passed" if not failures else "gate_failed" if decision == "fail" else "gate_replan_required"
+        return ReviewRecord(review_id=f"review-{uuid4().hex}", run_id=run_id, branch_id=branch_id or "main", plan_revision=max(1, int(plan_revision)), scope=scope, subject_id=subject_id, decision=decision, gate_results=tuple(item.to_dict() for item in results), evidence_ids=tuple(dict.fromkeys(str(item) for item in evidence_ids if str(item))), reason=reason, reviewer=reviewer)
+
+
+__all__ = [
+    "EvidenceGate", "EvidenceGateDecision", "GateEvaluationError", "GateResult", "ReviewEngine",
+    "HOST_ASSERTED", "RUNTIME_VERIFIED", "TOOL_VERIFIED", "VERIFIED_TRUST_LEVELS",
+    "direct_trust", "host_assertion_metadata", "is_host_assertion", "is_trusted_evidence", "valid_evidence_trust",
+]

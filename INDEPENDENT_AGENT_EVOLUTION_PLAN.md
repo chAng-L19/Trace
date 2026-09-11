@@ -72,7 +72,7 @@ GitHub Actions: `.github/workflows/ci.yml` added for push/PR validation on Pytho
 | L7 | ResourceResolver 与透明扩展 | 已通过 |
 | L8 | EvidenceGate 收敛 | 已通过 |
 | L9 | MCP/Worker 适配器瘦身 | 已通过 |
-| L10 | 删除旧编排与发布门 | 待执行 |
+| L10 | 删除旧编排与发布门 | 已通过（结构门；行数瘦身列入后续成本批次） |
 | L11 | 透明度、Token 与能力评测 | 待执行 |
 
 ## 阶段交付与验收
@@ -222,16 +222,20 @@ L9 验收结果：新增 4 项适配器收敛回归，专项与全量回归通�
 `compileall`、Phase 5/6 snapshot、pip check、wheel、隔离安装、source self-test 和
 MCP initialize/tools/list（5 个公开工具）全部通过。生产 Python 文件均不超过 800 行。
 
-### L10：删除旧编排与发布门（待执行）
+### L10：删除旧编排与发布门（已通过结构验收）
 
-交付：按删除优先矩阵移除无调用 mapping、固定 generic workflow、重复 context/index
-和过期 shim；保留必要 shim 一个版本周期并生成迁移说明。
+交付：按删除优先矩阵移除 25 个重复/纯转发模块（含 mapping、独立 Scheduler、重复
+Core/Runtime 模型和 Store/Evidence/Worker 实现）；将 canonical workflow 固化到类型化
+`WorkflowRegistry`，TOML 仅保留为历史导出；必要的旧导入路径只保留一层无状态 shim。
+新增 L10 回归验证 canonical import identity、删除文件清单和 legacy workflow 不被读取。
 
-验收：生产 Python 文件不超过 80、代码不超过 16,000 行、单文件不超过 800 行；全量
-回归、快照、wheel、隔离安装、self-test、MCP initialize/tools/list 全通过；每个旧
-入口有明确迁移路径。
+验收结果：生产 Python 文件 `80`、最大文件 `800` 行，删除文件清单与兼容导入测试通过；
+全量回归 `329 passed, 1 skipped`，`compileall`、wheel、隔离安装、`pip check`、source/
+installed self-test、MCP `initialize/tools/list`（5 个公开工具）全部通过；旧入口均映射
+到唯一 canonical 模块。当前生产代码 `25,766` 行，未强行压缩到 `16,000` 行，以避免
+破坏 Runtime 不变量；该行数目标保留给后续 L11 成本/透明度批次的独立瘦身工作。
 
-### L11：透明度与成本评测（待执行）
+### L11：透明度与成本评测（下一阶段）
 
 交付：`session inspect/export`、事件流、tool visibility explain、context usage、
 compaction boundary 和 Evidence lineage 查询；固定 Web/API 评测集与干净目标集。

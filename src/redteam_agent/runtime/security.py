@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import threading
@@ -8,6 +9,37 @@ from bisect import bisect_left
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+
+
+SCHEMA_VERSION = 10
+MAX_HANDOFF_OBSERVATION_BYTES = 2 * 1024 * 1024
+
+
+class StoreConflictError(RuntimeError):
+    pass
+
+
+class StateVersionConflict(StoreConflictError):
+    pass
+
+
+class LeaseLostError(StoreConflictError):
+    pass
+
+
+class ImmutableRecordError(StoreConflictError):
+    pass
+
+
+def _dump(value: Any) -> str:
+    return json.dumps(redact_sensitive(value), ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _load(value: Any, default: Any = None) -> Any:
+    try:
+        return json.loads(str(value))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return default
 
 
 SENSITIVE_KEY_RE = re.compile(

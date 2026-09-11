@@ -5,6 +5,59 @@ import threading
 from typing import Any
 
 from ..core import WorkerPort, WorkerResult, WorkerTask
+from ..runtime.worker_store import WORKER_TERMINAL_STATUSES, WorkerStore
+
+
+class CodexHandoffWorker:
+    kind = "codex_handoff"
+
+    def __init__(self, *, records: WorkerStore) -> None:
+        self.records = records
+
+    def capabilities(self) -> tuple[str, ...]:
+        return ("codex.handoff",)
+
+    def execute(self, task: WorkerTask) -> WorkerResult:
+        prepared = self.records.prepare(task, worker_kind=self.kind, owner="codex-host")
+        if prepared.result is not None:
+            return prepared.result
+        result = WorkerResult(task_id=task.task_id, status="waiting_worker", output={"next_action_spec": dict(task.payload), "required_artifacts": list(task.required_artifacts)}, metadata={"worker_kind": self.kind, "replay_protected": True})
+        self.records.transition(task.task_id, expected_statuses=("prepared", "unknown"), status="waiting_worker", result=result, owner="codex-host")
+        return result
+
+    def reconcile(self, idempotency_key: str) -> WorkerResult | None:
+        return self.records.reconcile_kind(self.kind, idempotency_key)
+
+    def cancel(self, task_id: str) -> bool:
+        record = self.records.get(task_id)
+        if record is None or record.status != "waiting_worker":
+            return False
+        self.records.transition(task_id, expected_statuses=("waiting_worker",), status="cancelled", result=WorkerResult(task_id=task_id, status="cancelled", error="handoff_cancelled"))
+        return True
+
+
+class DockerWorkerAdapter:
+    kind = "docker"
+
+    def __init__(self, *, records: WorkerStore) -> None:
+        self.records = records
+
+    def capabilities(self) -> tuple[str, ...]:
+        return ()
+
+    def execute(self, task: WorkerTask) -> WorkerResult:
+        prepared = self.records.prepare(task, worker_kind=self.kind, owner="docker-adapter")
+        if prepared.result is not None and prepared.status in WORKER_TERMINAL_STATUSES:
+            return prepared.result
+        result = WorkerResult(task_id=task.task_id, status="unavailable", error="docker_worker_adapter_not_configured", retryable=True, metadata={"worker_kind": self.kind})
+        self.records.transition(task.task_id, expected_statuses=(prepared.status,), status="unavailable", result=result)
+        return result
+
+    def reconcile(self, idempotency_key: str) -> WorkerResult | None:
+        return self.records.reconcile_kind(self.kind, idempotency_key)
+
+    def cancel(self, task_id: str) -> bool:
+        return False
 
 
 class WorkerManager:
@@ -134,4 +187,4 @@ class WorkerManager:
                 close()
 
 
-__all__ = ["WorkerManager"]
+__all__ = ["CodexHandoffWorker", "DockerWorkerAdapter", "WorkerManager"]

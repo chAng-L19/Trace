@@ -6,10 +6,12 @@ from .contracts import (
     BudgetDelta,
     Observation,
     StartRequest,
+    ALLOWED_RUN_TRANSITIONS,
+    CANONICAL_RUN_STATUSES,
+    validate_run_transition,
 )
-from .lifecycle import ALLOWED_RUN_TRANSITIONS, CANONICAL_RUN_STATUSES, validate_run_transition
 from .model_loop import AgentLoop, ModelIntegrityError, ModelInterruptedError, ModelLoop, ModelLoopError
-from ..runtime.model_records import ModelObservationRecord, ModelRequestRecord, ModelResponseRecord
+from ..runtime.session_journal import ModelObservationRecord, ModelRequestRecord, ModelResponseRecord
 from .context import (
     ContextBudget,
     ContextSelection,
