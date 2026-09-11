@@ -50,7 +50,7 @@ L5 已在独立分支 `feat/l5-bounded-output` 完成，并已通过 PR #2 合�
 当前基线：
 
 ```text
-pytest: 315 passed, 1 skipped
+pytest: 322 passed, 1 skipped
 compileall: passed
 wheel: built
 self-test: terminal success
@@ -70,7 +70,7 @@ GitHub Actions: `.github/workflows/ci.yml` added for push/PR validation on Pytho
 | L5 | BoundedOutput 与流式 Artifact | 已通过 |
 | L6 | ContextBudget 与可追溯 Compaction | 已通过（结构验收） |
 | L7 | ResourceResolver 与透明扩展 | 已通过 |
-| L8 | EvidenceGate 收敛 | 待执行 |
+| L8 | EvidenceGate 收敛 | 已通过 |
 | L9 | MCP/Worker 适配器瘦身 | 部分完成 |
 | L10 | 删除旧编排与发布门 | 待执行 |
 | L11 | 透明度、Token 与能力评测 | 待执行 |
@@ -181,13 +181,23 @@ pip check、Phase 5 snapshot check、wheel、source self-test 和 MCP initialize
 全部通过；生产 Python 模块均不超过 800 行。固定评测集上的 Token 中位数与模型能力指标
 仍按 L11 统一测量，本阶段不虚构统计结论。
 
-### L8：EvidenceGate 收敛（待执行）
+### L8：EvidenceGate 收敛（已通过）
 
 交付：将 verifier、builtins、Finding 和 TerminalJudge 的重复晋升检查收敛为单一
 EvidenceGate；报告仅作投影。
 
 验收：孤立 Artifact、伪造报告、错误目标、缺父证据、缺影响证明、缺负向控制或缺清理
 证明均不能成功；每个 GoalContract predicate 都能反向追溯至原始 Observation。
+
+当前结果：新增纯标准库 `EvidenceGate`，统一 content hash、作用域、信任、attempt
+绑定、父证据、lineage、clause support 和可晋升证据筛选。`EvidenceGraph`、
+`SemanticVerifier`、`TerminalJudge`、`atomic_commit` 与 `save_evidence` 均通过 Gate
+复用规则；内置报告投影使用同一信任判定，Finding 提供证据组校验；持久化、CAS/Lease/
+事务边界和 payload schema 仍由原组件负责。新增 Gate 确定性测试覆盖错误
+run/branch/target、缺父、环、跨目标、篡改 hash 和 Host assertion 不可信晋升。L8 验收：
+全量回归 `322 passed, 1 skipped`；`compileall`、`pip check`、
+wheel、隔离安装、source self-test、MCP initialize/tools/list（5 个公开工具）全部通过；
+生产 Python 文件均不超过 800 行。
 
 ### L9：MCP/Worker 适配器瘦身（部分完成）
 

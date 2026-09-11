@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .models import ActionSpec, EvidenceNode, GoalContract, ToolCallResult
-from .evidence_trust import is_trusted_evidence
+from .evidence_gate import EvidenceGate
 from .security import redact_sensitive
 
 
@@ -150,13 +150,11 @@ class SemanticVerifier:
 
     @staticmethod
     def _same_scope(node: EvidenceNode, *, run_id: str, branch_id: str, target: str) -> bool:
-        return (
-            is_trusted_evidence(node)
-            and node.run_id == run_id
-            and node.target == target
-            and node.provenance is not None
-            and node.provenance.run_id == run_id
-            and node.provenance.branch_id == branch_id
+        return EvidenceGate.same_scope(
+            node,
+            run_id=run_id,
+            branch_id=branch_id,
+            target=target,
         )
 
     @classmethod
@@ -275,22 +273,14 @@ class SemanticVerifier:
         branch_id: str,
         target: str,
     ) -> set[str]:
-        stack = [str(item) for item in evidence_ids]
-        visited: set[str] = set()
-        supported: set[str] = set()
-        while stack:
-            evidence_id = stack.pop()
-            if evidence_id in visited:
-                continue
-            visited.add(evidence_id)
-            current = evidence_by_id.get(evidence_id)
-            if current is None or not self._same_scope(current, run_id=run_id, branch_id=branch_id, target=target):
-                continue
-            raw_support = current.payload.get("clause_support") if isinstance(current.payload, Mapping) else None
-            if isinstance(raw_support, Mapping) and clause_id in {str(key) for key in raw_support}:
-                supported.add(current.artifact_type)
-            stack.extend(current.parent_ids)
-        return supported
+        return EvidenceGate.clause_support_types(
+            evidence_ids,
+            clause_id,
+            evidence_by_id,
+            run_id=run_id,
+            branch_id=branch_id,
+            target=target,
+        )
 
     def _validate_schema(self, verifier: str, payload: Mapping[str, Any]) -> tuple[bool, str]:
         if verifier == "surface_map":
@@ -481,7 +471,20 @@ class SemanticVerifier:
                 return VerificationDecision(False, payload, confidence, "derived_evidence_requires_parents")
             if not set(parent_ids).issubset(evidence_by_id):
                 return VerificationDecision(False, payload, confidence, "unknown_evidence_reference")
-            if any(not is_trusted_evidence(evidence_by_id[parent_id]) for parent_id in parent_ids):
+            parent_result = EvidenceGate.validate_parent_ids(
+                parent_ids,
+                evidence_by_id,
+                run_id=run_id,
+                target=declared_target,
+                require_trusted=True,
+            ) if run_id else None
+            if parent_result is not None and not parent_result.passed:
+                reason = {
+                    "evidence_parent_untrusted": "unverified_evidence_reference",
+                    "evidence_parent_target_mismatch": "evidence_parent_target_mismatch",
+                }.get(parent_result.reason, parent_result.reason)
+                return VerificationDecision(False, payload, confidence, reason)
+            if parent_result is None and any(not EvidenceGate.trusted(evidence_by_id[parent_id]) for parent_id in parent_ids):
                 return VerificationDecision(False, payload, confidence, "unverified_evidence_reference")
             if goal.targets and any(evidence_by_id[parent_id].target != declared_target for parent_id in parent_ids):
                 return VerificationDecision(False, payload, confidence, "evidence_parent_target_mismatch")
