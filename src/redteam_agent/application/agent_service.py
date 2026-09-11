@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from ..adapters.runtime_mapping import (
+from ..adapters.runtime import (
     evidence_from_runtime,
     goal_from_runtime,
     run_from_runtime,
@@ -13,7 +13,7 @@ from ..adapters.runtime import RuntimeToolAdapter
 from ..core import Event, ModelPort, ToolPort, WorkerPort, WorkerResult, WorkerTask, contract_hash
 from ..runtime.durable_store import StateVersionConflict, StoreConflictError
 from ..runtime.worker_store import WorkerStore
-from ..runtime.operation_result import OperationResult
+from ..runtime.terminal_judge import OperationResult
 from ..runtime.operation_runtime import OperationRuntime
 from ..runtime.exploration import ExplorationLedger
 from ..runtime.session_journal import SessionJournal
@@ -32,9 +32,9 @@ from .contracts import (
     BudgetDelta,
     Observation,
     StartRequest,
+    validate_run_transition,
 )
 from .bounded_output import BoundedOutput
-from .lifecycle import validate_run_transition
 from .model_loop import AgentLoop
 from .context import ContextSelection, ContextSelector, ConversationLedger, TraceableCompactor
 from .resources import ResourceIndex, ResourceResolver, ResourceSelection

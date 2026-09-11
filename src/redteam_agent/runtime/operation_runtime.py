@@ -16,21 +16,21 @@ from .operation_contract import OperationContractMixin
 from .operation_execution import OperationExecutionMixin
 from .operation_handoff import OperationHandoffMixin
 from .operation_lifecycle import OperationLifecycleMixin
-from .operation_result import (
+from .terminal_judge import (
     ARTIFACT_PHASES,
     MAX_INLINE_EVIDENCE_BYTES,
     TERMINAL_FAILURE_STATUSES,
     OperationResult,
     _goal_contract_payload,
 )
-from .review import ReviewEngine
-from .scheduler import NextActionPolicy
+from .evidence_gate import ReviewEngine
+from .plan import NextActionPolicy
 from .security import CredentialVault
 from .terminal_judge import TerminalJudge
 from .tool_broker import ToolBroker
 from .verifier import SemanticVerifier
 from .workflow_registry import WorkflowRegistry
-from .exploration_records import TacticalAttemptRecord
+from .exploration import TacticalAttemptRecord
 
 
 class OperationRuntime(

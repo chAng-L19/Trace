@@ -26,15 +26,14 @@ from ..runtime.artifact_store import ArtifactIntegrityError
 from ..runtime.security import safe_error_text
 from ..runtime.conversation_records import DiagnosticArtifactRecord
 from .contracts import AgentRunView, Observation
-from ..runtime.model_records import ModelObservationRecord, ModelRequestRecord, ModelResponseRecord
-from .model_integrity import ModelIntegrityMixin
+from ..runtime.session_journal import ModelObservationRecord, ModelRequestRecord, ModelResponseRecord
 from .agent_loop_support import (
+    ModelIntegrityMixin,
     handle_tool_expand,
     record_tactical_attempts,
     record_tactical_update,
     tool_catalog_summary,
 )
-from .stream_accumulator import StreamTextAccumulator
 from .bounded_output import BoundedOutput
 from .model_turn import run_model_turn
 
@@ -346,7 +345,7 @@ class AgentLoop(ModelIntegrityMixin):
         return self.model.complete(request)
 
     def _invoke_stream(self, request: ModelRequest) -> ModelResponse:
-        accumulator = StreamTextAccumulator()
+        accumulator = BoundedOutput()
         tool_calls: list[Mapping[str, Any]] = []
         usage: Mapping[str, Any] = {}
         structured: Mapping[str, Any] = {}
@@ -469,7 +468,7 @@ class AgentLoop(ModelIntegrityMixin):
         accumulator = getattr(threading.current_thread(), "model_partial_stream", None)
         partial_text = ""
         partial_artifact: Mapping[str, Any] = {}
-        if isinstance(accumulator, StreamTextAccumulator):
+        if isinstance(accumulator, BoundedOutput):
             if accumulator.byte_count <= MAX_INLINE_MODEL_STREAM_BYTES:
                 partial_text = accumulator.inline_text()
             else:

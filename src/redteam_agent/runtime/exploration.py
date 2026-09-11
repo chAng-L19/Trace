@@ -1,16 +1,161 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Mapping, Sequence
 
 from ..core import ExplorationRecord, contract_hash
-from ..core.contracts import json_mapping
-from .exploration_records import ReconDigestRecord
+from ..core.contracts import json_mapping, required_text, unique_strings
+from .store_common import ImmutableRecordError, _dump, _load
 from .model_common import utc_now
+
+
+@dataclass(frozen=True, slots=True)
+class ReconDigestRecord:
+    digest_id: str
+    run_id: str
+    source_record_ids: tuple[str, ...]
+    source_message_ids: tuple[str, ...]
+    source_hash: str
+    digest: Mapping[str, Any]
+    digest_hash: str
+    created_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"digest_id": self.digest_id, "run_id": self.run_id, "source_record_ids": list(self.source_record_ids), "source_message_ids": list(self.source_message_ids), "source_hash": self.source_hash, "digest": dict(self.digest), "digest_hash": self.digest_hash, "created_at": self.created_at}
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "ReconDigestRecord":
+        return cls(
+            digest_id=required_text(payload.get("digest_id"), "recon_digest_id"),
+            run_id=required_text(payload.get("run_id"), "recon_digest_run_id"),
+            source_record_ids=unique_strings(payload.get("source_record_ids")),
+            source_message_ids=unique_strings(payload.get("source_message_ids")),
+            source_hash=required_text(payload.get("source_hash"), "recon_digest_source_hash"),
+            digest=json_mapping(payload.get("digest"), field="recon_digest.digest"),
+            digest_hash=required_text(payload.get("digest_hash"), "recon_digest_hash"),
+            created_at=required_text(payload.get("created_at"), "recon_digest_created_at"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TacticalAttemptRecord:
+    attempt_id: str
+    run_id: str
+    request_id: str
+    call_id: str
+    lifecycle_action_id: str
+    action_fingerprint: str
+    status: str
+    payload: Mapping[str, Any]
+    created_at: str
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"attempt_id": self.attempt_id, "run_id": self.run_id, "request_id": self.request_id, "call_id": self.call_id, "lifecycle_action_id": self.lifecycle_action_id, "action_fingerprint": self.action_fingerprint, "status": self.status, "payload": dict(self.payload), "created_at": self.created_at, "metadata": dict(self.metadata)}
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "TacticalAttemptRecord":
+        return cls(
+            attempt_id=required_text(payload.get("attempt_id"), "tactical_attempt_id"),
+            run_id=required_text(payload.get("run_id"), "tactical_attempt_run_id"),
+            request_id=required_text(payload.get("request_id"), "tactical_attempt_request_id"),
+            call_id=required_text(payload.get("call_id"), "tactical_attempt_call_id"),
+            lifecycle_action_id=required_text(payload.get("lifecycle_action_id"), "tactical_attempt_lifecycle_action_id"),
+            action_fingerprint=required_text(payload.get("action_fingerprint"), "tactical_attempt_fingerprint"),
+            status=required_text(payload.get("status"), "tactical_attempt_status"),
+            payload=json_mapping(payload.get("payload"), field="tactical_attempt.payload"),
+            created_at=required_text(payload.get("created_at"), "tactical_attempt_created_at"),
+            metadata=json_mapping(payload.get("metadata"), field="tactical_attempt.metadata"),
+        )
 
 
 class ExplorationValidationError(ValueError):
     pass
+
+
+class ExplorationStoreMixin:
+    def save_exploration_record(self, record: ExplorationRecord) -> ExplorationRecord:
+        serialized, record_hash = _dump(record.to_dict()), contract_hash(record.to_dict())
+        with self.transaction(immediate=True) as connection:
+            if connection.execute("SELECT 1 FROM operations WHERE run_id=?", (record.run_id,)).fetchone() is None:
+                raise KeyError(f"operation_not_found:{record.run_id}")
+            row = connection.execute("SELECT record_json FROM exploration_records WHERE record_id=?", (record.record_id,)).fetchone()
+            if row is not None:
+                existing = ExplorationRecord.from_dict(_load(row["record_json"], {}))
+                if existing != record:
+                    raise ImmutableRecordError(f"immutable_exploration_record:{record.record_id}")
+                return existing
+            connection.execute("INSERT INTO exploration_records(record_id, run_id, hypothesis_id, kind, status, record_hash, record_json, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)", (record.record_id, record.run_id, record.hypothesis_id, record.kind, record.status, record_hash, serialized, record.created_at))
+            self._insert_journal_entry(connection, run_id=record.run_id, entry_type="exploration", raw_table="exploration_records", raw_id=record.record_id, raw_json=serialized, created_at=record.created_at)
+        return record
+
+    def exploration_records(self, run_id: str) -> tuple[ExplorationRecord, ...]:
+        with self.connection() as connection:
+            rows = connection.execute("SELECT record_json, record_hash FROM exploration_records WHERE run_id=? ORDER BY created_at, rowid", (run_id,)).fetchall()
+        records = [ExplorationRecord.from_dict(_load(row["record_json"], {})) for row in rows]
+        for record, row in zip(records, rows):
+            if record.run_id != run_id or contract_hash(record.to_dict()) != str(row["record_hash"]):
+                raise ImmutableRecordError(f"exploration_record_integrity:{record.record_id}")
+        return tuple(records)
+
+    def save_recon_digest(self, record: ReconDigestRecord) -> ReconDigestRecord:
+        if contract_hash(record.digest) != record.digest_hash or self._recon_source_hash(record) != record.source_hash:
+            raise ImmutableRecordError(f"recon_digest_hash_mismatch:{record.digest_id}")
+        serialized = _dump(record.to_dict())
+        with self.transaction(immediate=True) as connection:
+            row = connection.execute("SELECT digest_json FROM recon_digests WHERE digest_id=?", (record.digest_id,)).fetchone()
+            if row is not None:
+                existing = ReconDigestRecord.from_dict(_load(row["digest_json"], {}))
+                if existing != record:
+                    raise ImmutableRecordError(f"immutable_recon_digest:{record.digest_id}")
+                return existing
+            connection.execute("INSERT INTO recon_digests(digest_id, run_id, source_hash, digest_hash, source_ids_json, digest_json, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)", (record.digest_id, record.run_id, record.source_hash, record.digest_hash, _dump({"record_ids": list(record.source_record_ids), "message_ids": list(record.source_message_ids)}), serialized, record.created_at))
+            self._insert_journal_entry(connection, run_id=record.run_id, entry_type="recon_digest", raw_table="recon_digests", raw_id=record.digest_id, raw_json=serialized, created_at=record.created_at)
+        return record
+
+    def recon_digests(self, run_id: str) -> tuple[ReconDigestRecord, ...]:
+        with self.connection() as connection:
+            rows = connection.execute("SELECT digest_json FROM recon_digests WHERE run_id=? ORDER BY created_at, rowid", (run_id,)).fetchall()
+        records = [ReconDigestRecord.from_dict(payload) for row in rows if isinstance((payload := _load(row["digest_json"], None)), Mapping)]
+        for record in records:
+            if record.run_id != run_id or contract_hash(record.digest) != record.digest_hash or self._recon_source_hash(record) != record.source_hash:
+                raise ImmutableRecordError(f"recon_digest_integrity:{record.digest_id}")
+        return tuple(records)
+
+    def _recon_source_hash(self, record: ReconDigestRecord) -> str:
+        exploration = {item.record_id: item for item in self.exploration_records(record.run_id)}
+        messages = {item.message_id: item for item in self.conversation_messages(record.run_id)}
+        try:
+            records = [{"record_id": key, "record_hash": contract_hash(exploration[key].to_dict())} for key in record.source_record_ids]
+            source_messages = [{"message_id": key, "content_hash": messages[key].content_hash} for key in record.source_message_ids]
+        except KeyError as exc:
+            raise ImmutableRecordError(f"recon_digest_source_missing:{exc.args[0]}") from exc
+        return contract_hash({"records": records, "messages": source_messages})
+
+    def save_tactical_attempt(self, record: TacticalAttemptRecord) -> tuple[TacticalAttemptRecord, bool]:
+        serialized, attempt_hash = _dump(record.to_dict()), contract_hash(record.to_dict())
+        with self.transaction(immediate=True) as connection:
+            row = connection.execute("SELECT attempt_json, attempt_hash FROM tactical_attempts WHERE run_id=? AND request_id=? AND call_id=?", (record.run_id, record.request_id, record.call_id)).fetchone()
+            if row is not None:
+                existing = TacticalAttemptRecord.from_dict(_load(row["attempt_json"], {}))
+                if contract_hash(existing.to_dict()) != str(row["attempt_hash"]):
+                    raise ImmutableRecordError(f"tactical_attempt_integrity:{existing.attempt_id}")
+                comparable = replace(record, attempt_id=existing.attempt_id, created_at=existing.created_at)
+                if existing != comparable:
+                    raise ImmutableRecordError(f"immutable_tactical_attempt:{record.run_id}:{record.request_id}:{record.call_id}")
+                return existing, False
+            connection.execute("INSERT INTO tactical_attempts(attempt_id, run_id, request_id, call_id, lifecycle_action_id, action_fingerprint, status, attempt_hash, attempt_json, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (record.attempt_id, record.run_id, record.request_id, record.call_id, record.lifecycle_action_id, record.action_fingerprint, record.status, attempt_hash, serialized, record.created_at))
+            self._insert_journal_entry(connection, run_id=record.run_id, entry_type="tactical_attempt", raw_table="tactical_attempts", raw_id=record.attempt_id, raw_json=serialized, created_at=record.created_at)
+        return record, True
+
+    def tactical_attempts(self, run_id: str) -> tuple[TacticalAttemptRecord, ...]:
+        with self.connection() as connection:
+            rows = connection.execute("SELECT * FROM tactical_attempts WHERE run_id=? ORDER BY created_at, rowid", (run_id,)).fetchall()
+        records = [TacticalAttemptRecord.from_dict(payload) for row in rows if isinstance((payload := _load(row["attempt_json"], None)), Mapping)]
+        for record, row in zip(records, rows):
+            if record.run_id != run_id or record.attempt_id != str(row["attempt_id"]) or record.request_id != str(row["request_id"]) or record.call_id != str(row["call_id"]) or record.lifecycle_action_id != str(row["lifecycle_action_id"]) or record.action_fingerprint != str(row["action_fingerprint"]) or record.status != str(row["status"]) or contract_hash(record.to_dict()) != str(row["attempt_hash"]):
+                raise ImmutableRecordError(f"tactical_attempt_integrity:{record.attempt_id}")
+        return tuple(records)
 
 
 class ExplorationLedger:

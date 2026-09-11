@@ -6,7 +6,7 @@ from typing import Any, Mapping
 from uuid import uuid4
 
 from .models import ActionSpec, LeaseToken, OperationState, TaskAttempt, WorkflowSpec
-from .operation_result import OperationResult, _goal_contract_payload
+from .terminal_judge import OperationResult, _goal_contract_payload
 from .verifier import SemanticVerifier
 
 

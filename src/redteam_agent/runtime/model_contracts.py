@@ -3,11 +3,45 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from datetime import datetime, timezone
 from dataclasses import asdict, dataclass, field
 from typing import Any, Mapping
 from uuid import uuid4
 
-from .model_common import _mapping, _safe_int, _sequence, utc_now
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _utc_datetime(value: Any) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+
+
+def _safe_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _safe_float(value: Any, default: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return parsed if math.isfinite(parsed) else default
+
+
+def _mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _sequence(value: Any) -> tuple[Any, ...] | list[Any]:
+    return value if isinstance(value, (list, tuple)) else ()
 
 @dataclass(frozen=True)
 class SuccessPredicate:
@@ -227,6 +261,5 @@ class WorkflowSpec:
     def fingerprint(self) -> str:
         serialized = json.dumps(self.to_dict(), ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
         return hashlib.sha256(serialized).hexdigest()
-
 
 

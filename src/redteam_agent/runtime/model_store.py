@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any, Mapping
 
-from .model_records import (
+from .session_journal import (
     ModelObservationRecord,
     ModelRequestRecord,
     ModelResponseRecord,

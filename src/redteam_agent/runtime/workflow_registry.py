@@ -27,6 +27,103 @@ PROFILE_FIELDS = frozenset(
 )
 
 
+def _builtin_workflow() -> WorkflowSpec:
+    """Return the canonical lifecycle without reading a fixed action file.
+
+    The TOML file remains a historical export for old installations. Runtime
+    behavior is sourced from this typed value, so deleting or editing that
+    export cannot silently replace the control contract.
+    """
+    actions = (
+        {
+            "id": "map-surface",
+            "name": "Map the initial surface",
+            "capabilities": ["target_intake", "page_fetch", "code_analysis", "binary_reverse"],
+            "expected_artifact": "surface_map",
+            "verifier": "surface_map",
+            "risk": "passive",
+            "tool_strategy": "capability_coverage",
+            "min_tool_results": 1,
+            "max_tool_results": 3,
+            "parameters": {"coverage_focus": ["target type", "entrypoints", "identities and trust", "data and control flow", "runtime and deployment state"]},
+        },
+        {
+            "id": "build-hypotheses",
+            "name": "Build evidence-linked hypotheses",
+            "capabilities": ["reasoning", "code_generation"],
+            "expected_artifact": "hypothesis_queue",
+            "verifier": "hypothesis_queue",
+            "depends_on": ["map-surface"],
+            "risk": "safe",
+            "parameters": {"prioritization": ["evidence strength", "reachability", "expected impact", "cost and noise", "reversibility"]},
+        },
+        {
+            "id": "validate-path",
+            "name": "Validate the highest-value path",
+            "capabilities": ["controlled_validation", "browser_automation", "code_generation"],
+            "expected_artifact": "reproduction_artifact",
+            "verifier": "reproduction_artifact",
+            "depends_on": ["build-hypotheses"],
+            "risk": "active_medium",
+            "parameters": {"validation_contract": ["establish baseline", "test one hypothesis", "capture reproducible evidence", "run negative control", "record side effects and rollback"]},
+        },
+        {
+            "id": "prove-impact",
+            "name": "Prove goal-relevant impact",
+            "capabilities": ["impact_analysis", "reasoning"],
+            "expected_artifact": "impact_proof",
+            "verifier": "impact_proof",
+            "depends_on": ["validate-path"],
+            "risk": "active_low",
+        },
+        {
+            "id": "review-coverage",
+            "name": "Review coverage and false positives",
+            "capabilities": ["coverage_analysis", "reasoning"],
+            "expected_artifact": "coverage_report",
+            "verifier": "coverage_report",
+            "depends_on": ["prove-impact"],
+            "risk": "safe",
+        },
+        {
+            "id": "cleanup",
+            "name": "Execute and verify rollback",
+            "capabilities": ["cleanup", "rollback"],
+            "expected_artifact": "cleanup_proof",
+            "verifier": "cleanup_proof",
+            "depends_on": ["review-coverage"],
+            "risk": "active_low",
+        },
+        {
+            "id": "report",
+            "name": "Build the final evidence report",
+            "capabilities": ["report_generation", "reasoning"],
+            "expected_artifact": "final_report",
+            "verifier": "final_report",
+            "depends_on": ["cleanup"],
+            "risk": "safe",
+        },
+    )
+    return WorkflowSpec.from_dict(
+        {
+            "id": "generic-adaptive",
+            "version": 2,
+            "name": "Generic adaptive assessment",
+            "description": "The single evidence-driven execution DAG for every operation; lightweight Profiles add planning context without changing control flow.",
+            "match_tags": ["assessment", "test", "analyze", "评估", "测试", "分析"],
+            "actions": actions,
+            "required_artifacts": ["surface_map", "hypothesis_queue", "reproduction_artifact", "impact_proof", "coverage_report", "cleanup_proof", "final_report"],
+            "terminal_predicates": [
+                {"kind": "workflow_actions_complete", "subject": "required"},
+                {"kind": "artifact_verified", "subject": "reproduction_artifact"},
+                {"kind": "artifact_verified", "subject": "impact_proof"},
+                {"kind": "artifact_verified", "subject": "cleanup_proof"},
+                {"kind": "artifact_verified", "subject": "final_report"},
+            ],
+        }
+    )
+
+
 def _tag_matches(normalized: str, tokens: set[str], tag: str) -> bool:
     if any("\u4e00" <= character <= "\u9fff" for character in tag) or " " in tag or "-" in tag:
         return tag in normalized
@@ -100,19 +197,22 @@ class WorkflowRegistry:
 
     def __init__(self, roots: Iterable[Path] | None = None) -> None:
         default_root = Path(__file__).resolve().parent.parent / "workflows"
-        self.roots = tuple(roots or (default_root,))
+        self._builtin = roots is None
+        self.roots = tuple((default_root,) if roots is None else roots)
         self._base: WorkflowSpec | None = None
         self._profiles: dict[str, WorkflowProfile] = {}
 
     def load(self, *, refresh: bool = False) -> tuple[WorkflowSpec, ...]:
         if self._base is not None and not refresh:
             return (self._base,)
-        workflows: dict[str, WorkflowSpec] = {}
+        workflows: dict[str, WorkflowSpec] = {"generic-adaptive": _builtin_workflow()} if self._builtin else {}
         profile_documents: list[tuple[Path, Mapping[str, Any]]] = []
         for root in self.roots:
             if not root.is_dir():
                 continue
             for path in sorted(root.glob("*.toml")):
+                if self._builtin and path.name == "generic-adaptive.toml":
+                    continue
                 payload = tomllib.loads(path.read_text(encoding="utf-8-sig"))
                 if "profile_schema_version" in payload:
                     profile_documents.append((path, payload))

@@ -6,8 +6,19 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 from uuid import uuid4
 
-from .model_common import _mapping, _safe_float, _safe_int, _sequence, _utc_datetime, utc_now
-from .model_contracts import GoalContract, WorkflowSpec
+from .model_contracts import (
+    ActionSpec,
+    GoalContract,
+    GoalCriterion,
+    SuccessPredicate,
+    WorkflowSpec,
+    _mapping,
+    _safe_float,
+    _safe_int,
+    _sequence,
+    _utc_datetime,
+    utc_now,
+)
 
 @dataclass(frozen=True)
 class ToolDescriptor:
