@@ -311,13 +311,16 @@ usage、compaction boundary、evidence lineage 命令；固定 10 个 Web/API �
 终态均可导出；10 场景固定评测相对 Phase 6 基线 Token 总量下降 62.8%，大型输出中位下降
 62.8%，完成率 100%，5 个干净目标误成功 0。代码量继续作为优化观测项。
 
-### L12：ASC 风格 APK/DEX 惰性逆向与加固适配（进行中）
+### L12：ASC 风格 APK/DEX 惰性逆向与加固适配（已通过）
 
 `apk-asc` 采用 APK 中央目录、DEX 表和按需类数据读取，不建立全局数据库；支持
 inventory/protection、跨 DEX `findrefs` 和目标 `getclass`。`binary-analysis` 在无
 radare2/Rizin 时提供原生元数据、字符串和界限反汇编回退。加固样本通过异常 DEX 头、压缩
 DEX、原生加载器、动态 DEX 资产和常见保护标记形成可追溯探针结果，再由 Agent 决定后续
 验证路径。
+
+验收结果：确定性 APK fixture 覆盖库存、异常/压缩 DEX、加固候选、跨 DEX 引用和目标类
+提取；radare2/Rizin 缺失回退、全量回归、wheel、self-test 与 MCP schema 均通过。
 
 ## 迁移顺序与硬门
 

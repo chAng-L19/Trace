@@ -75,7 +75,7 @@ GitHub Actions: `.github/workflows/ci.yml` added for push/PR validation on Pytho
 | L9 | MCP/Worker 适配器瘦身 | 已通过 |
 | L10 | 删除旧编排与发布门 | 已通过（结构门） |
 | L11 | 透明度、Token 与能力评测 | 已通过（功能/成本门） |
-| L12 | ASC 风格 APK/DEX 惰性逆向与加固适配 | 进行中 |
+| L12 | ASC 风格 APK/DEX 惰性逆向与加固适配 | 已通过 |
 
 ## 阶段交付与验收
 
@@ -248,7 +248,7 @@ compaction boundary 和 Evidence lineage 查询；固定 Web/API 评测集与干
 新增查询均为只读、run-scoped，并保持原始 Transcript/Artifact/Observation/Evidence
 lineage 可回读。代码量仅记录为后续优化观测项，不影响 L11 通过状态。
 
-### L12：ASC 风格 APK/DEX 惰性逆向与加固适配（进行中）
+### L12：ASC 风格 APK/DEX 惰性逆向与加固适配（已通过）
 
 动作：移除 JADX 语义依赖，新增清洁实现的 `apk-asc` 工具。以 APK ZIP 中央目录和 DEX
 表作为只读数据库，按需读取单个 DEX；支持 APK 清单式库存、DEX/原生库/动态 DEX 候选、
@@ -260,6 +260,11 @@ lineage 可回读。代码量仅记录为后续优化观测项，不影响 L11 �
 目标类提取；跨 DEX 查询结果包含 DEX、类、方法和指令偏移；加固候选能标记压缩/异常 DEX、
 原生加载器和动态 DEX；原生二进制回退在缺少 radare2/Rizin 时仍返回可验证的哈希、字符串
 和受界限反汇编；全量测试、编译、MCP 工具目录和旧工具兼容性继续通过。
+
+验收结果：`apk-asc` 的库存、异常/压缩 DEX、原生加载器、动态 DEX、跨 DEX 字符串引用和
+目标类结构化提取均由确定性 APK fixture 验证；radare2/Rizin 缺失回退测试通过。全量回归
+`340 passed, 1 skipped`，`compileall`、wheel、`pip check`、self-test 和 MCP
+`initialize/tools/list` 全部通过，五个公开 MCP 工具 schema 保持不变。
 
 ## 执行规约与 Ponytail
 
