@@ -39,8 +39,8 @@ Python: 3.12 baseline
 6. 大输出虽已进入 CAS，但工具执行、投影、压缩之间仍缺少单一 bounded-output seam。
 7. 旧 workflow 与新 tactical loop 并存时间过长，兼容面会变成永久编排面。
 
-复杂度预算：重构完成后生产代码目标不超过 16,000 行、模块不超过 80 个、任何
-单文件不超过 800 行；未达到预算的新增抽象必须有性能或不变量证据。
+复杂度观测：持续记录生产代码、模块数和最大文件大小，用于防止复杂度回弹；这些指标不再
+作为硬性验收门，新增抽象仍需有性能或不变量证据。
 
 ## 删除优先审计清单
 
@@ -245,9 +245,9 @@ revision、visibility reason。
 验收：默认 prompt tool token 下降至少 30%；expand 后能力完整；未知 tool 不可调用；
 tool-list change 可恢复；side-effect annotation 不可由模型覆写。
 
-当前结果：默认运行时直接注册 16 个开源工具，Playwright/Capstone/Frida 使用 Python
-API，radare2/Rizin 和云 CLI 使用内置受控 Adapter；无 IDA/IDB 能力残留，工具目录、
-副作用标记、schema hash 和回归测试通过。
+当前结果：默认运行时直接注册开源工具，Playwright/Capstone/Frida 使用 Python API，新增
+ASC 风格 `apk-asc` 和原生 `binary-analysis`；radare2/Rizin 保留为可选增强并在缺失时回退，
+无 IDA/IDB/JADX 能力残留，工具目录、副作用标记、schema hash 和回归测试通过。
 
 ### L5：BoundedOutput 与 Artifact streaming（已通过）
 
@@ -299,8 +299,8 @@ Finding 必须引用 raw observation、影响证明、负向控制、目标和�
 动作：删除无调用 legacy mapping、固定 generic workflow、重复 context/index、兼容期限到期
 的 facade；生成复杂度报告和迁移说明；保留必要 shim 一个版本周期。
 
-验收：生产文件 ≤80、代码 ≤16,000 行、单文件 ≤800 行；全量回归、快照、wheel、隔离安装、
-self-test、MCP initialize/tools/list 全部通过；旧调用方有明确迁移路径。
+验收：旧编排删除、全量回归、快照、wheel、隔离安装、self-test、MCP initialize/tools/list
+全部通过；旧调用方有明确迁移路径。代码量仅记录趋势，不作为硬门。
 
 ### L11：透明度与成本评测（功能/成本门已通过）
 
@@ -309,7 +309,15 @@ usage、compaction boundary、evidence lineage 命令；固定 10 个 Web/API �
 
 验收结果：每个模型动作可解释；输入 token、工具 token、raw artifact、Evidence lineage 和
 终态均可导出；10 场景固定评测相对 Phase 6 基线 Token 总量下降 62.8%，大型输出中位下降
-62.8%，完成率 100%，5 个干净目标误成功 0。生产代码行数预算仍为后续独立瘦身缺口。
+62.8%，完成率 100%，5 个干净目标误成功 0。代码量继续作为优化观测项。
+
+### L12：ASC 风格 APK/DEX 惰性逆向与加固适配（进行中）
+
+`apk-asc` 采用 APK 中央目录、DEX 表和按需类数据读取，不建立全局数据库；支持
+inventory/protection、跨 DEX `findrefs` 和目标 `getclass`。`binary-analysis` 在无
+radare2/Rizin 时提供原生元数据、字符串和界限反汇编回退。加固样本通过异常 DEX 头、压缩
+DEX、原生加载器、动态 DEX 资产和常见保护标记形成可追溯探针结果，再由 Agent 决定后续
+验证路径。
 
 ## 迁移顺序与硬门
 

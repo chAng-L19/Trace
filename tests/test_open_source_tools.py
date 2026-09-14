@@ -42,6 +42,8 @@ def test_builtin_open_source_catalog(tmp_path: Path) -> None:
         "builtin:binary-strings",
         "builtin:binary-disassemble",
         "builtin:binary-radare2",
+        "builtin:binary-analysis",
+        "builtin:apk-asc",
         "builtin:frida-processes",
         "builtin:code-search",
         "builtin:python-ast-audit",
@@ -110,6 +112,21 @@ def test_binary_tools_fixture(tmp_path: Path) -> None:
     assert info.output["format"] == "unknown"
     assert any(item["value"] == "HELLO" for item in strings.output["strings"])
     assert disasm.output["count"] >= 1
+    analysis = runtime.broker.call(descriptors["builtin:binary-analysis"], {"path": str(sample), "architecture": "x86"})
+    assert analysis.status == "success"
+    assert analysis.output["tool"] == "trace-binary-query"
+    runtime.broker.close()
+
+
+def test_radare2_surface_falls_back_to_native_query(tmp_path: Path, monkeypatch) -> None:
+    runtime, descriptors = _broker(tmp_path)
+    sample = tmp_path / "fallback.bin"
+    sample.write_bytes(b"\x90\xc3\x00FALLBACK\x00")
+    monkeypatch.setattr("redteam_agent.runtime.open_source_tools.shutil.which", lambda _name: None)
+    result = runtime.broker.call(descriptors["builtin:binary-radare2"], {"path": str(sample)})
+    assert result.status == "success"
+    assert result.output["fallback"] == "trace-binary-query"
+    assert result.output["tool"] == "trace-binary-query"
     runtime.broker.close()
 
 
