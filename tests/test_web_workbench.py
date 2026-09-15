@@ -108,6 +108,19 @@ def test_http_delete_reaches_control_plane(tmp_path: Path) -> None:
     assert json.loads(payload)["deleted"] == "fixture"
 
 
+def test_conversation_projection_includes_active_branch(tmp_path: Path) -> None:
+    with _server(tmp_path) as (server, service):
+        run_id = service.start({"session_id": "conversation-http", "objective": "Inspect branch state"}).single.run.run_id
+        status, payload = _request(server, "GET", f"/api/conversations/{run_id}")
+
+    assert status == 200
+    response = json.loads(payload)
+    assert response["session"]["run_id"] == run_id
+    assert response["session"]["active_branch_id"] == "main"
+    assert "main" in response["session"]["branches"]
+    assert set(response["tree"]["nodes"]) >= set(response["session"]["branches"].values()) - {None}
+
+
 def test_browser_workbench_fits_narrow_mobile_viewport(tmp_path: Path) -> None:
     sync_api = pytest.importorskip("playwright.sync_api")
     with _server(tmp_path) as (server, _):
