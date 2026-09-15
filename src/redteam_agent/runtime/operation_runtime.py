@@ -119,7 +119,7 @@ class OperationRuntime(
             raise KeyError(f"operation_not_found:{run_id}")
         workflow = self._workflow_for(state)
         normalized_reason = reason.strip() or "user_requested"
-        if state.status in {"completed", "failed", "failed_integrity", "cancelled"}:
+        if state.status in {"completed", "failed", "failed_integrity", "cancelling", "cancelled"}:
             raise ValueError(f"operation_terminal:{state.status}")
         if state.status == "paused_budget":
             # Never overwrite a budget or missing-usage gate with an operator
@@ -137,7 +137,7 @@ class OperationRuntime(
             current = self.store.load_operation(run_id)
             if current is None:
                 raise KeyError(f"operation_not_found:{run_id}")
-            if current.status in {"completed", "failed", "failed_integrity", "cancelled"}:
+            if current.status in {"completed", "failed", "failed_integrity", "cancelling", "cancelled"}:
                 raise ValueError(f"operation_terminal:{current.status}")
             current.status = "paused_budget"
             # If the budget is already exhausted, preserve its machine reason

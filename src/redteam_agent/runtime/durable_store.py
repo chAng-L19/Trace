@@ -29,6 +29,7 @@ from .conversation_store import ConversationStoreMixin
 from .budget_store import BudgetStoreMixin
 from .exploration import ExplorationStoreMixin
 from .session_journal import JournalStoreMixin
+from .web_command_store import WebCommandStoreMixin
 
 __all__ = [
     "DurableStore",
@@ -161,6 +162,7 @@ class DurableStore(
     BudgetStoreMixin,
     ExplorationStoreMixin,
     JournalStoreMixin,
+    WebCommandStoreMixin,
     StoreSchemaMixin,
 ):
     def __init__(self, root: Path) -> None:
@@ -394,6 +396,13 @@ class DurableStore(
                 state = self._state_from_row(connection, row)
                 if state is None:
                     raise RuntimeError(f"operation_state_corrupt:{run_id}")
+                if state.status in {"completed", "failed", "failed_integrity", "cancelled"}:
+                    raise ValueError(f"operation_terminal:{state.status}")
+                states.append(state)
+
+            for state in states:
+                run_id = state.run_id
+                row = rows[run_id]
                 changed = state.budget.apply_delta(
                     actions=actions,
                     tokens=tokens,
@@ -402,7 +411,6 @@ class DurableStore(
                     acknowledge_missing_usage=acknowledge_missing_usage,
                 )
                 if not changed:
-                    states.append(state)
                     continue
                 if state.status == "paused_budget" and not state.budget.exhaustion_reason():
                     state.status = "running"
@@ -444,7 +452,6 @@ class DurableStore(
                         "state_snapshot": snapshot,
                     },
                 )
-                states.append(state)
         return tuple(states)
 
     def load_operation(self, run_id: str) -> OperationState | None:
@@ -478,7 +485,7 @@ class DurableStore(
         *,
         limit: int = 100,
         offset: int = 0,
-        status: str = "",
+        statuses: Sequence[str] = (),
     ) -> tuple[OperationState, ...]:
         """Return a bounded, newest-first operation projection for adapters."""
 
@@ -486,10 +493,13 @@ class DurableStore(
         bounded_offset = max(0, int(offset))
         query = "SELECT * FROM operations"
         arguments: list[Any] = []
-        normalized_status = str(status or "").strip()
-        if normalized_status:
-            query += " WHERE status=?"
-            arguments.append(normalized_status)
+        normalized_statuses = tuple(
+            dict.fromkeys(str(item).strip() for item in statuses if str(item).strip())
+        )
+        if normalized_statuses:
+            placeholders = ",".join("?" for _ in normalized_statuses)
+            query += f" WHERE status IN ({placeholders})"
+            arguments.extend(normalized_statuses)
         query += " ORDER BY updated_at DESC, run_id DESC LIMIT ? OFFSET ?"
         arguments.extend((bounded_limit, bounded_offset))
         with self.connection() as connection:
@@ -558,129 +568,6 @@ class DurableStore(
                 return False
             self._insert_event(connection, run_id, event_type, event)
         return True
-
-    @staticmethod
-    def _web_command_row(row: sqlite3.Row) -> dict[str, Any]:
-        response = _load(row["response_json"], {})
-        return {
-            "command_id": str(row["command_id"]),
-            "request_hash": str(row["request_hash"]),
-            "run_id": str(row["run_id"] or ""),
-            "owner": str(row["owner"]),
-            "status": str(row["status"]),
-            "response": dict(response) if isinstance(response, Mapping) else {},
-            "lease_expires_at": float(row["lease_expires_at"] or 0),
-            "created_at": str(row["created_at"]),
-            "updated_at": str(row["updated_at"]),
-        }
-
-    def claim_web_command(
-        self,
-        command_id: str,
-        request_hash: str,
-        *,
-        owner: str,
-        run_id: str = "",
-        ttl_seconds: float = 30.0,
-    ) -> dict[str, Any]:
-        """Durably claim a Web command before executing its side effect."""
-
-        command = str(command_id or "").strip()
-        digest = str(request_hash or "").strip()
-        claimant = str(owner or "").strip()
-        if not command or not digest or not claimant:
-            raise ValueError("web_command_identity_required")
-        now = time.time()
-        expires = now + max(1.0, float(ttl_seconds))
-        timestamp = utc_now()
-        with self.transaction(immediate=True) as connection:
-            row = connection.execute(
-                "SELECT * FROM web_command_receipts WHERE command_id=?",
-                (command,),
-            ).fetchone()
-            if row is None:
-                connection.execute(
-                    "INSERT INTO web_command_receipts "
-                    "(command_id, request_hash, run_id, owner, status, response_json, "
-                    "lease_expires_at, created_at, updated_at) VALUES(?, ?, ?, ?, 'pending', '{}', ?, ?, ?)",
-                    (command, digest, str(run_id or ""), claimant, expires, timestamp, timestamp),
-                )
-                row = connection.execute(
-                    "SELECT * FROM web_command_receipts WHERE command_id=?",
-                    (command,),
-                ).fetchone()
-                claimed = True
-            else:
-                existing = self._web_command_row(row)
-                if existing["request_hash"] != digest:
-                    raise ImmutableRecordError(f"web_command_hash_conflict:{command}")
-                if existing["status"] == "completed":
-                    existing["claimed"] = False
-                    return existing
-                # A pending receipt is a single-flight command. The same
-                # owner must not re-enter it while its lease is still valid.
-                # After expiry, takeover is safe because completion is fenced
-                # by the durable owner value.
-                if float(existing["lease_expires_at"]) > now:
-                    existing["claimed"] = False
-                    return existing
-                claimed = True
-                connection.execute(
-                    "UPDATE web_command_receipts SET owner=?, run_id=CASE WHEN ?='' THEN run_id ELSE ? END, "
-                    "lease_expires_at=?, updated_at=? WHERE command_id=?",
-                    (claimant, str(run_id or ""), str(run_id or ""), expires, timestamp, command),
-                )
-                row = connection.execute(
-                    "SELECT * FROM web_command_receipts WHERE command_id=?",
-                    (command,),
-                ).fetchone()
-            if row is None:
-                raise RuntimeError(f"web_command_receipt_missing:{command}")
-            result = self._web_command_row(row)
-            result["claimed"] = claimed
-            return result
-
-    def complete_web_command(
-        self,
-        command_id: str,
-        response: Mapping[str, Any],
-        *,
-        owner: str,
-        run_id: str = "",
-    ) -> dict[str, Any]:
-        """Commit the response for a previously claimed Web command."""
-
-        command = str(command_id or "").strip()
-        claimant = str(owner or "").strip()
-        if not command or not claimant:
-            raise ValueError("web_command_identity_required")
-        timestamp = utc_now()
-        serialized = _dump(dict(response))
-        with self.transaction(immediate=True) as connection:
-            row = connection.execute(
-                "SELECT * FROM web_command_receipts WHERE command_id=?",
-                (command,),
-            ).fetchone()
-            if row is None:
-                raise KeyError(f"web_command_not_claimed:{command}")
-            existing = self._web_command_row(row)
-            if existing["status"] == "completed":
-                return existing
-            if existing["owner"] != claimant:
-                raise StoreConflictError(f"web_command_owner_conflict:{command}")
-            connection.execute(
-                "UPDATE web_command_receipts SET status='completed', response_json=?, "
-                "run_id=CASE WHEN ?='' THEN run_id ELSE ? END, lease_expires_at=0, updated_at=? "
-                "WHERE command_id=? AND owner=? AND status='pending'",
-                (serialized, str(run_id or ""), str(run_id or ""), timestamp, command, claimant),
-            )
-            saved = connection.execute(
-                "SELECT * FROM web_command_receipts WHERE command_id=?",
-                (command,),
-            ).fetchone()
-            if saved is None:
-                raise RuntimeError(f"web_command_receipt_missing:{command}")
-            return self._web_command_row(saved)
 
     def events(self, run_id: str, *, after_event_id: int = 0, limit: int = 200) -> tuple[dict[str, Any], ...]:
         bounded = max(1, min(1000, int(limit)))

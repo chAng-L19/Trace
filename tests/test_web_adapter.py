@@ -39,6 +39,23 @@ def test_web_start_and_run_projection_are_versioned(tmp_path: Path) -> None:
     service.close()
 
 
+def test_web_run_projection_omits_evidence_payload_by_default() -> None:
+    projected = WebApi._run_projection(
+        {
+            "run": {"run_id": "run-1"},
+            "evidence": [
+                {"evidence_id": "evidence-1", "payload": {"raw": "secret"}},
+                {"evidence_id": "evidence-2", "content_hash": "a" * 64},
+            ],
+        }
+    )
+
+    assert projected["evidence"] == [
+        {"evidence_id": "evidence-1"},
+        {"evidence_id": "evidence-2", "content_hash": "a" * 64},
+    ]
+
+
 def test_web_command_receipt_replays_across_api_instances(tmp_path: Path) -> None:
     target = tmp_path / "target.txt"
     target.write_text("web-idempotency", encoding="utf-8")
@@ -146,6 +163,28 @@ def test_web_budget_command_only_adjusts_budget(tmp_path: Path) -> None:
     after = response.payload()["run"]["run"]
     assert after["budget"]["action_limit"] == before["budget"]["action_limit"] + 3
     assert after["budget"]["actions_used"] == before["budget"]["actions_used"]
+    service.close()
+
+
+def test_web_budget_command_rejects_cancelled_run_without_mutation(tmp_path: Path) -> None:
+    service = AgentService(root=tmp_path / "runtime")
+    api = WebApi(service)
+    run_id = service.start(
+        {"session_id": "web-cancelled-budget", "objective": "Prepare a plan"}
+    ).single.run.run_id
+    cancelled = service.cancel(run_id)
+
+    response = api.dispatch(
+        "POST",
+        f"/api/runs/{run_id}/budget",
+        body={"actions": 3},
+    )
+
+    assert response.status == 400
+    assert "operation_terminal:cancelled" in response.payload()["error"]
+    after = service.status(run_id)
+    assert after.run.budget == cancelled.run.budget
+    assert after.run.state_version == cancelled.run.state_version
     service.close()
 
 

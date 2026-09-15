@@ -7,7 +7,9 @@ leases and terminal decisions remain inside ``AgentService``/``OperationRuntime`
 """
 
 import argparse
+import ipaddress
 import json
+import math
 import time
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -25,6 +27,37 @@ from ..runtime.store_common import ImmutableRecordError, StoreConflictError
 WEB_SCHEMA_VERSION = 1
 MAX_REQUEST_BYTES = 2 * 1024 * 1024
 DEFAULT_EVENT_LIMIT = 200
+MAX_EVENT_PAYLOAD_BYTES = 16 * 1024
+_RAW_EVENT_KEYS = frozenset({"state_snapshot", "payload", "output", "response", "request", "result", "stdout", "stderr"})
+
+
+def _event_value(value: Any, *, depth: int = 0) -> Any:
+    """Project metadata recursively; preserve full content behind its hash."""
+
+    def reference() -> dict[str, Any]:
+        return {"omitted": True, "content_hash": contract_hash(value)}
+
+    if depth > 4:
+        return reference()
+    if isinstance(value, Mapping):
+        if len(value) > 64 or any(len(str(key)) > 256 for key in value):
+            return reference()
+        result = {
+            str(key): _event_value(item, depth=depth + 1)
+            for key, item in value.items()
+            if str(key).casefold() not in _RAW_EVENT_KEYS
+        }
+    elif isinstance(value, (list, tuple)):
+        if len(value) > 32:
+            return reference()
+        result = [_event_value(item, depth=depth + 1) for item in value]
+    elif isinstance(value, str) and len(value.encode("utf-8")) > 2048:
+        return reference()
+    else:
+        result = value
+    if len(json.dumps(result, ensure_ascii=False, default=str).encode("utf-8")) > MAX_EVENT_PAYLOAD_BYTES:
+        return reference()
+    return result
 
 
 def _jsonable(value: Any) -> Any:
@@ -107,10 +140,10 @@ class WebApi:
                 offset=self._int_query(query, "offset", 0, 0, 1000000),
                 status=str(query.get("status") or ""),
             )
-            return self._ok({"runs": [view.to_dict() for view in views]})
+            return self._ok({"runs": [self._run_projection(view) for view in views]})
         run_id = tail[0]
         if len(tail) == 1:
-            return self._ok({"run": self.service.status(run_id).to_dict()})
+            return self._ok({"run": self._run_projection(self.service.status(run_id))})
         resource = tail[1]
         if resource == "events":
             if len(tail) != 2:
@@ -142,6 +175,7 @@ class WebApi:
                 run_id,
                 include_payload=query.get("include_payload") == "1",
                 limit=self._int_query(query, "limit", 1000, 1, 10000),
+                offset=self._int_query(query, "offset", 0, 0, 1_000_000),
             ))
         if resource == "transparency":
             if len(tail) != 2:
@@ -197,11 +231,13 @@ class WebApi:
         command_body = {key: value for key, value in body.items() if key != "command_id"}
         request_hash = contract_hash({"route": tail, "body": command_body})
         run_id = tail[0] if tail else ""
+        claim_owner = f"{self.owner}:{uuid4().hex}"
+        fencing_token = 0
         if command_id:
             receipt = self.service.runtime.store.claim_web_command(
                 command_id,
                 request_hash,
-                owner=self.owner,
+                owner=claim_owner,
                 run_id=run_id,
                 ttl_seconds=self.command_ttl_seconds,
             )
@@ -210,10 +246,21 @@ class WebApi:
                 if isinstance(saved.get("payload"), Mapping):
                     return WebResponse.json(saved["payload"], status=int(saved.get("status", 200)))
                 return WebResponse.json(saved, status=200)
-            if not receipt.get("claimed") or receipt["owner"] != self.owner or receipt["status"] != "pending":
+            if not receipt.get("claimed") or receipt["owner"] != claim_owner or receipt["status"] != "pending":
                 return self._error(409, "command_in_progress")
+            fencing_token = int(receipt["fencing_token"])
+            if receipt.get("reclaimed") and self._command_replay_is_uncertain(tail):
+                response = self._error(409, "command_result_uncertain")
+                self.service.runtime.store.complete_web_command(
+                    command_id,
+                    {"status": response.status, "payload": response.payload()},
+                    owner=claim_owner,
+                    fencing_token=fencing_token,
+                    run_id=run_id,
+                )
+                return response
         try:
-            response = self._post_once(tail, command_body)
+            response = self._post_once(tail, command_body, command_id=command_id)
         except Exception:
             raise
         if command_id and response.status < 500:
@@ -227,12 +274,19 @@ class WebApi:
             self.service.runtime.store.complete_web_command(
                 command_id,
                 {"status": response.status, "payload": response_payload},
-                owner=self.owner,
+                owner=claim_owner,
+                fencing_token=fencing_token,
                 run_id=run_id or str(saved_run_id or ""),
             )
         return response
 
-    def _post_once(self, tail: list[str], body: Mapping[str, Any]) -> WebResponse:
+    def _post_once(
+        self,
+        tail: list[str],
+        body: Mapping[str, Any],
+        *,
+        command_id: str = "",
+    ) -> WebResponse:
         if not tail:
             if not body:
                 return self._error(400, "start_request_required")
@@ -243,20 +297,22 @@ class WebApi:
             return self._error(404, "command_not_found")
         command = tail[1] if len(tail) > 1 else "run"
         if command == "run":
+            budget_delta = self._command_budget_delta(body.get("budget_delta"), command_id)
             return self._run_ok(
                 self.service.run(
                     run_id,
-                    body.get("budget_delta"),
+                    budget_delta,
                     max_actions=self._optional_int(body.get("max_actions")),
                 )
             )
         if command == "pause":
             return self._run_ok(self.service.pause(run_id, str(body.get("reason") or "user_requested")))
         if command == "resume":
+            budget_delta = self._command_budget_delta(body.get("budget_delta"), command_id)
             return self._run_ok(
                 self.service.resume(
                     run_id,
-                    body.get("budget_delta"),
+                    budget_delta,
                     max_actions=self._optional_int(body.get("max_actions")),
                     execute=bool(body.get("execute", True)),
                 )
@@ -273,15 +329,21 @@ class WebApi:
                 "deadline": resolved.deadline,
                 "acknowledge_missing_usage": resolved.acknowledge_missing_usage,
             }
-            if resolved.idempotency_key:
+            idempotency_key = resolved.idempotency_key or (
+                f"web-command:{command_id}" if command_id else ""
+            )
+            if idempotency_key:
                 view = self.service.apply_budget_delta_once(
-                    run_id, idempotency_key=resolved.idempotency_key, **fields
+                    run_id, idempotency_key=idempotency_key, **fields
                 )
             else:
                 view = self.service.apply_budget_delta(run_id, **fields)
             return self._run_ok(view)
         if command == "observation":
-            return self._run_ok(self.service.submit_observation(run_id, body.get("observation", body)))
+            observation = body.get("observation", body)
+            if command_id and isinstance(observation, Mapping) and not observation.get("idempotency_key"):
+                observation = {**observation, "idempotency_key": f"web-command:{command_id}"}
+            return self._run_ok(self.service.submit_observation(run_id, observation))
         if command == "fork":
             entry = self.service.fork_session(
                 run_id,
@@ -291,11 +353,27 @@ class WebApi:
             return self._ok({"entry": _jsonable(entry)})
         return self._error(404, "command_not_found")
 
-    def _evidence_graph(self, run_id: str, *, include_payload: bool, limit: int = 1000) -> dict[str, Any]:
+    @staticmethod
+    def _command_budget_delta(value: Any, command_id: str) -> Any:
+        if not command_id or value is None or not isinstance(value, Mapping):
+            return value
+        if value.get("idempotency_key"):
+            return value
+        return {**value, "idempotency_key": f"web-command:{command_id}"}
+
+    @staticmethod
+    def _command_replay_is_uncertain(tail: list[str]) -> bool:
+        if not tail:
+            return False
+        command = tail[1] if len(tail) > 1 else "run"
+        return command in {"run", "resume", "observation", "fork"}
+
+    def _evidence_graph(self, run_id: str, *, include_payload: bool, limit: int = 1000, offset: int = 0) -> dict[str, Any]:
+        self.service.status(run_id)
         nodes = self.service.runtime.evidence_graph.list(run_id, include_unverified=True)
         bounded = max(1, min(10000, int(limit)))
-        truncated = len(nodes) > bounded
-        nodes = nodes[:bounded]
+        truncated = len(nodes) > offset + bounded
+        nodes = nodes[offset : offset + bounded]
         projected = []
         edges = []
         for node in nodes:
@@ -304,14 +382,31 @@ class WebApi:
                 item.pop("payload", None)
             projected.append(item)
             edges.extend({"from": parent, "to": node.evidence_id, "kind": "parent"} for parent in node.parent_ids)
-        return {"run_id": run_id, "nodes": projected, "edges": edges, "truncated": truncated}
+        return {"run_id": run_id, "nodes": projected, "edges": edges, "truncated": truncated, "next_offset": offset + len(nodes) if truncated else None}
 
     def _run_ok(self, view: Any, *, status: int = 200) -> WebResponse:
-        return self._ok({"run": view}, status=status)
+        return self._ok({"run": self._run_projection(view)}, status=status)
+
+    @staticmethod
+    def _run_projection(view: Any) -> dict[str, Any]:
+        projected = _jsonable(view)
+        if not isinstance(projected, Mapping):
+            return {"value": projected}
+        result = dict(projected)
+        evidence = result.get("evidence", [])
+        if isinstance(evidence, list):
+            result["evidence"] = [
+                {key: value for key, value in item.items() if key != "payload"}
+                if isinstance(item, Mapping)
+                else item
+                for item in evidence
+            ]
+        return result
 
     @staticmethod
     def _payload_ref(payload: Mapping[str, Any]) -> str:
-        return str(payload.get("artifact_ref") or payload.get("artifact_id") or contract_hash(payload))
+        reference = str(payload.get("artifact_ref") or payload.get("artifact_id") or "")
+        return reference if reference and len(reference) <= 512 else contract_hash(payload)
 
     @classmethod
     def _event_projection(cls, event: Any, *, include_payload: bool = False) -> dict[str, Any]:
@@ -322,12 +417,7 @@ class WebApi:
         else:
             # Raw output and state snapshots remain in SQLite/CAS.  The default
             # Web/SSE projection is intentionally bounded and delta-oriented.
-            omitted = {"state_snapshot", "payload", "output", "response", "request", "result"}
-            projected = {
-                str(key): value
-                for key, value in payload.items()
-                if str(key) not in omitted
-            }
+            projected = _event_value(payload)
         return {
             "run_id": event.run_id,
             "sequence": event.sequence,
@@ -369,7 +459,10 @@ class WebApi:
     def sse_events(self, run_id: str, *, after_sequence: int = 0, wait_seconds: float = 0.0) -> list[dict[str, Any]]:
         """Return event deltas for an SSE connection, with bounded polling."""
 
-        deadline = time.monotonic() + max(0.0, min(30.0, float(wait_seconds)))
+        wait = float(wait_seconds)
+        if not math.isfinite(wait):
+            raise ValueError("wait_seconds_must_be_finite")
+        deadline = time.monotonic() + max(0.0, min(30.0, wait))
         while True:
             events = self.service.events(run_id, after_sequence=after_sequence, limit=1000)
             if events or time.monotonic() >= deadline:
@@ -384,8 +477,40 @@ class _TraceHandler(BaseHTTPRequestHandler):
     def api(self) -> WebApi:
         return self.server.api  # type: ignore[attr-defined]
 
+    def _request_boundary(self) -> WebResponse | None:
+        """Keep browser pages on other origins out of the local control API."""
+
+        try:
+            host = urlsplit(f"http://{self.headers.get('Host', '')}")
+            hostname = host.hostname or ""
+            if host.username is not None or host.password is not None or host.path or host.query or host.fragment:
+                return self.api._error(400, "invalid_host")
+            bound_host, bound_port = self.server.server_address[:2]
+            if ipaddress.ip_address(bound_host).is_loopback:
+                if hostname not in {"localhost", "127.0.0.1", "::1"} or (host.port or 80) != bound_port:
+                    return self.api._error(403, "host_not_allowed")
+            origin_value = self.headers.get("Origin")
+            if origin_value:
+                origin = urlsplit(origin_value)
+                if (
+                    origin.scheme != "http"
+                    or origin.hostname != hostname
+                    or (origin.port or 80) != (host.port or 80)
+                    or origin.username is not None
+                    or origin.password is not None
+                    or origin.path
+                    or origin.query
+                    or origin.fragment
+                ):
+                    return self.api._error(403, "origin_not_allowed")
+        except ValueError:
+            return self.api._error(400, "invalid_request_origin")
+        return None
+
     def _body(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0") or 0)
+        if length < 0:
+            raise ValueError("invalid_content_length")
         if length > MAX_REQUEST_BYTES:
             raise ValueError("request_body_too_large")
         if length <= 0:
@@ -405,14 +530,44 @@ class _TraceHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(response.body)
 
+    def _reject_post(self, response: WebResponse) -> None:
+        # Closing a socket with unread request bytes can reset it on Windows,
+        # discarding the error response. Drain only bounded, framed bodies.
+        try:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            length = 0
+        if 0 < length <= MAX_REQUEST_BYTES:
+            previous_timeout = self.connection.gettimeout()
+            try:
+                self.connection.settimeout(5.0)
+                self.rfile.read(length)
+            except OSError:
+                pass
+            finally:
+                self.connection.settimeout(previous_timeout)
+        self._write(response)
+
     def do_GET(self) -> None:  # noqa: N802
+        boundary_error = self._request_boundary()
+        if boundary_error is not None:
+            self._write(boundary_error)
+            return
         parsed = urlsplit(self.path)
-        if parsed.path.startswith("/api/runs/") and parsed.path.endswith("/events"):
+        accepts_sse = "text/event-stream" in self.headers.get("Accept", "").casefold()
+        if accepts_sse and parsed.path.startswith("/api/runs/") and parsed.path.endswith("/events"):
             self._write_sse(parsed)
             return
         self._write(self.api.dispatch("GET", self.path, headers=self.headers))
 
     def do_POST(self) -> None:  # noqa: N802
+        boundary_error = self._request_boundary()
+        if boundary_error is not None:
+            self._reject_post(boundary_error)
+            return
+        if self.headers.get_content_type() != "application/json":
+            self._reject_post(self.api._error(415, "application_json_required"))
+            return
         try:
             payload = self._body()
             self._write(self.api.dispatch("POST", self.path, body=payload, headers=self.headers))
@@ -435,18 +590,23 @@ class _TraceHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
-            self.send_header("Connection", "keep-alive")
+            # This endpoint emits a bounded batch. EOF terminates the batch so
+            # EventSource can reconnect with Last-Event-ID instead of hanging.
+            self.send_header("Connection", "close")
             self.send_header("X-Trace-Schema-Version", str(WEB_SCHEMA_VERSION))
             self.end_headers()
             headers_sent = True
             for event in events:
+                event_type = str(event["event_type"]).replace("\r", "").replace("\n", "")
                 self.wfile.write(
                     (
                         f"id: {event['sequence']}\n"
-                        f"event: {event['event_type']}\n"
+                        f"event: {event_type}\n"
                         f"data: {json.dumps(event, ensure_ascii=False, sort_keys=True, default=str)}\n\n"
                     ).encode("utf-8")
                 )
+            if not events:
+                self.wfile.write(b": keep-alive\n\n")
             self.wfile.flush()
         except Exception as exc:
             if headers_sent:
@@ -463,7 +623,12 @@ class _TraceHandler(BaseHTTPRequestHandler):
                 except OSError:
                     return
             else:
-                self._write(self.api._error(400, str(exc)))
+                if isinstance(exc, KeyError):
+                    self._write(self.api._error(404, str(exc)))
+                elif isinstance(exc, (ValueError, TypeError)):
+                    self._write(self.api._error(400, str(exc)))
+                else:
+                    self._write(self.api._error(500, f"internal_error:{type(exc).__name__}"))
 
     def log_message(self, format: str, *args: Any) -> None:
         return

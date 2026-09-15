@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from ..adapters.runtime import (
+    LEGACY_TO_CORE_STATUS,
     evidence_from_runtime,
     goal_from_runtime,
     run_from_runtime,
@@ -303,12 +304,25 @@ class AgentService:
     ) -> tuple[AgentRunView, ...]:
         """Return bounded run projections for CLI/Web consumers."""
 
+        normalized_status = str(status or "").strip()
+        runtime_statuses = tuple(
+            dict.fromkeys(
+                (
+                    normalized_status,
+                    *(
+                        legacy
+                        for legacy, canonical in LEGACY_TO_CORE_STATUS.items()
+                        if canonical == normalized_status
+                    ),
+                )
+            )
+        ) if normalized_status else ()
         return tuple(
             self.status(state.run_id)
             for state in self.runtime.store.operations(
                 limit=limit,
                 offset=offset,
-                status=status,
+                statuses=runtime_statuses,
             )
         )
 
@@ -361,10 +375,29 @@ class AgentService:
         max_actions: int | None = None,
         execute: bool = True,
     ) -> AgentRunView:
+        delta = BudgetDelta.from_value(budget_delta)
         before = self.status(run_id)
+        if delta.changes_budget and before.run.status in {"completed", "failed", "cancelled"}:
+            raise ValueError(f"operation_terminal:{before.run.status}")
+        if delta.changes_budget:
+            arguments = {
+                "actions": delta.actions,
+                "tokens": delta.tokens,
+                "time_seconds": delta.time_seconds,
+                "deadline": delta.deadline,
+                "acknowledge_missing_usage": delta.acknowledge_missing_usage,
+            }
+            if delta.idempotency_key:
+                self.runtime.apply_budget_delta_once(
+                    run_id,
+                    idempotency_key=delta.idempotency_key,
+                    **arguments,
+                )
+            else:
+                self.runtime.apply_budget_delta(run_id, **arguments)
         self.runtime.resume_control(run_id)
         if execute:
-            return self.run(run_id, budget_delta=budget_delta, max_actions=max_actions)
+            return self.run(run_id, max_actions=max_actions)
         view = self.status(run_id)
         return self._validate_result(before.run.status, view)
 

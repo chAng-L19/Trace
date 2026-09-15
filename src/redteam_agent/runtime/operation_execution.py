@@ -216,6 +216,11 @@ class OperationExecutionMixin:
             )
         if state.status == "cancelling":
             return self._finalize_cancel_locked(state, workflow, token)
+        if state.status == "paused_budget" and state.budget.pause_reason != "cycle_action_limit":
+            # A direct run request is not an implicit control-plane resume.
+            # Preserve operator and exhausted-budget gates before target or
+            # dependency handling can rewrite the state.
+            return self._result(state, workflow)
         if not state.goal.targets:
             if state.status != "waiting_goal_input":
                 state.status = "waiting_goal_input"
@@ -289,6 +294,10 @@ class OperationExecutionMixin:
                 event_type="operation_resumed",
                 event={},
             )
+        elif state.status == "paused_budget":
+            # Operator and budget pauses are durable execution gates. Budget
+            # deltas and resume_control are the only paths that clear them.
+            return self._result(state, workflow)
 
         cycle_limit = max(1, int(max_actions)) if max_actions is not None else state.budget.action_limit
         executed = 0

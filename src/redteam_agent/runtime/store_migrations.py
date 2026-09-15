@@ -423,7 +423,6 @@ def _migration_10_session_journal(context: Any, connection: sqlite3.Connection) 
 
 
 def _migration_11_web_command_receipts(context: Any, connection: sqlite3.Connection) -> None:
-    del context
     execute_sql_script(
         connection,
         """
@@ -432,12 +431,17 @@ def _migration_11_web_command_receipts(context: Any, connection: sqlite3.Connect
             run_id TEXT NOT NULL DEFAULT '', owner TEXT NOT NULL,
             status TEXT NOT NULL, response_json TEXT NOT NULL DEFAULT '{}',
             lease_expires_at REAL NOT NULL DEFAULT 0,
+            fencing_token INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_web_command_run
             ON web_command_receipts(run_id, updated_at);
         """,
     )
+    if "fencing_token" not in context._columns(connection, "web_command_receipts"):
+        connection.execute(
+            "ALTER TABLE web_command_receipts ADD COLUMN fencing_token INTEGER NOT NULL DEFAULT 1"
+        )
 
 
 MIGRATIONS = (
