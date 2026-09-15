@@ -29,6 +29,9 @@ const state = {
   collectionPages: {},
   page: "runs",
   authenticated: false,
+  authRequired: false,
+  authEpoch: 0,
+  search: "",
 };
 
 function commandId() {
@@ -40,9 +43,12 @@ function commandHeaders() { return { "X-Command-ID": commandId() }; }
 async function api(path, options = {}) {
   const headers = { Accept: "application/json", ...(options.headers || {}) };
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
-  const response = await fetch(path, { ...options, headers });
+  const response = await fetch(path, { cache: "no-store", credentials: "same-origin", ...options, headers });
   const type = response.headers.get("Content-Type") || "";
   const payload = type.includes("application/json") ? await response.json() : await response.text();
+  if (response.status === 401 && !String(path).startsWith("/api/auth/")) {
+    handleAuthExpired();
+  }
   if (!response.ok || (payload && payload.ok === false)) {
     throw new Error(payload?.error || `HTTP ${response.status}`);
   }
@@ -65,6 +71,23 @@ function setConnection(text, online) {
   $("#connection-text").textContent = text;
 }
 
+function setAuthLocked(locked) {
+  document.body.classList.toggle("auth-locked", Boolean(locked));
+  document.documentElement.dataset.traceAuth = locked ? "required" : "ready";
+}
+
+function handleAuthExpired() {
+  if (!state.authRequired || !state.authenticated) return;
+  state.authEpoch += 1;
+  clearSessionView();
+  state.authenticated = false;
+  setAuthLocked(true);
+  $("#logout").hidden = true;
+  const dialog = $("#login-dialog");
+  if (!dialog.open) dialog.showModal();
+  showNotice("会话已过期，请重新登录", true);
+}
+
 function coreRun(view) { return view?.run || {}; }
 function goal(view) { return view?.goal || {}; }
 function formatStatus(status) { return statusLabels[status] || status || "未知"; }
@@ -82,24 +105,45 @@ function applyView(view) {
 }
 
 async function loadSystem() {
+  const epoch = state.authEpoch;
   try {
     const result = await api("/api/system");
+    if (epoch !== state.authEpoch || (state.authRequired && !state.authenticated)) return;
     const provider = result.provider || {};
     setConnection(provider.configured ? `${provider.name} / ${provider.model}` : "未配置模型 API", provider.configured);
+    $("#runtime-badge").textContent = `runtime / ${valueOr(result.platform, "-")}`;
+    $("#api-badge").textContent = `API / v${valueOr(result.schema_version, "?")}`;
+    const health = $("#control-health");
+    if (health) {
+      health.classList.toggle("online", true);
+      health.classList.remove("offline");
+      health.innerHTML = `<span class="connection-dot" aria-hidden="true"></span><span>${provider.configured ? "模型连接已配置" : "等待模型配置"}</span>`;
+    }
+    if (result.control_plane) $("#system-view").textContent = safeJson({ ...result.control_plane, provider: result.provider, auth: result.auth });
   } catch (error) {
     setConnection("服务连接失败", false);
+    const health = $("#control-health");
+    if (health) {
+      health.classList.remove("online");
+      health.classList.add("offline");
+      health.innerHTML = `<span class="connection-dot" aria-hidden="true"></span><span>API 连接失败</span>`;
+    }
     showNotice(error.message, true);
   }
 }
 
 async function loadAuth() {
   const result = await api("/api/auth/status");
+  state.authRequired = Boolean(result.required);
   state.authenticated = Boolean(result.authenticated || !result.required);
   $("#logout").hidden = !state.authenticated;
   if (result.required && !state.authenticated) {
-    $("#login-dialog").showModal();
+    setAuthLocked(true);
+    const dialog = $("#login-dialog");
+    if (!dialog.open) dialog.showModal();
     return false;
   }
+  setAuthLocked(false);
   return true;
 }
 
@@ -112,19 +156,25 @@ function setView(view) {
 }
 
 async function loadControl() {
+  const epoch = state.authEpoch;
   try {
     await Promise.all([loadProviders(), loadSkills(), loadMcp(), loadConversations(), loadSystemSettings()]);
+    if (epoch !== state.authEpoch || (state.authRequired && !state.authenticated)) return;
   } catch (error) { showNotice(error.message, true); }
 }
 
 function renderSettingsList(container, items, renderItem, empty = "暂无配置") {
   container.replaceChildren();
+  container.setAttribute("aria-busy", "false");
   if (!items.length) return appendEmpty(container, empty);
   items.forEach((item) => container.append(renderItem(item)));
 }
 
 async function loadProviders() {
+  const epoch = state.authEpoch;
+  $("#provider-list").setAttribute("aria-busy", "true");
   const result = await api("/api/providers");
+  if (epoch !== state.authEpoch || (state.authRequired && !state.authenticated)) return;
   renderSettingsList($("#provider-list"), result.providers || [], (item) => {
     const row = document.createElement("article"); row.className = "setting-row";
     const main = document.createElement("div"); main.className = "setting-main";
@@ -154,7 +204,10 @@ function openProviderEditor(item = null) {
 }
 
 async function loadSkills() {
+  const epoch = state.authEpoch;
+  $("#skill-list").setAttribute("aria-busy", "true");
   const result = await api("/api/skills");
+  if (epoch !== state.authEpoch || (state.authRequired && !state.authenticated)) return;
   renderSettingsList($("#skill-list"), result.skills || [], (item) => {
     const row = document.createElement("article"); row.className = "setting-row";
     const main = document.createElement("div"); main.className = "setting-main";
@@ -191,7 +244,10 @@ async function submitSkill(event) {
 }
 
 async function loadMcp() {
+  const epoch = state.authEpoch;
+  $("#mcp-list").setAttribute("aria-busy", "true");
   const result = await api("/api/mcp");
+  if (epoch !== state.authEpoch || (state.authRequired && !state.authenticated)) return;
   renderSettingsList($("#mcp-list"), result.servers || [], (item) => {
     const row = document.createElement("article"); row.className = "setting-row";
     const main = document.createElement("div"); main.className = "setting-main";
@@ -219,7 +275,10 @@ function openMcpEditor(item = null) {
 }
 
 async function loadConversations() {
+  const epoch = state.authEpoch;
+  $("#conversation-list").setAttribute("aria-busy", "true");
   const result = await api("/api/conversations");
+  if (epoch !== state.authEpoch || (state.authRequired && !state.authenticated)) return;
   renderSettingsList($("#conversation-list"), result.conversations || [], (item) => {
     const row = document.createElement("article"); row.className = "setting-row";
     const main = document.createElement("div"); main.className = "setting-main";
@@ -294,7 +353,9 @@ async function submitFork(event) {
 }
 
 async function loadSystemSettings() {
+  const epoch = state.authEpoch;
   const result = await api("/api/system");
+  if (epoch !== state.authEpoch || (state.authRequired && !state.authenticated)) return;
   $("#system-view").textContent = safeJson({ ...result.control_plane, provider: result.provider, auth: result.auth });
 }
 
@@ -302,21 +363,34 @@ async function login(event) {
   event.preventDefault();
   const form = event.currentTarget;
   const password = String(new FormData(form).get("password") || "");
+  const errorNode = $("#login-error");
+  const submit = $("#login-submit");
+  errorNode.hidden = true;
+  submit.disabled = true;
   try {
     await api("/api/auth/login", { method: "POST", body: JSON.stringify({ password }) });
-    $("#login-dialog").close(); form.reset(); state.authenticated = true; $("#logout").hidden = false;
+    $("#login-dialog").close(); form.reset(); state.authenticated = true; state.authRequired = true; state.authEpoch += 1; setAuthLocked(false); $("#logout").hidden = false;
     await Promise.all([loadSystem(), loadRuns({ keepSelection: false })]);
     showNotice("已登录 Trace");
-  } catch (error) { showNotice("登录失败：" + error.message, true); }
+  } catch (error) {
+    errorNode.textContent = "登录失败：" + error.message;
+    errorNode.hidden = false;
+  } finally { submit.disabled = false; }
 }
 
 async function logout() {
-  await api("/api/auth/logout", { method: "POST", body: "{}" });
-  clearSessionView();
-  state.authenticated = false;
-  setView("runs");
-  $("#logout").hidden = true;
-  $("#login-dialog").showModal();
+  try { await api("/api/auth/logout", { method: "POST", body: "{}" }); }
+  finally {
+    clearSessionView();
+    state.authenticated = false;
+    state.authRequired = true;
+    state.authEpoch += 1;
+    setView("runs");
+    setAuthLocked(true);
+    $("#logout").hidden = true;
+    const dialog = $("#login-dialog");
+    if (!dialog.open) dialog.showModal();
+  }
 }
 
 function clearSessionView() {
@@ -354,11 +428,13 @@ async function submitMcp(event) {
 }
 
 async function loadRuns({ keepSelection = true } = {}) {
+  const epoch = state.authEpoch;
   const filter = $("#status-filter").value;
   const query = new URLSearchParams({ limit: "200" });
   if (filter) query.set("status", filter);
   try {
     const result = await api(`/api/runs?${query}`);
+    if (epoch !== state.authEpoch || (state.authRequired && !state.authenticated)) return;
     state.runs = result.runs || [];
     renderRuns();
     if (!keepSelection || !state.selectedId) return;
@@ -371,14 +447,21 @@ async function loadRuns({ keepSelection = true } = {}) {
 function renderRuns() {
   const list = $("#run-list");
   list.replaceChildren();
-  if (!state.runs.length) {
+  const needle = state.search.trim().toLocaleLowerCase();
+  const runs = state.runs.filter((view) => {
+    if (!needle) return true;
+    const run = coreRun(view);
+    const text = [run.run_id, run.session_id, goal(view).objective, ...(goal(view).targets || [])].join(" ").toLocaleLowerCase();
+    return text.includes(needle);
+  });
+  if (!runs.length) {
     const empty = document.createElement("p");
     empty.className = "run-empty";
-    empty.textContent = "没有匹配的运行";
+    empty.textContent = state.runs.length ? "没有匹配的运行" : "暂无运行，先建立一个目标";
     list.append(empty);
     return;
   }
-  for (const view of state.runs) {
+  for (const view of runs) {
     const run = coreRun(view);
     const button = document.createElement("button");
     button.type = "button";
@@ -399,6 +482,7 @@ function renderRuns() {
 async function loadRun(runId, resetEvents = true) {
   if (!resetEvents && state.selectedId !== runId) return;
   const selectionVersion = resetEvents ? ++state.selectionVersion : state.selectionVersion;
+  const epoch = state.authEpoch;
   state.selectedId = runId;
   renderRuns();
   if (resetEvents) {
@@ -417,6 +501,7 @@ async function loadRun(runId, resetEvents = true) {
   }
   try {
     const result = await api(`/api/runs/${encodeURIComponent(runId)}`);
+    if (epoch !== state.authEpoch || (state.authRequired && !state.authenticated)) return;
     if (state.selectedId !== runId || state.selectionVersion !== selectionVersion) return;
     applyView(result.run);
     if (resetEvents) {
@@ -536,12 +621,7 @@ function openEvents() {
     try {
       const auth = await api("/api/auth/status");
       if (auth.required && !auth.authenticated) {
-        clearSessionView();
-        setView("runs");
-        state.authenticated = false;
-        $("#logout").hidden = true;
-        $("#login-dialog").showModal();
-        showNotice("会话已过期，请重新登录", true);
+        handleAuthExpired();
       }
     } catch (_) { /* reconnect keeps the live view available during transient failures */ }
   };
@@ -819,6 +899,7 @@ function bind() {
   $("#new-run").addEventListener("click", openCreateDialog);
   $("#empty-new-run").addEventListener("click", openCreateDialog);
   $("#refresh-runs").addEventListener("click", () => loadRuns());
+  $("#run-search").addEventListener("input", (event) => { state.search = String(event.target.value || ""); renderRuns(); });
   $("#status-filter").addEventListener("change", () => loadRuns({ keepSelection: false }));
   $("#create-form").addEventListener("submit", submitCreate);
   $("#open-budget").addEventListener("click", () => $("#budget-dialog").showModal());

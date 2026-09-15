@@ -12,9 +12,9 @@
 <body>
   <header class="app-header">
     <div class="brand" aria-label="Trace">
-      <span class="brand-mark" aria-hidden="true">T</span>
-      <span>Trace</span>
-      <span class="brand-subtitle">Agent Workbench</span>
+      <span class="brand-mark" aria-hidden="true">/</span>
+      <span class="brand-word">Trace</span>
+      <span class="brand-subtitle">OPERATIONAL AGENT WORKBENCH</span>
     </div>
     <div class="header-tools">
       <nav class="top-nav" aria-label="控制面导航">
@@ -25,6 +25,8 @@
         <span class="connection-dot" aria-hidden="true"></span>
         <span id="connection-text">正在连接</span>
       </div>
+      <span class="runtime-badge" id="runtime-badge">runtime / --</span>
+      <span class="api-badge" id="api-badge">API / --</span>
       <button class="quiet small" id="logout" type="button" hidden>退出</button>
     </div>
   </header>
@@ -32,10 +34,12 @@
   <main class="app-shell">
     <aside class="run-rail" aria-label="运行列表">
       <div class="rail-toolbar">
-        <h1>运行</h1>
+        <div><p class="eyebrow">TRACE / RUNS</p><h1>运行</h1></div>
         <button class="primary small" id="new-run" type="button">新建</button>
       </div>
       <div class="rail-filters">
+        <label for="run-search">查找运行</label>
+        <input id="run-search" type="search" placeholder="目标、会话或 ID" autocomplete="off">
         <label for="status-filter">状态</label>
         <select id="status-filter">
           <option value="">全部</option>
@@ -55,9 +59,10 @@
 
     <section class="workspace" aria-label="运行工作区">
       <div class="empty-state" id="empty-state">
-        <p class="eyebrow">TRACE CONTROL PLANE</p>
+        <div class="empty-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+        <p class="eyebrow">TRACE / CONTROL PLANE</p>
         <h2>选择一个运行</h2>
-        <p>检查状态、证据、模型会话和持久事件，或新建一个目标。</p>
+        <p>从持久事件、搜索图和可信证据开始读取运行状态，或建立新的目标。</p>
         <button class="primary" id="empty-new-run" type="button">新建运行</button>
       </div>
 
@@ -167,13 +172,15 @@
 
   <main class="control-plane" id="control-plane" hidden>
     <aside class="control-nav" aria-label="控制面设置">
-      <p class="eyebrow">TRACE CONTROL PLANE</p>
+      <p class="eyebrow">TRACE / CONFIG</p>
       <h1>系统设置</h1>
+      <p class="control-intro">模型、工具和会话配置通过同一 AgentService 控制面提交。</p>
       <button class="control-tab active" data-control-tab="providers" type="button">模型与 API</button>
       <button class="control-tab" data-control-tab="skills" type="button">Skills</button>
       <button class="control-tab" data-control-tab="mcp" type="button">MCP 接入</button>
       <button class="control-tab" data-control-tab="conversations" type="button">对话管理</button>
       <button class="control-tab" data-control-tab="system" type="button">运行环境</button>
+      <div class="control-health" id="control-health"><span class="connection-dot" aria-hidden="true"></span><span>正在读取系统状态</span></div>
     </aside>
     <section class="control-content">
       <section class="control-section" data-control-panel="providers">
@@ -289,10 +296,12 @@
 
   <dialog id="login-dialog" aria-labelledby="login-title">
     <form id="login-form" method="dialog">
-      <div class="dialog-heading"><h2 id="login-title">进入 Trace</h2></div>
-      <p class="dialog-copy">当前控制面需要管理员会话。</p>
-      <label>访问凭据<input name="password" type="password" autocomplete="current-password" required></label>
-      <div class="dialog-actions"><button class="primary" value="default" type="submit">登录</button></div>
+      <div class="login-brand"><span class="brand-mark" aria-hidden="true">/</span><span><b>Trace</b><small>OPERATIONAL AGENT WORKBENCH</small></span></div>
+      <div class="dialog-heading"><div><p class="eyebrow">AUTH / SESSION</p><h2 id="login-title">进入控制面</h2></div></div>
+      <p class="dialog-copy">建立管理员会话后，才能读取运行、凭据绑定和工具配置。</p>
+      <label for="login-password">访问凭据<input id="login-password" name="password" type="password" autocomplete="current-password" required></label>
+      <p class="form-error" id="login-error" role="alert" hidden></p>
+      <div class="dialog-actions"><button class="primary" id="login-submit" value="default" type="submit">建立会话</button></div>
     </form>
   </dialog>
 

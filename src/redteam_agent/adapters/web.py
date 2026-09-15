@@ -179,14 +179,16 @@ class WebApi(ControlRoutesMixin):
         """Apply durable single-flight semantics to browser control writes."""
 
         command_id = str(headers.get("x-command-id") or body.get("command_id") or "").strip()
-        if method == "GET" or not command_id:
+        command_body = {key: value for key, value in body.items() if key != "command_id"}
+        run_id = tail[0] if domain == "conversations" and tail else ""
+        if method == "GET":
             if domain == "system" and tail == ["reload"]:
                 return self._ok(self._reload_control_plane())
             return self._safe_control(method, domain, tail, body)
-        command_body = {key: value for key, value in body.items() if key != "command_id"}
+        if not command_id:
+            command_id = self._implicit_command_id(["control", domain, *tail], command_body, run_id=run_id)
         request_hash = contract_hash({"route": [domain, *tail], "body": command_body})
         owner = f"{self.owner}:{uuid4().hex}"
-        run_id = tail[0] if domain == "conversations" and tail else ""
         try:
             receipt = self.service.runtime.store.claim_web_command(
                 command_id, request_hash, owner=owner, run_id=run_id, ttl_seconds=self.command_ttl_seconds,
@@ -370,8 +372,10 @@ class WebApi(ControlRoutesMixin):
     ) -> WebResponse:
         command_id = str(headers.get("x-command-id") or body.get("command_id") or "").strip()
         command_body = {key: value for key, value in body.items() if key != "command_id"}
-        request_hash = contract_hash({"route": tail, "body": command_body})
         run_id = tail[0] if tail else ""
+        if not command_id:
+            command_id = self._implicit_command_id(["runs", *tail], command_body, run_id=run_id)
+        request_hash = contract_hash({"route": tail, "body": command_body})
         claim_owner = f"{self.owner}:{uuid4().hex}"
         fencing_token = 0
         if command_id:

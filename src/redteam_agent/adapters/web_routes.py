@@ -5,11 +5,31 @@ import platform
 from typing import Any, Mapping
 
 from ..application.contracts import CANONICAL_RUN_STATUSES
+from ..core import contract_hash
 from ..providers import OpenAICompatibleProvider
 
 
 class ControlRoutesMixin:
     """Management routes kept separate so the HTTP adapter stays small."""
+
+    def _implicit_command_id(
+        self,
+        route: list[str] | tuple[str, ...],
+        body: Mapping[str, Any],
+        *,
+        run_id: str = "",
+    ) -> str:
+        """Give legacy clients durable retry semantics without changing payloads."""
+
+        state_version = ""
+        if run_id:
+            try:
+                state_version = str(self.service.status(run_id).run.state_version)
+            except KeyError:
+                state_version = ""
+        return "compat-" + contract_hash(
+            {"route": list(route), "body": dict(body), "run_id": run_id, "state_version": state_version}
+        )
 
     def _load_active_provider(self) -> None:
         if self.service.model_loop is not None:
