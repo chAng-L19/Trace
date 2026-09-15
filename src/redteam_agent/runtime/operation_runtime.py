@@ -31,18 +31,7 @@ from .tool_broker import ToolBroker
 from .verifier import SemanticVerifier
 from .workflow_registry import WorkflowRegistry
 from .exploration import TacticalAttemptRecord
-
-
-OPERATOR_PAUSE_REASONS = frozenset({"user_requested", "operator_pause"})
-BUDGET_PAUSE_REASONS = frozenset(
-    {
-        "action_limit_exhausted",
-        "token_limit_exhausted",
-        "token_usage_unknown",
-        "time_limit_exhausted",
-        "cycle_action_limit",
-    }
-)
+from .pause_reasons import BUDGET_PAUSE_REASONS, OPERATOR_PAUSE_REASONS
 
 
 class OperationRuntime(

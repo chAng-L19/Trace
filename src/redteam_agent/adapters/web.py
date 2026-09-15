@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import ipaddress
 import json
 import math
@@ -8,8 +9,6 @@ import os
 import ssl
 import time
 from dataclasses import dataclass, field
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from importlib.resources import files
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -141,17 +140,17 @@ class WebApi(ControlRoutesMixin):
                 return self._error(405, "method_not_allowed")
             return self._ok(self.system_info())
         if segments[:2] == ["api", "providers"]:
-            return self._safe_control(method, "providers", segments[2:], payload)
+            return self._control_request(method, "providers", segments[2:], payload, request_headers)
         if segments[:2] == ["api", "skills"]:
-            return self._safe_control(method, "skills", segments[2:], payload)
+            return self._control_request(method, "skills", segments[2:], payload, request_headers)
         if segments[:2] == ["api", "mcp"]:
-            return self._safe_control(method, "mcp", segments[2:], payload)
+            return self._control_request(method, "mcp", segments[2:], payload, request_headers)
         if segments[:2] == ["api", "conversations"]:
-            return self._safe_control(method, "conversations", segments[2:], payload)
+            return self._control_request(method, "conversations", segments[2:], payload, request_headers)
         if segments == ["api", "system", "reload"]:
             if method != "POST":
                 return self._error(405, "method_not_allowed")
-            return self._ok(self._reload_control_plane())
+            return self._control_request(method, "system", ["reload"], payload, request_headers)
         if segments[:2] != ["api", "runs"]:
             return self._error(404, "route_not_found")
         try:
@@ -168,6 +167,82 @@ class WebApi(ControlRoutesMixin):
             return self._error(400, str(exc))
         except Exception as exc:  # pragma: no cover - defensive protocol boundary
             return self._error(500, f"internal_error:{type(exc).__name__}")
+
+    def _control_request(
+        self,
+        method: str,
+        domain: str,
+        tail: list[str],
+        body: Mapping[str, Any],
+        headers: Mapping[str, str],
+    ) -> WebResponse:
+        """Apply durable single-flight semantics to browser control writes."""
+
+        command_id = str(headers.get("x-command-id") or body.get("command_id") or "").strip()
+        if method == "GET" or not command_id:
+            if domain == "system" and tail == ["reload"]:
+                return self._ok(self._reload_control_plane())
+            return self._safe_control(method, domain, tail, body)
+        command_body = {key: value for key, value in body.items() if key != "command_id"}
+        request_hash = contract_hash({"route": [domain, *tail], "body": command_body})
+        owner = f"{self.owner}:{uuid4().hex}"
+        run_id = tail[0] if domain == "conversations" and tail else ""
+        try:
+            receipt = self.service.runtime.store.claim_web_command(
+                command_id, request_hash, owner=owner, run_id=run_id, ttl_seconds=self.command_ttl_seconds,
+            )
+            if receipt["status"] == "completed":
+                saved = receipt["response"]
+                replay = self._replay_receipt(saved)
+                if replay is not None:
+                    return replay
+                if isinstance(saved.get("payload"), Mapping):
+                    return WebResponse.json(saved["payload"], status=int(saved.get("status", 200)))
+                return WebResponse.json(saved, status=200)
+            if not receipt.get("claimed") or receipt["owner"] != owner or receipt["status"] != "pending":
+                return self._error(409, "command_in_progress")
+            if receipt.get("reclaimed"):
+                response = self._error(409, "command_result_uncertain")
+                self.service.runtime.store.complete_web_command(
+                    command_id, self._receipt_payload(response),
+                    owner=owner, fencing_token=int(receipt["fencing_token"]), run_id=run_id,
+                )
+                return response
+            if domain == "system" and tail == ["reload"]:
+                response = self._ok(self._reload_control_plane())
+            else:
+                response = self._safe_control(method, domain, tail, command_body)
+            if response.status < 500:
+                self.service.runtime.store.complete_web_command(
+                    command_id, self._receipt_payload(response),
+                    owner=owner, fencing_token=int(receipt["fencing_token"]), run_id=run_id,
+                )
+            return response
+        except ImmutableRecordError as exc:
+            return self._error(409, str(exc))
+        except StoreConflictError as exc:
+            return self._error(409, str(exc))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            return self._error(400, str(exc))
+
+    @staticmethod
+    def _receipt_payload(response: WebResponse) -> dict[str, Any]:
+        encoded = base64.urlsafe_b64encode(response.body).decode("ascii")
+        return {"status": response.status, "payload_encoding": "json-base64", "payload": encoded}
+
+    @staticmethod
+    def _replay_receipt(saved: Mapping[str, Any]) -> WebResponse | None:
+        if saved.get("payload_encoding") != "json-base64":
+            return None
+        try:
+            body = base64.urlsafe_b64decode(str(saved["payload"]).encode("ascii"))
+            json.loads(body.decode("utf-8"))
+        except (KeyError, ValueError, TypeError, UnicodeError, json.JSONDecodeError):
+            return WebResponse.json(
+                {"schema_version": WEB_SCHEMA_VERSION, "ok": False, "error": "command_receipt_corrupt"},
+                status=409,
+            )
+        return WebResponse(int(saved.get("status", 200)), body)
     def _get(self, tail: list[str], query: Mapping[str, str]) -> WebResponse:
         if not tail:
             views = self.service.list_runs(
@@ -212,10 +287,41 @@ class WebApi(ControlRoutesMixin):
                 limit=self._int_query(query, "limit", 1000, 1, 10000),
                 offset=self._int_query(query, "offset", 0, 0, 1_000_000),
             ))
+        if resource == "asset-attack-graph":
+            if len(tail) != 2:
+                return self._error(404, "resource_not_found")
+            # Only explicitly versioned Core objects are materialized here;
+            # ordinary EvidenceGraph payloads remain ordinary evidence.
+            return self._ok(self.service.asset_attack_graph(
+                run_id,
+                limit=self._int_query(query, "limit", 1000, 1, 10000),
+                offset=self._int_query(query, "offset", 0, 0, 1_000_000),
+            ))
+        if resource == "attack-paths":
+            if len(tail) != 2:
+                return self._error(404, "resource_not_found")
+            graph = self.service.asset_attack_graph(
+                run_id,
+                limit=self._int_query(query, "limit", 1000, 1, 10000),
+                offset=self._int_query(query, "offset", 0, 0, 1_000_000),
+            )
+            return self._ok({
+                "run_id": run_id,
+                "materialized": bool(graph.get("materialized")),
+                "attack_paths": list(graph.get("attack_paths", ())),
+                "edges": list(graph.get("edges", ())),
+                "source_evidence_ids": list(graph.get("source_evidence_ids", ())),
+                "truncated": bool(graph.get("truncated")),
+                "next_offset": graph.get("next_offset"),
+            })
         if resource == "transparency":
             if len(tail) != 2:
                 return self._error(404, "resource_not_found")
-            return self._ok(self.service.inspect_session(run_id, event_limit=self._int_query(query, "limit", 1000, 1, 10000)))
+            projection = self.service.inspect_session(
+                run_id,
+                event_limit=self._int_query(query, "limit", 1000, 1, 10000),
+            )
+            return self._ok({"run_id": run_id, **_jsonable(projection)})
         if resource == "tools":
             if len(tail) != 2:
                 return self._error(404, "resource_not_found")
@@ -278,6 +384,9 @@ class WebApi(ControlRoutesMixin):
             )
             if receipt["status"] == "completed":
                 saved = receipt["response"]
+                replay = self._replay_receipt(saved)
+                if replay is not None:
+                    return replay
                 if isinstance(saved.get("payload"), Mapping):
                     return WebResponse.json(saved["payload"], status=int(saved.get("status", 200)))
                 return WebResponse.json(saved, status=200)
@@ -288,7 +397,7 @@ class WebApi(ControlRoutesMixin):
                 response = self._error(409, "command_result_uncertain")
                 self.service.runtime.store.complete_web_command(
                     command_id,
-                    {"status": response.status, "payload": response.payload()},
+                    self._receipt_payload(response),
                     owner=claim_owner,
                     fencing_token=fencing_token,
                     run_id=run_id,
@@ -308,7 +417,7 @@ class WebApi(ControlRoutesMixin):
             saved_run_id = response_run.get("run_id") or (first_run.get("run_id") if isinstance(first_run, Mapping) else "")
             self.service.runtime.store.complete_web_command(
                 command_id,
-                {"status": response.status, "payload": response_payload},
+                self._receipt_payload(response),
                 owner=claim_owner,
                 fencing_token=fencing_token,
                 run_id=run_id or str(saved_run_id or ""),
@@ -385,7 +494,18 @@ class WebApi(ControlRoutesMixin):
                 str(body.get("from_entry_id") or ""),
                 str(body.get("branch_id") or ""),
             )
-            return self._ok({"entry": _jsonable(entry)})
+            session = _jsonable(self.service.export_session(run_id))
+            metadata = session.get("session", {})
+            active = str(metadata.get("active_branch_id") or "")
+            branches = metadata.get("branches", {})
+            return self._ok({
+                "run_id": run_id,
+                "entry": _jsonable(entry),
+                "branch_id": active,
+                "active_branch_id": active,
+                "branches": branches,
+                "leaf_entry_id": branches.get(active),
+            })
         return self._error(404, "command_not_found")
 
     @staticmethod
@@ -504,204 +624,7 @@ class WebApi(ControlRoutesMixin):
                 return [self._event_projection(item) for item in events]
             time.sleep(0.1)
 
-class _TraceHandler(BaseHTTPRequestHandler):
-    server_version = "TraceWeb/1"
-
-    @property
-    def api(self) -> WebApi:
-        return self.server.api  # type: ignore[attr-defined]
-
-    def _request_boundary(self) -> WebResponse | None:
-        try:
-            host = urlsplit(f"http://{self.headers.get('Host', '')}")
-            hostname = host.hostname or ""
-            if host.username is not None or host.password is not None or host.path or host.query or host.fragment:
-                return self.api._error(400, "invalid_host")
-            bound_host, bound_port = self.server.server_address[:2]
-            if ipaddress.ip_address(bound_host).is_loopback:
-                if hostname.casefold() not in {"localhost", "127.0.0.1", "::1"} or (host.port or 80) != bound_port:
-                    return self.api._error(403, "host_not_allowed")
-            origin_value = self.headers.get("Origin")
-            if origin_value:
-                origin = urlsplit(origin_value)
-                if (
-                    origin.scheme not in {"http", "https"}
-                    or (origin.hostname or "").casefold() != hostname.casefold()
-                    or (origin.port or 80) != (host.port or 80)
-                    or origin.username is not None
-                    or origin.password is not None
-                    or origin.path
-                    or origin.query
-                    or origin.fragment
-                ):
-                    return self.api._error(403, "origin_not_allowed")
-        except ValueError:
-            return self.api._error(400, "invalid_request_origin")
-        return None
-
-    def _body(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length", "0") or 0)
-        if length < 0:
-            raise ValueError("invalid_content_length")
-        if length > MAX_REQUEST_BYTES:
-            raise ValueError("request_body_too_large")
-        if length <= 0:
-            return {}
-        raw = self.rfile.read(length)
-        payload = json.loads(raw.decode("utf-8"))
-        if not isinstance(payload, Mapping):
-            raise TypeError("request_body_must_be_object")
-        return dict(payload)
-
-    def _write(self, response: WebResponse) -> None:
-        self.send_response(response.status)
-        self.send_header("Content-Type", response.content_type)
-        self.send_header("Content-Length", str(len(response.body)))
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Trace-Schema-Version", str(WEB_SCHEMA_VERSION))
-        for name, value in _SECURITY_HEADERS.items():
-            self.send_header(name, value)
-        for name, value in response.headers.items():
-            self.send_header(str(name), str(value))
-        self.end_headers()
-        self.wfile.write(response.body)
-
-    def _reject_post(self, response: WebResponse) -> None:
-        try:
-            length = int(self.headers.get("Content-Length", "0") or 0)
-        except ValueError:
-            length = 0
-        if 0 < length <= MAX_REQUEST_BYTES:
-            previous_timeout = self.connection.gettimeout()
-            try:
-                self.connection.settimeout(5.0)
-                self.rfile.read(length)
-            except OSError:
-                pass
-            finally:
-                self.connection.settimeout(previous_timeout)
-        self._write(response)
-
-    def do_GET(self) -> None:  # noqa: N802
-        boundary_error = self._request_boundary()
-        if boundary_error is not None:
-            self._write(boundary_error)
-            return
-        parsed = urlsplit(self.path)
-        static_file = _STATIC_FILES.get(parsed.path)
-        if static_file is not None:
-            name, content_type = static_file
-            try:
-                body = files("redteam_agent").joinpath("static", name).read_bytes()
-            except (FileNotFoundError, OSError):
-                self._write(self.api._error(404, "static_resource_not_found"))
-                return
-            self._write(WebResponse(200, body, content_type))
-            return
-        accepts_sse = "text/event-stream" in self.headers.get("Accept", "").casefold()
-        if accepts_sse and parsed.path.startswith("/api/runs/") and parsed.path.endswith("/events"):
-            self._write_sse(parsed)
-            return
-        self._write(self.api.dispatch("GET", self.path, headers=self.headers))
-
-    def do_POST(self) -> None:  # noqa: N802
-        boundary_error = self._request_boundary()
-        if boundary_error is not None:
-            self._reject_post(boundary_error)
-            return
-        if self.headers.get_content_type() != "application/json":
-            self._reject_post(self.api._error(415, "application_json_required"))
-            return
-        try:
-            payload = self._body()
-            headers = {str(key).casefold(): str(value) for key, value in self.headers.items()}
-            headers["x-trace-client"] = str(self.client_address[0])
-            self._write(self.api.dispatch("POST", self.path, body=payload, headers=headers))
-        except (ValueError, TypeError, json.JSONDecodeError) as exc:
-            self._write(self.api._error(400, str(exc)))
-
-    def do_DELETE(self) -> None:  # noqa: N802
-        if (boundary_error := self._request_boundary()) is not None:
-            self._reject_post(boundary_error); return
-        try:
-            headers = {str(key).casefold(): str(value) for key, value in self.headers.items()}
-            headers["x-trace-client"] = str(self.client_address[0])
-            self._write(self.api.dispatch("DELETE", self.path, body=self._body(), headers=headers))
-        except (ValueError, TypeError, json.JSONDecodeError) as exc:
-            self._write(self.api._error(400, str(exc)))
-
-    def _write_sse(self, parsed: Any) -> None:
-        if (self.api.control.auth_required or self.api.force_auth) and not self.api.control.authenticated(
-            {str(key).casefold(): str(value) for key, value in self.headers.items()},
-            force=self.api.force_auth,
-        ):
-            self._write(self.api._error(401, "authentication_required"))
-            return
-        segments = [unquote(item) for item in parsed.path.split("/") if item]
-        if len(segments) != 4 or segments[:2] != ["api", "runs"] or segments[3] != "events":
-            self._write(self.api._error(404, "route_not_found"))
-            return
-        query = {key: values[-1] for key, values in parse_qs(parsed.query).items() if values}
-        headers_sent = False
-        try:
-            if self.headers.get("Last-Event-ID"):
-                query = {**query, "after_sequence": self.headers.get("Last-Event-ID", "0")}
-            after = self.api._int_query(query, "after_sequence", 0, 0, 2**63 - 1)
-            wait = float(query.get("wait_seconds", "0") or 0)
-            events = self.api.sse_events(segments[2], after_sequence=after, wait_seconds=wait)
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-            self.send_header("Cache-Control", "no-cache")
-            # This endpoint emits a bounded batch. EOF terminates the batch so
-            # EventSource can reconnect with Last-Event-ID instead of hanging.
-            self.send_header("Connection", "close")
-            self.send_header("X-Trace-Schema-Version", str(WEB_SCHEMA_VERSION))
-            for name, value in _SECURITY_HEADERS.items():
-                self.send_header(name, value)
-            self.end_headers()
-            headers_sent = True
-            event_name = "trace-event" if query.get("channel") == "ui" else ""
-            for event in events:
-                event_type = event_name or str(event["event_type"]).replace("\r", "").replace("\n", "")
-                self.wfile.write(
-                    (
-                        f"id: {event['sequence']}\n"
-                        f"event: {event_type}\n"
-                        f"data: {json.dumps(event, ensure_ascii=False, sort_keys=True, default=str)}\n\n"
-                    ).encode("utf-8")
-                )
-            if not events:
-                self.wfile.write(b": keep-alive\n\n")
-            self.wfile.flush()
-        except Exception as exc:
-            if headers_sent:
-                # The HTTP framing is already committed; keep the stream valid
-                # instead of appending a JSON response after SSE data.
-                try:
-                    self.wfile.write(
-                        (
-                            "event: error\n"
-                            f"data: {json.dumps({'error': str(exc)}, ensure_ascii=False)}\n\n"
-                        ).encode("utf-8")
-                    )
-                    self.wfile.flush()
-                except OSError:
-                    return
-            else:
-                if isinstance(exc, KeyError):
-                    self._write(self.api._error(404, str(exc)))
-                elif isinstance(exc, (ValueError, TypeError)):
-                    self._write(self.api._error(400, str(exc)))
-                else:
-                    self._write(self.api._error(500, f"internal_error:{type(exc).__name__}"))
-
-    def log_message(self, format: str, *args: Any) -> None:
-        return
-
-class TraceHTTPServer(ThreadingHTTPServer):
-    def __init__(self, address: tuple[str, int], api: WebApi) -> None:
-        super().__init__(address, _TraceHandler)
-        self.api = api
+from .web_server import TraceHTTPServer
 
 def model_provider_from_environment(
     environ: Mapping[str, str] | None = None,

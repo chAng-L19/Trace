@@ -31,6 +31,37 @@ def test_provider_control_plane_is_redacted_and_switches_model(tmp_path: Path) -
     service.close()
 
 
+def test_editing_active_provider_rebinds_agent_model(tmp_path: Path) -> None:
+    service = AgentService(root=tmp_path / "runtime")
+    api = WebApi(service)
+    _payload(api.dispatch("POST", "/api/providers", body={
+        "provider_id": "fixture", "name": "Fixture", "base_url": "http://127.0.0.1:9/v1", "model": "one", "api_key": "first",
+    }))
+    _payload(api.dispatch("POST", "/api/providers/active", body={"provider_id": "fixture"}))
+    assert service.model_loop is not None and service.model_loop.model_name == "one"
+    _payload(api.dispatch("POST", "/api/providers", body={
+        "provider_id": "fixture", "name": "Fixture", "base_url": "http://127.0.0.1:9/v1", "model": "two", "api_key": "second",
+    }))
+    assert service.model_loop is not None and service.model_loop.model_name == "two"
+    assert api.control.provider_secret("fixture") == "second"
+    service.close()
+
+
+def test_control_writes_replay_completed_command_receipts(tmp_path: Path) -> None:
+    service = AgentService(root=tmp_path / "runtime")
+    api = WebApi(service)
+    body = {
+        "provider_id": "fixture", "name": "Fixture", "base_url": "http://127.0.0.1:9/v1", "model": "trace-model",
+    }
+    first = api.dispatch("POST", "/api/providers", body=body, headers={"x-command-id": "provider-save-1"})
+    replay = api.dispatch("POST", "/api/providers", body=body, headers={"x-command-id": "provider-save-1"})
+    assert first.status == replay.status == 201
+    assert first.payload() == replay.payload()
+    with service.runtime.store.connection() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM trace_providers WHERE provider_id='fixture'").fetchone()[0] == 1
+    service.close()
+
+
 def test_skill_and_mcp_settings_round_trip(tmp_path: Path) -> None:
     root = tmp_path / "runtime"
     skill = root / "skills" / "web"
@@ -41,6 +72,8 @@ def test_skill_and_mcp_settings_round_trip(tmp_path: Path) -> None:
     skills = _payload(api.dispatch("GET", "/api/skills"))["skills"]
     skill_id = next(item["resource_id"] for item in skills if item["source"].endswith("SKILL.md"))
     assert _payload(api.dispatch("POST", f"/api/skills/{skill_id}", body={"enabled": False}))["skill"]["enabled"] is False
+    configured = _payload(api.dispatch("POST", f"/api/skills/{skill_id}", body={"config": {"mode": "audit", "depth": 2}}))
+    assert configured["skill"]["config"] == {"mode": "audit", "depth": 2}
     server = _payload(api.dispatch("POST", "/api/mcp", body={"server_id": "fixture", "transport": "stdio", "command": "python", "args": ["-c", "pass"], "headers": {"Authorization": "Bearer fixture-secret"}}))
     assert server["server"]["server_id"] == "fixture"
     assert (root / "managed-mcp.toml").is_file()

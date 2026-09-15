@@ -121,6 +121,67 @@ def test_conversation_projection_includes_active_branch(tmp_path: Path) -> None:
     assert set(response["tree"]["nodes"]) >= set(response["session"]["branches"].values()) - {None}
 
 
+def test_conversation_branch_and_checkout_routes_use_journal(tmp_path: Path) -> None:
+    with _server(tmp_path) as (server, service):
+        run_id = service.start({"session_id": "conversation-branch", "objective": "Inspect branch state"}).single.run.run_id
+        status, payload = _request(server, "GET", f"/api/conversations/{run_id}")
+        assert status == 200
+        tree = json.loads(payload)["tree"]["nodes"]
+        entry_id = next(iter(tree))
+        status, payload = _request(
+            server, "POST", f"/api/conversations/{run_id}/fork",
+            json.dumps({"from_entry_id": entry_id, "branch_id": "review"}).encode(),
+        )
+        assert status == 200
+        status, payload = _request(
+            server, "POST", f"/api/conversations/{run_id}/checkout",
+            json.dumps({"branch_id": "main"}).encode(),
+        )
+    assert status == 200
+    response = json.loads(payload)
+    assert response["branch_id"] == "main"
+    assert response["run_id"] == run_id
+
+
+def test_attack_graph_routes_are_typed_and_empty_without_contract_objects(tmp_path: Path) -> None:
+    with _server(tmp_path) as (server, service):
+        run_id = service.start({"session_id": "attack-graph-http", "objective": "Inspect typed graph"}).single.run.run_id
+        status, graph_body = _request(server, "GET", f"/api/runs/{run_id}/asset-attack-graph")
+        assert status == 200
+        status, paths_body = _request(server, "GET", f"/api/runs/{run_id}/attack-paths")
+
+    graph = json.loads(graph_body)
+    paths = json.loads(paths_body)
+    assert graph["run_id"] == run_id
+    assert graph["materialized"] is False
+    assert graph["assets"] == []
+    assert graph["findings"] == []
+    assert graph["attack_paths"] == []
+    assert paths["run_id"] == run_id
+    assert paths["materialized"] is False
+    assert paths["attack_paths"] == []
+
+
+def test_fork_returns_active_branch_and_branch_heads(tmp_path: Path) -> None:
+    with _server(tmp_path) as (server, service):
+        run_id = service.start({"session_id": "fork-meta-http", "objective": "Inspect fork metadata"}).single.run.run_id
+        _, payload = _request(server, "GET", f"/api/conversations/{run_id}")
+        entry_id = next(iter(json.loads(payload)["tree"]["nodes"]))
+        status, payload = _request(
+            server,
+            "POST",
+            f"/api/conversations/{run_id}/fork",
+            json.dumps({"from_entry_id": entry_id, "branch_id": "review"}).encode(),
+        )
+
+    response = json.loads(payload)
+    assert status == 200
+    assert response["run_id"] == run_id
+    assert response["active_branch_id"] == "review"
+    assert response["branches"]["review"] == entry_id
+    assert response["leaf_entry_id"] == entry_id
+
+
 def test_browser_workbench_fits_narrow_mobile_viewport(tmp_path: Path) -> None:
     sync_api = pytest.importorskip("playwright.sync_api")
     with _server(tmp_path) as (server, _):
@@ -192,6 +253,9 @@ def test_browser_workbench_controls_agent_service(tmp_path: Path) -> None:
             page.locator('[data-command="run"]').click()
             page.locator("#run-status").filter(has_text="等待 Worker").wait_for()
             assert service.status(run_id).run.status == "waiting_worker"
+            page.get_by_role("tab", name="攻击路径", exact=True).click()
+            page.wait_for_function("() => document.querySelector('#attack-view')?.textContent.includes('run_id')", timeout=5000)
+            assert '"run_id"' in page.locator("#attack-view").inner_text()
 
             page.get_by_role("button", name="预算", exact=True).click()
             page.locator('#budget-form [name="actions"]').fill("3")

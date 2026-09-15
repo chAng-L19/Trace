@@ -11,6 +11,7 @@ from .models import LeaseToken, OperationState, RunBudget, SuccessPredicate, Tas
 from .terminal_judge import OperationResult
 from .plan import PlanRevision
 from .security import find_secret_references, project_sensitive
+from .pause_reasons import BUDGET_PAUSE_REASONS
 
 
 class OperationLifecycleMixin:
@@ -258,6 +259,8 @@ class OperationLifecycleMixin:
             state = self.store.load_operation(run_id) or initial
             if state.status in {"completed", "failed", "failed_integrity", "cancelled"}:
                 raise ValueError(f"operation_terminal:{state.status}")
+            previous_pause_reason = state.budget.pause_reason
+            operator_pause = state.status == "paused_budget" and previous_pause_reason not in BUDGET_PAUSE_REASONS
             if state.budget.apply_delta(
                 actions=actions,
                 tokens=tokens,
@@ -265,7 +268,13 @@ class OperationLifecycleMixin:
                 deadline=deadline,
                 acknowledge_missing_usage=acknowledge_missing_usage,
             ):
-                if state.status == "paused_budget" and not state.budget.exhaustion_reason():
+                if operator_pause:
+                    state.budget.pause(previous_pause_reason)
+                elif (
+                    state.status == "paused_budget"
+                    and previous_pause_reason in BUDGET_PAUSE_REASONS
+                    and not state.budget.exhaustion_reason()
+                ):
                     state.status = "running"
                 self.store.save_operation(
                     state,

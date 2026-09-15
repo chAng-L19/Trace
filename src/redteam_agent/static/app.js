@@ -35,6 +35,8 @@ function commandId() {
   return globalThis.crypto?.randomUUID?.() || `cmd-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function commandHeaders() { return { "X-Command-ID": commandId() }; }
+
 async function api(path, options = {}) {
   const headers = { Accept: "application/json", ...(options.headers || {}) };
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
@@ -133,9 +135,9 @@ async function loadProviders() {
     const edit = document.createElement("button"); edit.type = "button"; edit.textContent = "编辑";
     edit.addEventListener("click", () => openProviderEditor(item));
     const activate = document.createElement("button"); activate.type = "button"; activate.textContent = item.active ? "当前模型" : "切换"; activate.disabled = item.active;
-    activate.addEventListener("click", async () => { await api("/api/providers/active", { method: "POST", body: JSON.stringify({ provider_id: item.provider_id }) }); showNotice("Provider 已切换"); await loadControl(); await loadSystem(); });
+    activate.addEventListener("click", async () => { await api("/api/providers/active", { method: "POST", headers: commandHeaders(), body: JSON.stringify({ provider_id: item.provider_id }) }); showNotice("Provider 已切换"); await loadControl(); await loadSystem(); });
     const remove = document.createElement("button"); remove.type = "button"; remove.className = "danger"; remove.textContent = "删除";
-    remove.addEventListener("click", async () => { if (!confirm("确认删除此 Provider？")) return; await api(`/api/providers/${encodeURIComponent(item.provider_id)}`, { method: "DELETE" }); await loadProviders(); });
+    remove.addEventListener("click", async () => { if (!confirm("确认删除此 Provider？")) return; await api(`/api/providers/${encodeURIComponent(item.provider_id)}`, { method: "DELETE", headers: commandHeaders() }); await loadProviders(); });
     actions.append(edit, activate, remove); row.append(main, actions); return row;
   });
 }
@@ -160,9 +162,32 @@ async function loadSkills() {
     const meta = document.createElement("code"); meta.textContent = `${item.byte_count} bytes · ${item.content_hash.slice(0, 12)}`;
     main.append(title, meta);
     const toggle = document.createElement("button"); toggle.type = "button"; toggle.textContent = item.enabled ? "已启用" : "已停用"; toggle.className = item.enabled ? "primary" : "quiet";
-    toggle.addEventListener("click", async () => { await api(`/api/skills/${encodeURIComponent(item.resource_id)}`, { method: "POST", body: JSON.stringify({ enabled: !item.enabled }) }); await loadSkills(); });
-    row.append(main, toggle); return row;
+    toggle.addEventListener("click", async () => { await api(`/api/skills/${encodeURIComponent(item.resource_id)}`, { method: "POST", headers: commandHeaders(), body: JSON.stringify({ enabled: !item.enabled }) }); await loadSkills(); });
+    const edit = document.createElement("button"); edit.type = "button"; edit.textContent = "配置";
+    edit.addEventListener("click", () => openSkillEditor(item));
+    const actions = document.createElement("div"); actions.className = "button-row"; actions.append(edit, toggle);
+    row.append(main, actions); return row;
   });
+}
+
+function openSkillEditor(item) {
+  $("#skill-id").value = item.resource_id || "";
+  $("#skill-name").textContent = `${item.resource_id || "Skill"} · ${item.byte_count || 0} bytes`;
+  $("#skill-config").value = safeJson(item.config || {});
+  $("#skill-dialog").showModal();
+}
+
+async function submitSkill(event) {
+  event.preventDefault();
+  if (event.submitter?.value === "cancel") return $("#skill-dialog").close();
+  const id = String($("#skill-id").value || "");
+  let config;
+  try { config = JSON.parse(String($("#skill-config").value || "{}")); } catch (_) { showNotice("Skill 配置 JSON 无效", true); return; }
+  if (!config || Array.isArray(config) || typeof config !== "object") { showNotice("Skill 配置必须是 JSON 对象", true); return; }
+  try {
+    await api(`/api/skills/${encodeURIComponent(id)}`, { method: "POST", headers: commandHeaders(), body: JSON.stringify({ config }) });
+    $("#skill-dialog").close(); await loadSkills(); showNotice("Skill 配置已保存");
+  } catch (error) { showNotice(error.message, true); }
 }
 
 async function loadMcp() {
@@ -177,7 +202,7 @@ async function loadMcp() {
     const edit = document.createElement("button"); edit.type = "button"; edit.textContent = "编辑";
     edit.addEventListener("click", () => openMcpEditor(item));
     const remove = document.createElement("button"); remove.type = "button"; remove.className = "danger"; remove.textContent = "移除";
-    remove.addEventListener("click", async () => { if (!confirm("确认移除 MCP 服务器？")) return; await api(`/api/mcp/${encodeURIComponent(item.server_id)}`, { method: "DELETE" }); await loadMcp(); });
+    remove.addEventListener("click", async () => { if (!confirm("确认移除 MCP 服务器？")) return; await api(`/api/mcp/${encodeURIComponent(item.server_id)}`, { method: "DELETE", headers: commandHeaders() }); await loadMcp(); });
     actions.append(edit, remove); row.append(main, actions); return row;
   });
 }
@@ -199,13 +224,36 @@ async function loadConversations() {
     const row = document.createElement("article"); row.className = "setting-row";
     const main = document.createElement("div"); main.className = "setting-main";
     const title = document.createElement("strong"); title.textContent = valueOr(item.run?.goal?.objective, item.run?.run?.session_id);
-    const meta = document.createElement("code"); meta.textContent = `${item.run?.run?.run_id || "-"} · ${item.message_count || 0} messages`;
+    const session = item.session || {};
+    const activeBranch = String(session.active_branch_id || "main");
+    const branches = session.branches && typeof session.branches === "object" ? session.branches : {};
+    const meta = document.createElement("code"); meta.textContent = `${item.run?.run?.run_id || "-"} · ${item.message_count || 0} messages · 当前分支 ${activeBranch}`;
     main.append(title, meta);
+    const branchHeads = document.createElement("small");
+    branchHeads.className = "setting-detail";
+    branchHeads.textContent = `分支头：${Object.entries(branches).map(([id, leaf]) => `${id}=${leaf || "空"}`).join(" · ") || "main=空"}`;
+    main.append(branchHeads);
     const actions = document.createElement("div"); actions.className = "button-row";
     const open = document.createElement("button"); open.type = "button"; open.textContent = "打开"; open.addEventListener("click", () => { setView("runs"); loadRun(item.run?.run?.run_id); });
     const fork = document.createElement("button"); fork.type = "button"; fork.textContent = "分支";
     fork.addEventListener("click", () => openForkEditor(item.run?.run?.run_id));
-    actions.append(open, fork); row.append(main, actions); return row;
+    const checkout = document.createElement("select");
+    checkout.setAttribute("aria-label", "切换会话分支");
+    Object.keys(branches).sort().forEach((branchId) => {
+      const option = document.createElement("option"); option.value = branchId; option.textContent = branchId; option.selected = branchId === activeBranch; checkout.append(option);
+    });
+    checkout.disabled = Object.keys(branches).length < 2;
+    checkout.addEventListener("change", async () => {
+      const runId = item.run?.run?.run_id;
+      try {
+        await api(`/api/conversations/${encodeURIComponent(runId)}/checkout`, {
+          method: "POST", headers: commandHeaders(), body: JSON.stringify({ branch_id: checkout.value }),
+        });
+        await loadConversations();
+        showNotice(`已切换到分支 ${checkout.value}`);
+      } catch (error) { showNotice(error.message, true); checkout.value = activeBranch; }
+    });
+    actions.append(open, fork, checkout); row.append(main, actions); return row;
   });
 }
 
@@ -234,13 +282,14 @@ async function submitFork(event) {
   const data = new FormData(event.currentTarget);
   const runId = String(data.get("run_id") || "");
   try {
-    await api(`/api/conversations/${encodeURIComponent(runId)}/fork`, {
+    const result = await api(`/api/conversations/${encodeURIComponent(runId)}/fork`, {
       method: "POST",
+      headers: commandHeaders(),
       body: JSON.stringify({ from_entry_id: data.get("from_entry_id"), branch_id: data.get("branch_id") }),
     });
     $("#fork-dialog").close();
     await loadConversations();
-    showNotice("会话分支已创建");
+    showNotice(`会话分支已创建：${result.active_branch_id || data.get("branch_id")}`);
   } catch (error) { showNotice(error.message, true); }
 }
 
@@ -290,7 +339,7 @@ async function submitProvider(event) {
   const form = event.currentTarget; const data = new FormData(form); const payload = Object.fromEntries(data.entries());
   payload.timeout_seconds = Number(payload.timeout_seconds); payload.max_context_tokens = Number(payload.max_context_tokens);
   payload.clear_api_key = data.get("clear_api_key") === "on";
-  try { await api("/api/providers", { method: "POST", body: JSON.stringify(payload) }); $("#provider-dialog").close(); form.reset(); await loadProviders(); showNotice("Provider 已保存"); } catch (error) { showNotice(error.message, true); }
+  try { await api("/api/providers", { method: "POST", headers: commandHeaders(), body: JSON.stringify(payload) }); $("#provider-dialog").close(); form.reset(); await loadProviders(); showNotice("Provider 已保存"); } catch (error) { showNotice(error.message, true); }
 }
 
 async function submitMcp(event) {
@@ -301,7 +350,7 @@ async function submitMcp(event) {
     if (!raw) { delete payload[field]; continue; }
     try { payload[field] = JSON.parse(raw); } catch (error) { showNotice(`${field} JSON 无效`, true); return; }
   }
-  try { await api("/api/mcp", { method: "POST", body: JSON.stringify(payload) }); $("#mcp-dialog").close(); form.reset(); await loadMcp(); showNotice("MCP 已保存"); } catch (error) { showNotice(error.message, true); }
+  try { await api("/api/mcp", { method: "POST", headers: commandHeaders(), body: JSON.stringify(payload) }); $("#mcp-dialog").close(); form.reset(); await loadMcp(); showNotice("MCP 已保存"); } catch (error) { showNotice(error.message, true); }
 }
 
 async function loadRuns({ keepSelection = true } = {}) {
@@ -415,6 +464,7 @@ function renderView() {
   $('[data-command="run"]').disabled = terminal || paused || run.status === "cancelling";
   $('[data-command="pause"]').disabled = terminal || paused || run.status === "created" || run.status === "cancelling";
   $('[data-command="resume"]').disabled = terminal || !paused;
+  $('[data-command="observation"]').disabled = terminal || run.status === "created" || run.status === "cancelling";
   $('[data-command="cancel"]').disabled = terminal || run.status === "cancelling";
   $("#open-budget").disabled = terminal;
   for (const button of $$('[data-command]')) {
@@ -569,6 +619,18 @@ async function loadTab(tab, append = false) {
       if (tab === "evidence") renderRecords($("#evidence-list"), records, "evidence_id", "artifact_type");
       else if (tab === "artifacts") renderArtifacts(records);
       else renderTranscript(records);
+    } else if (tab === "tools") {
+      const result = await api(`/api/runs/${id}/tools`);
+      if (!current()) return;
+      $("#tools-view").textContent = safeJson(result);
+    } else if (tab === "attack") {
+      const result = await api(`/api/runs/${id}/asset-attack-graph`);
+      if (!current()) return;
+      $("#attack-view").textContent = safeJson(result);
+    } else if (tab === "transparency") {
+      const result = await api(`/api/runs/${id}/transparency?limit=1000`);
+      if (!current()) return;
+      $("#transparency-view").textContent = safeJson(result);
     } else if (tab === "report") {
       const result = await api(`/api/runs/${id}/report`);
       if (!current()) return;
@@ -702,6 +764,27 @@ async function submitBudget(event) {
   await postCommand("budget", body);
 }
 
+function openObservationEditor() {
+  if (!state.selectedId) return;
+  $("#observation-json").value = safeJson({
+    action_id: valueOr(state.view?.handoff?.action_id, state.view?.next_action, ""),
+    output: {},
+    tool: "host-agent",
+    continue_run: true,
+  });
+  $("#observation-dialog").showModal();
+}
+
+async function submitObservation(event) {
+  event.preventDefault();
+  if (event.submitter?.value === "cancel") return $("#observation-dialog").close();
+  let observation;
+  try { observation = JSON.parse(String($("#observation-json").value || "{}")); } catch (_) { showNotice("观察 JSON 无效", true); return; }
+  if (!observation || Array.isArray(observation) || typeof observation !== "object") { showNotice("观察必须是 JSON 对象", true); return; }
+  $("#observation-dialog").close();
+  await postCommand("observation", { observation: { ...observation, idempotency_key: observation.idempotency_key || commandId() } });
+}
+
 function exportReport() {
   if (!state.report || state.report.run?.run?.run_id !== state.selectedId) return;
   const blob = new Blob([safeJson(state.report)], { type: "application/json" });
@@ -724,13 +807,15 @@ function bind() {
   $("#login-form").addEventListener("submit", login);
   $("#add-provider").addEventListener("click", () => openProviderEditor());
   $("#provider-form").addEventListener("submit", submitProvider);
+  $("#skill-form").addEventListener("submit", submitSkill);
   $("#add-mcp").addEventListener("click", () => $("#mcp-dialog").showModal());
   $("#mcp-form").addEventListener("submit", submitMcp);
   $("#refresh-skills").addEventListener("click", loadSkills);
   $("#refresh-mcp").addEventListener("click", loadMcp);
   $("#refresh-conversations").addEventListener("click", loadConversations);
   $("#fork-form").addEventListener("submit", submitFork);
-  $("#reload-system").addEventListener("click", async () => { await api("/api/system/reload", { method: "POST", body: "{}" }); await loadControl(); showNotice("MCP 配置已重载"); });
+  $("#observation-form").addEventListener("submit", submitObservation);
+  $("#reload-system").addEventListener("click", async () => { await api("/api/system/reload", { method: "POST", headers: commandHeaders(), body: "{}" }); await loadControl(); showNotice("MCP 配置已重载"); });
   $("#new-run").addEventListener("click", openCreateDialog);
   $("#empty-new-run").addEventListener("click", openCreateDialog);
   $("#refresh-runs").addEventListener("click", () => loadRuns());
@@ -743,6 +828,7 @@ function bind() {
   $$('[data-more]').forEach((button) => button.addEventListener("click", () => loadTab(button.dataset.more, true)));
   $$('[data-command]').forEach((button) => button.addEventListener("click", () => {
     const command = button.dataset.command;
+    if (command === "observation") return openObservationEditor();
     if (command === "cancel" && !globalThis.confirm("确认取消此运行？")) return;
     postCommand(command, command === "resume" ? { execute: true } : {});
   }));

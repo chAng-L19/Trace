@@ -68,15 +68,27 @@ class ControlRoutesMixin:
             if method == "GET" and not identifier:
                 return self._ok({"providers": self.control.providers()})
             if method == "POST" and not identifier:
-                return self._ok({"provider": self.control.save_provider(body)}, status=201)
+                saved = self.service.control_write(self.control.save_provider, body)
+                # Provider persistence and the active model loop must move as
+                # one control-plane operation.  Otherwise editing an active
+                # key/model silently leaves future turns on the old instance.
+                if saved["active"]:
+                    self.service.configure_model(
+                        OpenAICompatibleProvider(
+                            saved["base_url"], saved["model"], self.control.provider_secret(saved["provider_id"]),
+                            timeout_seconds=saved["timeout_seconds"], max_context_tokens=saved["max_context_tokens"],
+                        ),
+                        model_name=saved["model"],
+                    )
+                return self._ok({"provider": saved}, status=201)
             if method == "POST" and identifier == "active":
-                saved = self.control.activate_provider(str(body.get("provider_id") or ""))
+                saved = self.service.control_write(self.control.activate_provider, str(body.get("provider_id") or ""))
                 provider = OpenAICompatibleProvider(saved["base_url"], saved["model"], self.control.provider_secret(saved["provider_id"]), timeout_seconds=saved["timeout_seconds"], max_context_tokens=saved["max_context_tokens"])
                 self.service.configure_model(provider, model_name=saved["model"])
                 return self._ok({"provider": saved})
             if identifier and method == "DELETE":
                 was_active = self.control.provider(identifier)["active"]
-                self.control.delete_provider(identifier)
+                self.service.control_write(self.control.delete_provider, identifier)
                 if was_active:
                     self.service.configure_model(None)
                 return self._ok({"deleted": identifier})
@@ -87,7 +99,7 @@ class ControlRoutesMixin:
                 return self._ok({"skills": self.control.skills()})
             if method == "POST" and identifier:
                 config = body.get("config") if isinstance(body.get("config"), Mapping) else {}
-                return self._ok({"skill": self.control.set_skill(identifier, enabled=bool(body.get("enabled", True)), config=config)})
+                return self._ok({"skill": self.service.control_write(self.control.set_skill, identifier, enabled=bool(body.get("enabled", True)), config=config)})
         if domain == "mcp":
             if method == "GET" and not identifier:
                 statuses = self.service.runtime.broker.server_statuses()
@@ -96,19 +108,27 @@ class ControlRoutesMixin:
                     item["status"] = statuses.get(item["server_id"], item["status"])
                 return self._ok({"servers": items, "tools": len(self.service.runtime.broker.descriptors())})
             if method == "POST" and not identifier:
-                saved = self.control.save_mcp(body)
+                saved = self.service.control_write(self.control.save_mcp, body)
                 self._reload_control_plane()
                 return self._ok({"server": saved}, status=201)
             if method == "POST" and identifier == "refresh":
                 return self._ok(self._reload_control_plane())
             if method == "DELETE" and identifier:
-                self.control.delete_mcp(identifier)
+                self.service.control_write(self.control.delete_mcp, identifier)
                 self._reload_control_plane()
                 return self._ok({"deleted": identifier})
         if domain == "conversations":
             if method == "GET" and not identifier:
                 runs = self.service.list_runs(limit=100, offset=0)
-                return self._ok({"conversations": [{"run": self._run_projection(item), "message_count": len(self.service.transcript(item.run.run_id))} for item in runs]})
+                conversations = []
+                for item in runs:
+                    session = _jsonable(self.service.export_session(item.run.run_id))
+                    conversations.append({
+                        "run": self._run_projection(item),
+                        "message_count": len(self.service.transcript(item.run.run_id)),
+                        "session": session.get("session", {}),
+                    })
+                return self._ok({"conversations": conversations})
             if identifier and method == "GET":
                 self.service.status(identifier)
                 # Include the journal projection alongside the tree so clients can
@@ -124,11 +144,52 @@ class ControlRoutesMixin:
                 })
             if identifier and method == "POST" and tail[1:] and tail[1] == "fork":
                 entry = self.service.fork_session(identifier, str(body.get("from_entry_id") or ""), str(body.get("branch_id") or ""))
-                return self._ok({"entry": _jsonable(entry)})
+                session = _jsonable(self.service.export_session(identifier))
+                metadata = session.get("session", {})
+                active = str(metadata.get("active_branch_id") or "")
+                branches = metadata.get("branches", {})
+                return self._ok({
+                    "run_id": identifier,
+                    "entry": _jsonable(entry),
+                    "branch_id": active,
+                    "active_branch_id": active,
+                    "branches": branches,
+                    "leaf_entry_id": branches.get(active),
+                })
+            if identifier and method == "POST" and tail[1:] and tail[1] == "branch":
+                entry = self.service.branch_session(
+                    identifier,
+                    str(body.get("from_entry_id") or ""),
+                    expected_leaf_id=str(body.get("expected_leaf_id") or "") or None,
+                )
+                session = _jsonable(self.service.export_session(identifier))
+                metadata = session.get("session", {})
+                active = str(metadata.get("active_branch_id") or "")
+                branches = metadata.get("branches", {})
+                return self._ok({
+                    "run_id": identifier,
+                    "entry": _jsonable(entry),
+                    "branch_id": active,
+                    "active_branch_id": active,
+                    "branches": branches,
+                    "leaf_entry_id": branches.get(active),
+                })
+            if identifier and method == "POST" and tail[1:] and tail[1] == "checkout":
+                branch_id = str(body.get("branch_id") or "").strip()
+                leaf_id = self.service.checkout_session(identifier, branch_id)
+                session = _jsonable(self.service.export_session(identifier))
+                metadata = session.get("session", {})
+                return self._ok({
+                    "run_id": identifier,
+                    "branch_id": branch_id,
+                    "active_branch_id": metadata.get("active_branch_id", branch_id),
+                    "branches": metadata.get("branches", {}),
+                    "leaf_entry_id": leaf_id,
+                })
         return self._error(404, "resource_not_found")
 
     def _reload_control_plane(self) -> dict[str, Any]:
-        path = self.control.write_mcp_config()
+        path = self.service.control_write(self.control.write_mcp_config)
         self.service.runtime.broker.set_secret_bindings(self.control.mcp_secret_bindings())
         self.service.runtime.broker.register_config_paths((path,))
         self.service.runtime.broker.refresh(force=True)

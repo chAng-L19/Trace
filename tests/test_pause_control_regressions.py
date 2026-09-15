@@ -94,3 +94,28 @@ def test_batch_budget_delta_is_atomic_when_one_run_is_cancelled(tmp_path: Path) 
         assert cancelled_after.run.state_version == cancelled_before.run.state_version
     finally:
         service.close()
+
+
+def test_budget_delta_does_not_clear_operator_pause(tmp_path: Path) -> None:
+    service = AgentService(root=tmp_path / "runtime")
+    try:
+        run_id = service.start({"session_id": "budget-operator-pause", "objective": "Prepare a plan"}).single.run.run_id
+        service.pause(run_id, reason="manual_review")
+        result = service.apply_budget_delta(run_id, actions=1)
+        assert result.run.status == "paused_budget"
+        assert result.run.budget.pause_reason == "manual_review"
+    finally:
+        service.close()
+
+
+def test_batch_budget_delta_does_not_clear_operator_pause(tmp_path: Path) -> None:
+    service = AgentService(root=tmp_path / "runtime")
+    try:
+        run_id = service.start({"session_id": "batch-operator-pause", "objective": "Prepare a plan"}).single.run.run_id
+        service.pause(run_id, reason="operator_pause")
+        service.apply_budget_delta_batch([run_id], actions=1)
+        result = service.status(run_id)
+        assert result.run.status == "paused_budget"
+        assert result.run.budget.pause_reason == "operator_pause"
+    finally:
+        service.close()

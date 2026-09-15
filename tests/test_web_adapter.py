@@ -39,6 +39,20 @@ def test_web_start_and_run_projection_are_versioned(tmp_path: Path) -> None:
     service.close()
 
 
+def test_web_tools_and_transparency_routes_project_agent_service(tmp_path: Path) -> None:
+    target = tmp_path / "target.txt"
+    target.write_text("web-fixture", encoding="utf-8")
+    service = AgentService(root=tmp_path / "runtime")
+    api = WebApi(service)
+    started = api.dispatch("POST", "/api/runs", body=_start_body("web-inspection", target)).payload()
+    run_id = started["runs"][0]["run"]["run_id"]
+    tools = api.dispatch("GET", f"/api/runs/{run_id}/tools")
+    transparency = api.dispatch("GET", f"/api/runs/{run_id}/transparency")
+    assert tools.status == 200 and tools.payload()["run_id"] == run_id
+    assert transparency.status == 200 and transparency.payload()["run_id"] == run_id
+    service.close()
+
+
 def test_web_run_projection_omits_evidence_payload_by_default() -> None:
     projected = WebApi._run_projection(
         {

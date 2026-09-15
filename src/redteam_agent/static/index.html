@@ -75,6 +75,7 @@
             <button class="primary" data-command="run" type="button">运行</button>
             <button data-command="pause" type="button">暂停</button>
             <button data-command="resume" type="button">恢复</button>
+            <button data-command="observation" type="button">提交观察</button>
             <button id="open-budget" type="button">预算</button>
             <button class="danger" data-command="cancel" type="button">取消</button>
           </div>
@@ -107,6 +108,9 @@
           <button role="tab" aria-selected="false" data-tab="evidence" type="button">证据</button>
           <button role="tab" aria-selected="false" data-tab="artifacts" type="button">产物</button>
           <button role="tab" aria-selected="false" data-tab="transcript" type="button">会话</button>
+          <button role="tab" aria-selected="false" data-tab="tools" type="button">工具</button>
+          <button role="tab" aria-selected="false" data-tab="attack" type="button">攻击路径</button>
+          <button role="tab" aria-selected="false" data-tab="transparency" type="button">透明度</button>
           <button role="tab" aria-selected="false" data-tab="report" type="button">报告</button>
         </nav>
 
@@ -136,6 +140,18 @@
             <div class="panel-heading"><div><h3>Transcript</h3><p>完整模型与工具会话</p></div></div>
             <div class="transcript" id="transcript-list"></div>
             <button type="button" data-more="transcript" hidden>加载更多会话</button>
+          </section>
+          <section class="tab-panel" role="tabpanel" data-panel="tools" hidden>
+            <div class="panel-heading"><div><h3>工具可见性</h3><p>当前运行可发现与可调用的工具目录</p></div></div>
+            <pre class="json-view" id="tools-view"></pre>
+          </section>
+          <section class="tab-panel" role="tabpanel" data-panel="attack" hidden>
+            <div class="panel-heading"><div><h3>AssetAttackGraph</h3><p>仅展示经 Core contract 验证的资产、发现和攻击路径</p></div></div>
+            <pre class="json-view" id="attack-view"></pre>
+          </section>
+          <section class="tab-panel" role="tabpanel" data-panel="transparency" hidden>
+            <div class="panel-heading"><div><h3>运行透明度</h3><p>上下文、模型回合、预算和事件的可追溯投影</p></div></div>
+            <pre class="json-view" id="transparency-view"></pre>
           </section>
           <section class="tab-panel" role="tabpanel" data-panel="report" hidden>
             <div class="panel-heading">
@@ -226,6 +242,16 @@
     </form>
   </dialog>
 
+  <dialog id="skill-dialog" aria-labelledby="skill-title">
+    <form id="skill-form" method="dialog">
+      <div class="dialog-heading"><h2 id="skill-title">Skill 配置</h2><button class="icon-button" value="cancel" aria-label="关闭" type="submit" formnovalidate>×</button></div>
+      <input id="skill-id" name="skill_id" type="hidden">
+      <p class="dialog-copy" id="skill-name"></p>
+      <label>配置 JSON<textarea id="skill-config" name="config" rows="10" spellcheck="false" placeholder="{}"></textarea></label>
+      <div class="dialog-actions"><button value="cancel" type="submit" formnovalidate>取消</button><button class="primary" value="default" type="submit">保存配置</button></div>
+    </form>
+  </dialog>
+
   <dialog id="mcp-dialog" aria-labelledby="mcp-title">
     <form id="mcp-form" method="dialog">
       <div class="dialog-heading"><h2 id="mcp-title">MCP 服务器</h2><button class="icon-button" value="cancel" aria-label="关闭" type="submit" formnovalidate>×</button></div>
@@ -249,6 +275,15 @@
       <label>分支起点<select id="fork-entry" name="from_entry_id" required></select></label>
       <label>分支 ID<input id="fork-branch-id" name="branch_id" required maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9._-]*"></label>
       <div class="dialog-actions"><button value="cancel" type="submit" formnovalidate>取消</button><button class="primary" value="default" type="submit">创建分支</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="observation-dialog" aria-labelledby="observation-title">
+    <form id="observation-form" method="dialog">
+      <div class="dialog-heading"><h2 id="observation-title">提交 Worker 观察</h2><button class="icon-button" value="cancel" aria-label="关闭" type="submit" formnovalidate>×</button></div>
+      <p class="dialog-copy">观察先进入 Observation，再由 Runtime 验证和晋升为证据。</p>
+      <label>观察 JSON<textarea id="observation-json" name="observation" rows="12" required spellcheck="false" placeholder='{"outcome":"progressed","summary":"..."}'></textarea></label>
+      <div class="dialog-actions"><button value="cancel" type="submit" formnovalidate>取消</button><button class="primary" value="default" type="submit">提交</button></div>
     </form>
   </dialog>
 
