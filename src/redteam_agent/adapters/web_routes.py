@@ -111,7 +111,17 @@ class ControlRoutesMixin:
                 return self._ok({"conversations": [{"run": self._run_projection(item), "message_count": len(self.service.transcript(item.run.run_id))} for item in runs]})
             if identifier and method == "GET":
                 self.service.status(identifier)
-                return self._ok({"run_id": identifier, "tree": _jsonable(self.service.session_tree(identifier)), "messages": [_jsonable(item) for item in self.service.transcript(identifier)]})
+                # Include the journal projection alongside the tree so clients can
+                # render the active branch and branch heads without a second,
+                # provider-specific query.  The tree remains unchanged for
+                # backwards compatibility.
+                session = _jsonable(self.service.export_session(identifier))
+                return self._ok({
+                    "run_id": identifier,
+                    "session": session.get("session", {}),
+                    "tree": session.get("tree", {}),
+                    "messages": [_jsonable(item) for item in self.service.transcript(identifier)],
+                })
             if identifier and method == "POST" and tail[1:] and tail[1] == "fork":
                 entry = self.service.fork_session(identifier, str(body.get("from_entry_id") or ""), str(body.get("branch_id") or ""))
                 return self._ok({"entry": _jsonable(entry)})
