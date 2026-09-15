@@ -5,6 +5,7 @@ import ipaddress
 import json
 import math
 import os
+import ssl
 import time
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -747,16 +748,16 @@ def serve(
     api_timeout_seconds: float | None = None,
     model_context_tokens: int | None = None,
 ) -> None:
-    provider = model_port or model_provider_from_environment(
-        model=model_name,
-        base_url=api_base_url,
-        api_key_env=api_key_env,
-        timeout_seconds=api_timeout_seconds,
-        max_context_tokens=model_context_tokens,
-    )
-    resolved_model = model_name or str(
-        provider.capabilities().metadata.get("model") if provider is not None else ""
-    )
+    tls_cert, tls_key = os.environ.get("TRACE_TLS_CERT", ""), os.environ.get("TRACE_TLS_KEY", "")
+    tls_enabled = bool(tls_cert or tls_key)
+    if bool(tls_cert) != bool(tls_key):
+        raise ValueError("trace_tls_cert_and_key_required")
+    tls_context = None
+    if tls_enabled:
+        tls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        tls_context.load_cert_chain(tls_cert, tls_key)
+    provider = model_port or model_provider_from_environment(model=model_name, base_url=api_base_url, api_key_env=api_key_env, timeout_seconds=api_timeout_seconds, max_context_tokens=model_context_tokens)
+    resolved_model = model_name or str(provider.capabilities().metadata.get("model") if provider is not None else "")
     service = AgentService(root=root, model_port=provider, model_name=resolved_model)
     try:
         is_loopback = ipaddress.ip_address(host).is_loopback
@@ -765,9 +766,15 @@ def serve(
     if not is_loopback and not (os.environ.get("TRACE_ADMIN_PASSWORD") or os.environ.get("TRACE_ADMIN_TOKEN")):
         service.close()
         raise ValueError("non_loopback_requires_trace_admin_credentials")
+    if not is_loopback and not tls_enabled and os.environ.get("TRACE_ALLOW_INSECURE_HTTP") != "1":
+        service.close()
+        raise ValueError("non_loopback_requires_tls_or_explicit_insecure_http")
     api = WebApi(service)
     api.force_auth = not is_loopback
+    api.tls_enabled = tls_enabled
     server = TraceHTTPServer((host, int(port)), api)
+    if tls_context is not None:
+        server.socket = tls_context.wrap_socket(server.socket, server_side=True)
     try:
         server.serve_forever()
     finally:
@@ -785,16 +792,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--api-timeout-seconds", type=float)
     parser.add_argument("--model-context-tokens", type=int)
     arguments = parser.parse_args(argv)
-    serve(
-        arguments.root.expanduser().resolve(),
-        host=arguments.host,
-        port=arguments.port,
-        model_name=arguments.model,
-        api_base_url=arguments.api_base_url,
-        api_key_env=arguments.api_key_env,
-        api_timeout_seconds=arguments.api_timeout_seconds,
-        model_context_tokens=arguments.model_context_tokens,
-    )
+    serve(arguments.root.expanduser().resolve(), host=arguments.host, port=arguments.port, model_name=arguments.model, api_base_url=arguments.api_base_url, api_key_env=arguments.api_key_env, api_timeout_seconds=arguments.api_timeout_seconds, model_context_tokens=arguments.model_context_tokens)
     return 0
 
 __all__ = ["DEFAULT_EVENT_LIMIT", "MAX_REQUEST_BYTES", "WEB_SCHEMA_VERSION", "TraceHTTPServer", "WebApi", "WebResponse", "main", "model_provider_from_environment", "serve"]

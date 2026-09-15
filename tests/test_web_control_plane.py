@@ -95,6 +95,11 @@ def test_mcp_secrets_are_scoped_to_server_and_not_process_environment(tmp_path: 
     for name in (*bindings["first"], *bindings["second"]):
         assert name not in os.environ
     service.close()
+    restarted = AgentService(root=tmp_path / "runtime")
+    restarted_api = WebApi(restarted)
+    assert set(restarted_api.control.mcp_secret_bindings()["first"].values()) == {"Bearer first"}
+    assert set(restarted_api.control.mcp_secret_bindings()["second"].values()) == {"Bearer second"}
+    restarted.close()
 
 
 def test_existing_mcp_plaintext_is_migrated_to_process_binding(tmp_path: Path) -> None:
@@ -112,3 +117,7 @@ def test_existing_mcp_plaintext_is_migrated_to_process_binding(tmp_path: Path) -
     assert "Bearer legacy" not in stored
     assert set(api.control.mcp_secret_bindings()["legacy"].values()) == {"Bearer legacy"}
     service.close()
+    restarted = AgentService(root=root)
+    restarted_api = WebApi(restarted)
+    assert set(restarted_api.control.mcp_secret_bindings()["legacy"].values()) == {"Bearer legacy"}
+    restarted.close()

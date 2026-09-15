@@ -13,6 +13,7 @@ from redteam_agent.adapters.web import (
     TraceHTTPServer,
     WebApi,
     model_provider_from_environment,
+    serve,
 )
 from redteam_agent.providers import FakeModelProvider, OpenAICompatibleProvider
 
@@ -98,6 +99,13 @@ def test_environment_provider_configuration_never_requires_raw_cli_key() -> None
     assert provider.capabilities().max_context_tokens == 64_000
     assert provider.capabilities().metadata["model"] == "fixture-model"
     assert model_provider_from_environment({}) is None
+
+
+def test_non_loopback_web_requires_tls_or_explicit_insecure_opt_in(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("TRACE_ADMIN_PASSWORD", "fixture-password")
+    monkeypatch.delenv("TRACE_ALLOW_INSECURE_HTTP", raising=False)
+    with pytest.raises(ValueError, match="requires_tls"):
+        serve(tmp_path / "runtime", host="0.0.0.0", port=0)
 
 
 def test_browser_workbench_controls_agent_service(tmp_path: Path) -> None:

@@ -9,6 +9,7 @@ import os
 import platform
 import secrets
 import sqlite3
+import base64
 import threading
 import time
 from pathlib import Path
@@ -29,6 +30,32 @@ def _toml_array(values: Any) -> str:
     return "[" + ", ".join(_toml_string(item) for item in (values or ())) + "]"
 
 
+def _secret_stream(key: bytes, nonce: bytes, length: int) -> bytes:
+    chunks = []
+    for counter in range((length + 31) // 32):
+        chunks.append(hashlib.sha256(key + nonce + counter.to_bytes(4, "big")).digest())
+    return b"".join(chunks)[:length]
+
+
+def _seal_secret(key: bytes, value: str) -> str:
+    nonce = secrets.token_bytes(16)
+    plain = value.encode("utf-8")
+    cipher = bytes(left ^ right for left, right in zip(plain, _secret_stream(key, nonce, len(plain))))
+    tag = hmac.new(key, nonce + cipher, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(nonce + tag + cipher).decode("ascii")
+
+
+def _open_secret(key: bytes, value: str) -> str:
+    raw = base64.urlsafe_b64decode(value.encode("ascii"))
+    if len(raw) < 48:
+        raise ValueError("secret_ciphertext_invalid")
+    nonce, tag, cipher = raw[:16], raw[16:48], raw[48:]
+    if not hmac.compare_digest(tag, hmac.new(key, nonce + cipher, hashlib.sha256).digest()):
+        raise ValueError("secret_ciphertext_invalid")
+    plain = bytes(left ^ right for left, right in zip(cipher, _secret_stream(key, nonce, len(cipher))))
+    return plain.decode("utf-8")
+
+
 class ControlPlane:
     """Durable, redacted settings with process-local secret bindings."""
 
@@ -42,6 +69,7 @@ class ControlPlane:
         self._sessions: dict[str, tuple[str, float]] = {}
         self._failed_logins: dict[str, list[float]] = {}
         self._managed_mcp = root / "managed-mcp.toml"
+        self._secret_key = self._load_secret_key()
         with self.store.transaction(immediate=True) as connection:
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS trace_providers (
@@ -64,11 +92,61 @@ class ControlPlane:
                     enabled INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL
                 )"""
             )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS trace_secrets (
+                    secret_name TEXT PRIMARY KEY, ciphertext TEXT NOT NULL, updated_at TEXT NOT NULL
+                )"""
+            )
+        self._load_secret_values()
         self._migrate_mcp_secret_rows()
 
     @staticmethod
     def _now() -> str:
         return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    def _load_secret_key(self) -> bytes:
+        self.root.mkdir(parents=True, exist_ok=True)
+        path = self.root / "trace-secrets.key"
+        try:
+            key = path.read_bytes()
+            if len(key) == 32:
+                return key
+        except OSError:
+            pass
+        key = secrets.token_bytes(32)
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0), 0o600)
+            try:
+                os.write(fd, key)
+            finally:
+                os.close(fd)
+        except FileExistsError:
+            key = path.read_bytes()
+        if len(key) != 32:
+            raise ValueError("trace_secret_key_invalid")
+        os.chmod(path, 0o600)
+        return key
+
+    def _load_secret_values(self) -> None:
+        with self.store.connection() as connection:
+            rows = connection.execute("SELECT secret_name,ciphertext FROM trace_secrets").fetchall()
+        with self._lock:
+            for row in rows:
+                try:
+                    self._mcp_secret_values[str(row["secret_name"])] = _open_secret(self._secret_key, str(row["ciphertext"]))
+                except (ValueError, UnicodeError):
+                    continue
+
+    def _persist_secret_values(self, values: Mapping[str, str]) -> None:
+        if not values:
+            return
+        now = self._now()
+        with self.store.transaction(immediate=True) as connection:
+            for name, value in values.items():
+                connection.execute(
+                    "INSERT INTO trace_secrets(secret_name,ciphertext,updated_at) VALUES(?,?,?) ON CONFLICT(secret_name) DO UPDATE SET ciphertext=excluded.ciphertext,updated_at=excluded.updated_at",
+                    (name, _seal_secret(self._secret_key, value), now),
+                )
 
     def _migrate_mcp_secret_rows(self) -> None:
         with self.store.connection() as connection:
@@ -97,6 +175,7 @@ class ControlPlane:
         if not updates:
             return
         now = self._now()
+        migrated_values: dict[str, str] = {}
         with self.store.transaction(immediate=True) as connection:
             for server_id, spec_json, _bindings, _values in updates:
                 connection.execute(
@@ -107,6 +186,8 @@ class ControlPlane:
             for _server_id, _spec_json, bindings, values in updates:
                 self._mcp_secret_envs.update(bindings)
                 self._mcp_secret_values.update(values)
+                migrated_values.update(values)
+        self._persist_secret_values(migrated_values)
         try:
             with self.store.connection() as connection:
                 connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -289,6 +370,19 @@ class ControlPlane:
                     bindings[server_id] = scoped
             return bindings
 
+    def _stored_mcp_secret_names(self, server_id: str) -> set[str]:
+        with self.store.connection() as connection:
+            row = connection.execute("SELECT spec_json FROM trace_mcp_servers WHERE server_id=?", (server_id,)).fetchone()
+        if row is None:
+            return set()
+        spec = json.loads(str(row["spec_json"]))
+        return {
+            str(value)[2:-1]
+            for field in ("env", "headers")
+            for value in dict(spec.get(field) or {}).values()
+            if str(value).startswith("${TRACE_MCP_SECRET_") and str(value).endswith("}")
+        }
+
     def save_mcp(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         server_id = str(payload.get("server_id") or payload.get("name") or "").strip()
         if not server_id or len(server_id) > 100 or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for ch in server_id):
@@ -335,10 +429,16 @@ class ControlPlane:
                 "INSERT INTO trace_mcp_servers(server_id,spec_json,enabled,updated_at) VALUES(?,?,?,?) ON CONFLICT(server_id) DO UPDATE SET spec_json=excluded.spec_json,enabled=excluded.enabled,updated_at=excluded.updated_at",
                 (server_id, _json(spec), int(spec["enabled"]), now),
             )
+        old_names = self._stored_mcp_secret_names(server_id)
         with self._lock:
             self._clear_mcp_bindings_locked(server_id)
             self._mcp_secret_values.update(new_values)
             self._mcp_secret_envs.update(new_env_names)
+        self._persist_secret_values(new_values)
+        removed_names = old_names - set(new_values)
+        if removed_names:
+            with self.store.transaction(immediate=True) as connection:
+                connection.executemany("DELETE FROM trace_secrets WHERE secret_name=?", ((name,) for name in removed_names))
         return next(item for item in self.mcp_servers() if item["server_id"] == server_id)
 
     def delete_mcp(self, server_id: str) -> None:
@@ -346,8 +446,12 @@ class ControlPlane:
             cursor = connection.execute("DELETE FROM trace_mcp_servers WHERE server_id=?", (server_id,))
         if cursor.rowcount != 1:
             raise KeyError(f"mcp_server_not_found:{server_id}")
+        names = self._stored_mcp_secret_names(server_id)
         with self._lock:
             self._clear_mcp_bindings_locked(server_id)
+        if names:
+            with self.store.transaction(immediate=True) as connection:
+                connection.executemany("DELETE FROM trace_secrets WHERE secret_name=?", ((name,) for name in names))
 
     def write_mcp_config(self) -> Path:
         with self.store.connection() as connection:
