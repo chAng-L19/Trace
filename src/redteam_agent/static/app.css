@@ -260,3 +260,13 @@ dialog label + label, dialog label + .form-grid, dialog .form-grid + label { mar
   .control-content { padding: 24px 16px 40px; }
   .setting-row { align-items: flex-start; flex-direction: column; }
 }
+
+@media (max-width: 360px) {
+  .app-header { padding: 0 8px; }
+  .brand { min-width: 0; gap: 6px; }
+  .header-tools { min-width: 0; flex: 1; gap: 4px; }
+  .top-nav { max-width: 92px; }
+  .connection { min-width: 0; max-width: 58px; gap: 5px; }
+  #connection-text { min-width: 0; max-width: 44px; }
+  #logout { min-width: 0; padding: 0 8px; }
+}

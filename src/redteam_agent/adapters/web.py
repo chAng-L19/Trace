@@ -22,7 +22,6 @@ from ..providers import OpenAICompatibleProvider
 from ..runtime.store_common import ImmutableRecordError, StoreConflictError
 from .web_control import ControlPlane
 from .web_routes import ControlRoutesMixin
-
 WEB_SCHEMA_VERSION = 1
 MAX_REQUEST_BYTES = 2 * 1024 * 1024
 DEFAULT_EVENT_LIMIT = 200
@@ -44,7 +43,6 @@ _SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
 }
-
 def _event_value(value: Any, *, depth: int = 0) -> Any:
     """Project metadata recursively; preserve full content behind its hash."""
 
@@ -72,7 +70,6 @@ def _event_value(value: Any, *, depth: int = 0) -> Any:
     if len(json.dumps(result, ensure_ascii=False, default=str).encode("utf-8")) > MAX_EVENT_PAYLOAD_BYTES:
         return reference()
     return result
-
 def _jsonable(value: Any) -> Any:
     if hasattr(value, "to_dict"):
         return value.to_dict()
@@ -81,7 +78,6 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_jsonable(item) for item in value]
     return value
-
 @dataclass(frozen=True, slots=True)
 class WebResponse:
     status: int
@@ -108,11 +104,9 @@ class WebResponse:
             ).encode("utf-8"),
             headers=headers or {},
         )
-
     def payload(self) -> Mapping[str, Any]:
         value = json.loads(self.body.decode("utf-8"))
         return value if isinstance(value, Mapping) else {"value": value}
-
 class WebApi(ControlRoutesMixin):
     def __init__(self, service: AgentService, *, command_ttl_seconds: float = 30.0) -> None:
         self.service = service
@@ -123,7 +117,6 @@ class WebApi(ControlRoutesMixin):
         self.tls_enabled = False
         self.service.runtime.broker.set_secret_bindings(self.control.mcp_secret_bindings())
         self._load_active_provider()
-
     def dispatch(
         self,
         method: str,
@@ -175,7 +168,6 @@ class WebApi(ControlRoutesMixin):
             return self._error(400, str(exc))
         except Exception as exc:  # pragma: no cover - defensive protocol boundary
             return self._error(500, f"internal_error:{type(exc).__name__}")
-
     def _get(self, tail: list[str], query: Mapping[str, str]) -> WebResponse:
         if not tail:
             views = self.service.list_runs(
@@ -625,6 +617,16 @@ class _TraceHandler(BaseHTTPRequestHandler):
             headers = {str(key).casefold(): str(value) for key, value in self.headers.items()}
             headers["x-trace-client"] = str(self.client_address[0])
             self._write(self.api.dispatch("POST", self.path, body=payload, headers=headers))
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            self._write(self.api._error(400, str(exc)))
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        if (boundary_error := self._request_boundary()) is not None:
+            self._reject_post(boundary_error); return
+        try:
+            headers = {str(key).casefold(): str(value) for key, value in self.headers.items()}
+            headers["x-trace-client"] = str(self.client_address[0])
+            self._write(self.api.dispatch("DELETE", self.path, body=self._body(), headers=headers))
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
             self._write(self.api._error(400, str(exc)))
 

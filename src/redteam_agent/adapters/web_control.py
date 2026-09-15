@@ -393,8 +393,15 @@ class ControlPlane:
         scope = str(payload.get("scope") or "shared").casefold()
         if scope not in {"shared", "run"}:
             raise ValueError("mcp_scope_invalid")
-        raw_env = dict(payload.get("env") or {})
-        raw_headers = dict(payload.get("headers") or {})
+        existing_spec: dict[str, Any] = {}
+        with self.store.connection() as connection:
+            row = connection.execute("SELECT spec_json FROM trace_mcp_servers WHERE server_id=?", (server_id,)).fetchone()
+        if row is not None:
+            existing_spec = json.loads(str(row["spec_json"]))
+        # An edit form deliberately omits secret fields. Preserve their opaque
+        # placeholders unless the caller explicitly sends an empty mapping.
+        raw_env = dict(payload["env"] or {}) if "env" in payload else dict(existing_spec.get("env") or {})
+        raw_headers = dict(payload["headers"] or {}) if "headers" in payload else dict(existing_spec.get("headers") or {})
         env: dict[str, str] = {}
         headers: dict[str, str] = {}
         if (transport == "stdio" and not payload.get("command")) or (transport == "http" and not payload.get("url")):
@@ -424,29 +431,43 @@ class ControlPlane:
             "enabled": payload.get("enabled") is not False,
         }
         now = self._now()
+        old_names = {
+            str(value)[2:-1]
+            for field in ("env", "headers")
+            for value in dict(existing_spec.get(field) or {}).values()
+            if str(value).startswith("${TRACE_MCP_SECRET_") and str(value).endswith("}")
+        }
         with self.store.transaction(immediate=True) as connection:
             connection.execute(
                 "INSERT INTO trace_mcp_servers(server_id,spec_json,enabled,updated_at) VALUES(?,?,?,?) ON CONFLICT(server_id) DO UPDATE SET spec_json=excluded.spec_json,enabled=excluded.enabled,updated_at=excluded.updated_at",
                 (server_id, _json(spec), int(spec["enabled"]), now),
             )
-        old_names = self._stored_mcp_secret_names(server_id)
         with self._lock:
+            referenced_names = {
+                str(value)[2:-1]
+                for source in (env, headers)
+                for value in source.values()
+                if str(value).startswith("${TRACE_MCP_SECRET_") and str(value).endswith("}")
+            }
+            current_values = dict(self._mcp_secret_values)
+            preserved_values = {name: current_values[name] for name in referenced_names if name in current_values}
             self._clear_mcp_bindings_locked(server_id)
+            self._mcp_secret_values.update(preserved_values)
             self._mcp_secret_values.update(new_values)
             self._mcp_secret_envs.update(new_env_names)
         self._persist_secret_values(new_values)
-        removed_names = old_names - set(new_values)
+        removed_names = old_names - referenced_names
         if removed_names:
             with self.store.transaction(immediate=True) as connection:
                 connection.executemany("DELETE FROM trace_secrets WHERE secret_name=?", ((name,) for name in removed_names))
         return next(item for item in self.mcp_servers() if item["server_id"] == server_id)
 
     def delete_mcp(self, server_id: str) -> None:
+        names = self._stored_mcp_secret_names(server_id)
         with self.store.transaction(immediate=True) as connection:
             cursor = connection.execute("DELETE FROM trace_mcp_servers WHERE server_id=?", (server_id,))
         if cursor.rowcount != 1:
             raise KeyError(f"mcp_server_not_found:{server_id}")
-        names = self._stored_mcp_secret_names(server_id)
         with self._lock:
             self._clear_mcp_bindings_locked(server_id)
         if names:

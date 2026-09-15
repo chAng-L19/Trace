@@ -220,6 +220,7 @@
       <label>模型<input name="model" required maxlength="200"></label>
       <label>API Key 环境变量<input name="api_key_env" placeholder="OPENAI_API_KEY"></label>
       <label>本次进程 API Key（不会回显或写入数据库）<input name="api_key" type="password" autocomplete="new-password"></label>
+      <label class="check"><input id="provider-clear-key" name="clear_api_key" type="checkbox">清除已绑定的进程密钥</label>
       <div class="form-grid"><label>超时（秒）<input name="timeout_seconds" type="number" min="1" max="3600" value="120"></label><label>上下文 Token<input name="max_context_tokens" type="number" min="1" value="128000"></label></div>
       <div class="dialog-actions"><button value="cancel" type="submit" formnovalidate>取消</button><button class="primary" value="default" type="submit">保存</button></div>
     </form>
@@ -238,6 +239,16 @@
       <label>环境变量 JSON<textarea name="env" rows="2" placeholder='{"TOKEN":"${MCP_TOKEN}"}'></textarea></label>
       <label>请求头 JSON<textarea name="headers" rows="2" placeholder='{"Authorization":"Bearer ${MCP_TOKEN}"}'></textarea></label>
       <div class="dialog-actions"><button value="cancel" type="submit" formnovalidate>取消</button><button class="primary" value="default" type="submit">保存并连接</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="fork-dialog" aria-labelledby="fork-title">
+    <form id="fork-form" method="dialog">
+      <div class="dialog-heading"><h2 id="fork-title">创建会话分支</h2><button class="icon-button" value="cancel" aria-label="关闭" type="submit" formnovalidate>×</button></div>
+      <input id="fork-run-id" name="run_id" type="hidden">
+      <label>分支起点<select id="fork-entry" name="from_entry_id" required></select></label>
+      <label>分支 ID<input id="fork-branch-id" name="branch_id" required maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9._-]*"></label>
+      <div class="dialog-actions"><button value="cancel" type="submit" formnovalidate>取消</button><button class="primary" value="default" type="submit">创建分支</button></div>
     </form>
   </dialog>
 

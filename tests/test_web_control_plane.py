@@ -102,6 +102,28 @@ def test_mcp_secrets_are_scoped_to_server_and_not_process_environment(tmp_path: 
     restarted.close()
 
 
+def test_mcp_secret_rotation_and_delete_remove_old_ciphertexts(tmp_path: Path) -> None:
+    service = AgentService(root=tmp_path / "runtime")
+    api = WebApi(service)
+    _payload(api.dispatch("POST", "/api/mcp", body={
+        "server_id": "rotating", "transport": "http", "url": "http://127.0.0.1:1",
+        "headers": {"Authorization": "Bearer first"},
+    }))
+    with service.runtime.store.connection() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM trace_secrets").fetchone()[0] == 1
+    _payload(api.dispatch("POST", "/api/mcp", body={
+        "server_id": "rotating", "transport": "http", "url": "http://127.0.0.1:1",
+        "headers": {"Authorization": "Bearer second"},
+    }))
+    assert set(api.control.mcp_secret_bindings()["rotating"].values()) == {"Bearer second"}
+    with service.runtime.store.connection() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM trace_secrets").fetchone()[0] == 1
+    _payload(api.dispatch("DELETE", "/api/mcp/rotating"))
+    with service.runtime.store.connection() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM trace_secrets").fetchone()[0] == 0
+    service.close()
+
+
 def test_existing_mcp_plaintext_is_migrated_to_process_binding(tmp_path: Path) -> None:
     root = tmp_path / "runtime"
     service = AgentService(root=root)

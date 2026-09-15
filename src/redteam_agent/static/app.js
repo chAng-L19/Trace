@@ -27,7 +27,7 @@ const state = {
   pendingCommands: new Set(),
   tabVersion: 0,
   collectionPages: {},
-  view: "runs",
+  page: "runs",
   authenticated: false,
 };
 
@@ -102,7 +102,7 @@ async function loadAuth() {
 }
 
 function setView(view) {
-  state.view = view;
+  state.page = view;
   $$(".top-nav .nav-button").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
   $(".app-shell").hidden = view !== "runs";
   $("#control-plane").hidden = view !== "control";
@@ -130,12 +130,25 @@ async function loadProviders() {
     const meta = document.createElement("code"); meta.textContent = `${item.base_url} · key ${item.api_key_set ? "已绑定" : "未绑定"}`;
     main.append(title, meta);
     const actions = document.createElement("div"); actions.className = "button-row";
+    const edit = document.createElement("button"); edit.type = "button"; edit.textContent = "编辑";
+    edit.addEventListener("click", () => openProviderEditor(item));
     const activate = document.createElement("button"); activate.type = "button"; activate.textContent = item.active ? "当前模型" : "切换"; activate.disabled = item.active;
     activate.addEventListener("click", async () => { await api("/api/providers/active", { method: "POST", body: JSON.stringify({ provider_id: item.provider_id }) }); showNotice("Provider 已切换"); await loadControl(); await loadSystem(); });
     const remove = document.createElement("button"); remove.type = "button"; remove.className = "danger"; remove.textContent = "删除";
     remove.addEventListener("click", async () => { if (!confirm("确认删除此 Provider？")) return; await api(`/api/providers/${encodeURIComponent(item.provider_id)}`, { method: "DELETE" }); await loadProviders(); });
-    actions.append(activate, remove); row.append(main, actions); return row;
+    actions.append(edit, activate, remove); row.append(main, actions); return row;
   });
+}
+
+function openProviderEditor(item = null) {
+  const form = $("#provider-form");
+  form.reset();
+  for (const [name, value] of Object.entries(item || {})) {
+    const field = form.elements.namedItem(name);
+    if (field && field.type !== "checkbox" && name !== "api_key_set") field.value = value ?? "";
+  }
+  $("#provider-clear-key").checked = false;
+  $("#provider-dialog").showModal();
 }
 
 async function loadSkills() {
@@ -160,10 +173,24 @@ async function loadMcp() {
     const title = document.createElement("strong"); title.textContent = item.server_id;
     const meta = document.createElement("code"); meta.textContent = `${item.transport} · ${item.status?.status || "configured"} · ${item.status?.tool_count || 0} tools`;
     main.append(title, meta);
+    const actions = document.createElement("div"); actions.className = "button-row";
+    const edit = document.createElement("button"); edit.type = "button"; edit.textContent = "编辑";
+    edit.addEventListener("click", () => openMcpEditor(item));
     const remove = document.createElement("button"); remove.type = "button"; remove.className = "danger"; remove.textContent = "移除";
     remove.addEventListener("click", async () => { if (!confirm("确认移除 MCP 服务器？")) return; await api(`/api/mcp/${encodeURIComponent(item.server_id)}`, { method: "DELETE" }); await loadMcp(); });
-    row.append(main, remove); return row;
+    actions.append(edit, remove); row.append(main, actions); return row;
   });
+}
+
+function openMcpEditor(item = null) {
+  const form = $("#mcp-form");
+  form.reset();
+  for (const [name, value] of Object.entries(item || {})) {
+    const field = form.elements.namedItem(name);
+    if (!field || ["env", "headers", "status", "enabled"].includes(name)) continue;
+    field.value = name === "args" && Array.isArray(value) ? value.join("\n") : value ?? "";
+  }
+  $("#mcp-dialog").showModal();
 }
 
 async function loadConversations() {
@@ -174,9 +201,47 @@ async function loadConversations() {
     const title = document.createElement("strong"); title.textContent = valueOr(item.run?.goal?.objective, item.run?.run?.session_id);
     const meta = document.createElement("code"); meta.textContent = `${item.run?.run?.run_id || "-"} · ${item.message_count || 0} messages`;
     main.append(title, meta);
+    const actions = document.createElement("div"); actions.className = "button-row";
     const open = document.createElement("button"); open.type = "button"; open.textContent = "打开"; open.addEventListener("click", () => { setView("runs"); loadRun(item.run?.run?.run_id); });
-    row.append(main, open); return row;
+    const fork = document.createElement("button"); fork.type = "button"; fork.textContent = "分支";
+    fork.addEventListener("click", () => openForkEditor(item.run?.run?.run_id));
+    actions.append(open, fork); row.append(main, actions); return row;
   });
+}
+
+async function openForkEditor(runId) {
+  try {
+    const result = await api(`/api/conversations/${encodeURIComponent(runId)}`);
+    const nodes = result.tree?.nodes || {};
+    const select = $("#fork-entry");
+    select.replaceChildren();
+    for (const [entryId, node] of Object.entries(nodes)) {
+      const entry = node?.entry || {};
+      const option = document.createElement("option");
+      option.value = entryId;
+      option.textContent = `#${entry.sequence ?? "?"} · ${entry.entry_type || "entry"} · ${entry.branch_id || "main"}`;
+      select.append(option);
+    }
+    $("#fork-run-id").value = runId;
+    $("#fork-branch-id").value = `branch-${Date.now().toString(36)}`;
+    $("#fork-dialog").showModal();
+  } catch (error) { showNotice(error.message, true); }
+}
+
+async function submitFork(event) {
+  event.preventDefault();
+  if (event.submitter?.value === "cancel") return $("#fork-dialog").close();
+  const data = new FormData(event.currentTarget);
+  const runId = String(data.get("run_id") || "");
+  try {
+    await api(`/api/conversations/${encodeURIComponent(runId)}/fork`, {
+      method: "POST",
+      body: JSON.stringify({ from_entry_id: data.get("from_entry_id"), branch_id: data.get("branch_id") }),
+    });
+    $("#fork-dialog").close();
+    await loadConversations();
+    showNotice("会话分支已创建");
+  } catch (error) { showNotice(error.message, true); }
 }
 
 async function loadSystemSettings() {
@@ -198,13 +263,33 @@ async function login(event) {
 
 async function logout() {
   await api("/api/auth/logout", { method: "POST", body: "{}" });
-  state.authenticated = false; state.selectedId = ""; closeEvents(); setView("runs"); $("#logout").hidden = true; $("#login-dialog").showModal();
+  clearSessionView();
+  state.authenticated = false;
+  setView("runs");
+  $("#logout").hidden = true;
+  $("#login-dialog").showModal();
+}
+
+function clearSessionView() {
+  state.authenticated = false;
+  state.selectedId = "";
+  state.runs = [];
+  state.view = null;
+  state.events = [];
+  state.eventCursor = 0;
+  state.report = null;
+  state.collectionPages = {};
+  closeEvents();
+  renderRuns();
+  renderEvents();
+  renderView();
 }
 
 async function submitProvider(event) {
   event.preventDefault(); if (event.submitter?.value === "cancel") return $("#provider-dialog").close();
   const form = event.currentTarget; const data = new FormData(form); const payload = Object.fromEntries(data.entries());
   payload.timeout_seconds = Number(payload.timeout_seconds); payload.max_context_tokens = Number(payload.max_context_tokens);
+  payload.clear_api_key = data.get("clear_api_key") === "on";
   try { await api("/api/providers", { method: "POST", body: JSON.stringify(payload) }); $("#provider-dialog").close(); form.reset(); await loadProviders(); showNotice("Provider 已保存"); } catch (error) { showNotice(error.message, true); }
 }
 
@@ -401,7 +486,12 @@ function openEvents() {
     try {
       const auth = await api("/api/auth/status");
       if (auth.required && !auth.authenticated) {
-        source.close(); state.eventSource = null; state.authenticated = false; $("#login-dialog").showModal(); showNotice("会话已过期，请重新登录", true);
+        clearSessionView();
+        setView("runs");
+        state.authenticated = false;
+        $("#logout").hidden = true;
+        $("#login-dialog").showModal();
+        showNotice("会话已过期，请重新登录", true);
       }
     } catch (_) { /* reconnect keeps the live view available during transient failures */ }
   };
@@ -632,13 +722,14 @@ function bind() {
   }));
   $("#logout").addEventListener("click", logout);
   $("#login-form").addEventListener("submit", login);
-  $("#add-provider").addEventListener("click", () => $("#provider-dialog").showModal());
+  $("#add-provider").addEventListener("click", () => openProviderEditor());
   $("#provider-form").addEventListener("submit", submitProvider);
   $("#add-mcp").addEventListener("click", () => $("#mcp-dialog").showModal());
   $("#mcp-form").addEventListener("submit", submitMcp);
   $("#refresh-skills").addEventListener("click", loadSkills);
   $("#refresh-mcp").addEventListener("click", loadMcp);
   $("#refresh-conversations").addEventListener("click", loadConversations);
+  $("#fork-form").addEventListener("submit", submitFork);
   $("#reload-system").addEventListener("click", async () => { await api("/api/system/reload", { method: "POST", body: "{}" }); await loadControl(); showNotice("MCP 配置已重载"); });
   $("#new-run").addEventListener("click", openCreateDialog);
   $("#empty-new-run").addEventListener("click", openCreateDialog);

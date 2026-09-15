@@ -48,6 +48,16 @@ def _get(server: TraceHTTPServer, path: str):
     return response.status, headers, body
 
 
+def _request(server: TraceHTTPServer, method: str, path: str, body: bytes = b""):
+    connection = HTTPConnection(*server.server_address, timeout=3)
+    headers = {"Content-Type": "application/json"} if body else {}
+    connection.request(method, path, body=body or None, headers=headers)
+    response = connection.getresponse()
+    payload = response.read()
+    connection.close()
+    return response.status, payload
+
+
 @pytest.mark.parametrize(
     ("path", "content_type", "needle"),
     [
@@ -82,6 +92,38 @@ def test_system_endpoint_reports_model_without_secrets(tmp_path: Path) -> None:
     assert payload["provider"]["model"] == "fixture-model"
     assert "metadata" not in payload["provider"]["capabilities"]
     assert "api_key" not in body.decode().casefold()
+
+
+def test_http_delete_reaches_control_plane(tmp_path: Path) -> None:
+    with _server(tmp_path) as (server, _):
+        status, _ = _request(
+            server,
+            "POST",
+            "/api/mcp",
+            json.dumps({"server_id": "fixture", "transport": "http", "url": "http://127.0.0.1:1"}).encode(),
+        )
+        assert status == 201
+        status, payload = _request(server, "DELETE", "/api/mcp/fixture")
+    assert status == 200
+    assert json.loads(payload)["deleted"] == "fixture"
+
+
+def test_browser_workbench_fits_narrow_mobile_viewport(tmp_path: Path) -> None:
+    sync_api = pytest.importorskip("playwright.sync_api")
+    with _server(tmp_path) as (server, _):
+        try:
+            browser = sync_api.sync_playwright().start()
+            chromium = browser.chromium.launch(headless=True)
+        except Exception as exc:
+            pytest.skip(f"chromium unavailable: {exc}")
+        page = chromium.new_page(viewport={"width": 320, "height": 640})
+        try:
+            page.goto(f"http://127.0.0.1:{server.server_port}/", wait_until="networkidle")
+            assert page.evaluate("() => document.documentElement.scrollWidth <= document.documentElement.clientWidth")
+        finally:
+            page.close()
+            chromium.close()
+            browser.stop()
 
 
 def test_environment_provider_configuration_never_requires_raw_cli_key() -> None:
