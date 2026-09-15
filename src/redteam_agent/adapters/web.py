@@ -23,6 +23,7 @@ from .web_control import ControlPlane
 from .web_routes import ControlRoutesMixin
 WEB_SCHEMA_VERSION = 1
 MAX_REQUEST_BYTES = 2 * 1024 * 1024
+MAX_JSON_RESPONSE_BYTES = 8 * 1024 * 1024
 DEFAULT_EVENT_LIMIT = 200
 MAX_EVENT_PAYLOAD_BYTES = 16 * 1024
 _RAW_EVENT_KEYS = frozenset({"state_snapshot", "payload", "output", "response", "request", "result", "stdout", "stderr"})
@@ -92,17 +93,27 @@ class WebResponse:
         status: int = 200,
         headers: Mapping[str, str] | None = None,
     ) -> "WebResponse":
-        return cls(
-            status=status,
-            body=json.dumps(
-                _jsonable(dict(payload)),
+        body = json.dumps(
+            _jsonable(dict(payload)),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+        if len(body) > MAX_JSON_RESPONSE_BYTES:
+            bounded_body = json.dumps(
+                {
+                    "schema_version": WEB_SCHEMA_VERSION,
+                    "ok": False,
+                    "error": "response_too_large",
+                    "max_bytes": MAX_JSON_RESPONSE_BYTES,
+                },
                 ensure_ascii=False,
                 sort_keys=True,
                 separators=(",", ":"),
-                default=str,
-            ).encode("utf-8"),
-            headers=headers or {},
-        )
+            ).encode("utf-8")
+            return cls(status=413, body=bounded_body, headers=headers or {})
+        return cls(status=status, body=body, headers=headers or {})
     def payload(self) -> Mapping[str, Any]:
         value = json.loads(self.body.decode("utf-8"))
         return value if isinstance(value, Mapping) else {"value": value}
@@ -197,10 +208,10 @@ class WebApi(ControlRoutesMixin):
                 saved = receipt["response"]
                 replay = self._replay_receipt(saved)
                 if replay is not None:
-                    return replay
+                    return self._command_response(replay, command_id)
                 if isinstance(saved.get("payload"), Mapping):
-                    return WebResponse.json(saved["payload"], status=int(saved.get("status", 200)))
-                return WebResponse.json(saved, status=200)
+                    return self._command_response(WebResponse.json(saved["payload"], status=int(saved.get("status", 200))), command_id)
+                return self._command_response(WebResponse.json(saved, status=200), command_id)
             if not receipt.get("claimed") or receipt["owner"] != owner or receipt["status"] != "pending":
                 return self._error(409, "command_in_progress")
             if receipt.get("reclaimed"):
@@ -209,7 +220,7 @@ class WebApi(ControlRoutesMixin):
                     command_id, self._receipt_payload(response),
                     owner=owner, fencing_token=int(receipt["fencing_token"]), run_id=run_id,
                 )
-                return response
+                return self._command_response(response, command_id)
             if domain == "system" and tail == ["reload"]:
                 response = self._ok(self._reload_control_plane())
             else:
@@ -219,7 +230,7 @@ class WebApi(ControlRoutesMixin):
                     command_id, self._receipt_payload(response),
                     owner=owner, fencing_token=int(receipt["fencing_token"]), run_id=run_id,
                 )
-            return response
+            return self._command_response(response, command_id)
         except ImmutableRecordError as exc:
             return self._error(409, str(exc))
         except StoreConflictError as exc:
@@ -390,10 +401,10 @@ class WebApi(ControlRoutesMixin):
                 saved = receipt["response"]
                 replay = self._replay_receipt(saved)
                 if replay is not None:
-                    return replay
+                    return self._command_response(replay, command_id)
                 if isinstance(saved.get("payload"), Mapping):
-                    return WebResponse.json(saved["payload"], status=int(saved.get("status", 200)))
-                return WebResponse.json(saved, status=200)
+                    return self._command_response(WebResponse.json(saved["payload"], status=int(saved.get("status", 200))), command_id)
+                return self._command_response(WebResponse.json(saved, status=200), command_id)
             if not receipt.get("claimed") or receipt["owner"] != claim_owner or receipt["status"] != "pending":
                 return self._error(409, "command_in_progress")
             fencing_token = int(receipt["fencing_token"])
@@ -406,7 +417,7 @@ class WebApi(ControlRoutesMixin):
                     fencing_token=fencing_token,
                     run_id=run_id,
                 )
-                return response
+                return self._command_response(response, command_id)
         try:
             response = self._post_once(tail, command_body, command_id=command_id)
         except Exception:
@@ -426,7 +437,17 @@ class WebApi(ControlRoutesMixin):
                 fencing_token=fencing_token,
                 run_id=run_id or str(saved_run_id or ""),
             )
-        return response
+        return self._command_response(response, command_id)
+
+    @staticmethod
+    def _command_response(response: WebResponse, command_id: str) -> WebResponse:
+        """Expose the effective id so legacy clients can retry durably."""
+
+        if not command_id:
+            return response
+        headers = dict(response.headers)
+        headers.setdefault("X-Command-ID", command_id)
+        return WebResponse(response.status, response.body, response.content_type, headers)
 
     def _post_once(
         self,
@@ -724,4 +745,4 @@ def main(argv: list[str] | None = None) -> int:
     serve(arguments.root.expanduser().resolve(), host=arguments.host, port=arguments.port, model_name=arguments.model, api_base_url=arguments.api_base_url, api_key_env=arguments.api_key_env, api_timeout_seconds=arguments.api_timeout_seconds, model_context_tokens=arguments.model_context_tokens)
     return 0
 
-__all__ = ["DEFAULT_EVENT_LIMIT", "MAX_REQUEST_BYTES", "WEB_SCHEMA_VERSION", "TraceHTTPServer", "WebApi", "WebResponse", "main", "model_provider_from_environment", "serve"]
+__all__ = ["DEFAULT_EVENT_LIMIT", "MAX_JSON_RESPONSE_BYTES", "MAX_REQUEST_BYTES", "WEB_SCHEMA_VERSION", "TraceHTTPServer", "WebApi", "WebResponse", "main", "model_provider_from_environment", "serve"]

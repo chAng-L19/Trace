@@ -143,6 +143,21 @@ class TraceRequestHandler(BaseHTTPRequestHandler):
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
             self._write(self.api._error(400, str(exc)))
 
+    def _unsupported_method(self) -> None:
+        if (error := self._request_boundary()) is not None:
+            self._reject_post(error)
+            return
+        self._reject_post(self.api._error(405, "method_not_allowed"))
+
+    def do_PATCH(self) -> None:  # noqa: N802
+        self._unsupported_method()
+
+    def do_PUT(self) -> None:  # noqa: N802
+        self._unsupported_method()
+
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        self._unsupported_method()
+
     def _write_sse(self, parsed: Any) -> None:
         if (self.api.control.auth_required or self.api.force_auth) and not self.api.control.authenticated(
             {str(key).casefold(): str(value) for key, value in self.headers.items()}, force=self.api.force_auth

@@ -62,6 +62,21 @@ def test_control_writes_replay_completed_command_receipts(tmp_path: Path) -> Non
     service.close()
 
 
+def test_legacy_control_write_receives_effective_command_id(tmp_path: Path) -> None:
+    service = AgentService(root=tmp_path / "runtime")
+    api = WebApi(service)
+    response = api.dispatch("POST", "/api/providers", body={
+        "provider_id": "fixture",
+        "name": "Fixture",
+        "base_url": "http://127.0.0.1:9/v1",
+        "model": "trace-model",
+    })
+
+    assert response.status == 201
+    assert response.headers["X-Command-ID"].startswith("compat-")
+    service.close()
+
+
 def test_skill_and_mcp_settings_round_trip(tmp_path: Path) -> None:
     root = tmp_path / "runtime"
     skill = root / "skills" / "web"
