@@ -72,14 +72,24 @@ class McpServerSpec:
         hints = annotations or {}
         return hints.get("readOnlyHint") is True
 
-    def render(self, *, run_id: str = "", workspace: Path | None = None) -> "McpServerSpec":
+    def render(
+        self,
+        *,
+        run_id: str = "",
+        workspace: Path | None = None,
+        environment: Mapping[str, str] | None = None,
+    ) -> "McpServerSpec":
         values = {
             "run_id": run_id,
             "workspace": str(workspace or ""),
         }
+        secret_environment = environment or {}
 
         def render_text(value: str) -> str:
-            text = _ENV_PATTERN.sub(lambda match: os.environ.get(match.group(1), ""), str(value))
+            text = _ENV_PATTERN.sub(
+                lambda match: secret_environment.get(match.group(1), os.environ.get(match.group(1), "")),
+                str(value),
+            )
             for key, replacement in values.items():
                 text = text.replace("{" + key + "}", replacement)
             return text

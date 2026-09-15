@@ -12,7 +12,7 @@ import pytest
 import redteam_agent.runtime.mcp_broker as mcp_broker_module
 import redteam_agent.runtime.tool_broker as broker_module
 from redteam_agent.runtime.mcp_config import parse_mcp_server_specs, profile_capabilities
-from redteam_agent.runtime.mcp_clients import StdioMcpClient
+from redteam_agent.runtime.mcp_clients import StdioMcpClient, _child_environment
 from redteam_agent.runtime.operation_runtime import OperationRuntime
 from redteam_agent.runtime.tool_broker import ToolBroker
 
@@ -305,6 +305,13 @@ def test_mcp_spec_expands_environment_and_run_placeholders(
         "dom_snapshot",
         "page_fetch",
     )
+
+
+def test_stdio_child_environment_is_allowlisted(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TRACE_MCP_SECRET_OTHER", "not-for-this-server")
+    environment = _child_environment({"CURRENT_SERVER_TOKEN": "current"})
+    assert environment["CURRENT_SERVER_TOKEN"] == "current"
+    assert "TRACE_MCP_SECRET_OTHER" not in environment
 
 
 def test_stdio_mcp_roots_and_cancellation_protocol(tmp_path: Path) -> None:

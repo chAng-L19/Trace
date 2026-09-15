@@ -1,18 +1,12 @@
 from __future__ import annotations
 
-"""Small REST/SSE adapter over :class:`AgentService`.
-
-The adapter owns protocol concerns only.  Runtime state, evidence promotion,
-leases and terminal decisions remain inside ``AgentService``/``OperationRuntime``.
-"""
-
 import argparse
 import ipaddress
 import json
 import math
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from pathlib import Path
@@ -21,11 +15,12 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from uuid import uuid4
 
 from ..application import AgentService
-from ..application.contracts import CANONICAL_RUN_STATUSES, BudgetDelta
+from ..application.contracts import BudgetDelta
 from ..core import ModelPort, contract_hash
 from ..providers import OpenAICompatibleProvider
 from ..runtime.store_common import ImmutableRecordError, StoreConflictError
-
+from .web_control import ControlPlane
+from .web_routes import ControlRoutesMixin
 
 WEB_SCHEMA_VERSION = 1
 MAX_REQUEST_BYTES = 2 * 1024 * 1024
@@ -48,7 +43,6 @@ _SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
 }
-
 
 def _event_value(value: Any, *, depth: int = 0) -> Any:
     """Project metadata recursively; preserve full content behind its hash."""
@@ -78,7 +72,6 @@ def _event_value(value: Any, *, depth: int = 0) -> Any:
         return reference()
     return result
 
-
 def _jsonable(value: Any) -> Any:
     if hasattr(value, "to_dict"):
         return value.to_dict()
@@ -88,15 +81,21 @@ def _jsonable(value: Any) -> Any:
         return [_jsonable(item) for item in value]
     return value
 
-
 @dataclass(frozen=True, slots=True)
 class WebResponse:
     status: int
     body: bytes
     content_type: str = "application/json; charset=utf-8"
+    headers: Mapping[str, str] = field(default_factory=dict)
 
     @classmethod
-    def json(cls, payload: Mapping[str, Any], *, status: int = 200) -> "WebResponse":
+    def json(
+        cls,
+        payload: Mapping[str, Any],
+        *,
+        status: int = 200,
+        headers: Mapping[str, str] | None = None,
+    ) -> "WebResponse":
         return cls(
             status=status,
             body=json.dumps(
@@ -106,20 +105,23 @@ class WebResponse:
                 separators=(",", ":"),
                 default=str,
             ).encode("utf-8"),
+            headers=headers or {},
         )
 
     def payload(self) -> Mapping[str, Any]:
         value = json.loads(self.body.decode("utf-8"))
         return value if isinstance(value, Mapping) else {"value": value}
 
-
-class WebApi:
-    """Deterministic HTTP projection and command dispatcher for Trace."""
-
+class WebApi(ControlRoutesMixin):
     def __init__(self, service: AgentService, *, command_ttl_seconds: float = 30.0) -> None:
         self.service = service
         self.command_ttl_seconds = max(1.0, float(command_ttl_seconds))
         self.owner = f"web-{uuid4().hex}"
+        self.control = ControlPlane(service.runtime.store, service.runtime.root)
+        self.force_auth = False
+        self.tls_enabled = False
+        self.service.runtime.broker.set_secret_bindings(self.control.mcp_secret_bindings())
+        self._load_active_provider()
 
     def dispatch(
         self,
@@ -135,10 +137,27 @@ class WebApi:
         query = {key: values[-1] for key, values in parse_qs(parsed.query).items() if values}
         payload = dict(body or {})
         request_headers = {str(key).casefold(): str(value) for key, value in (headers or {}).items()}
+        if segments[:2] == ["api", "auth"]:
+            return self._auth(method, segments[2:], payload, request_headers)
+        if (self.control.auth_required or self.force_auth) and segments[:2] != ["api", "auth"]:
+            if not self.control.authenticated(request_headers, force=self.force_auth):
+                return self._error(401, "authentication_required")
         if segments == ["api", "system"]:
             if method != "GET":
                 return self._error(405, "method_not_allowed")
             return self._ok(self.system_info())
+        if segments[:2] == ["api", "providers"]:
+            return self._safe_control(method, "providers", segments[2:], payload)
+        if segments[:2] == ["api", "skills"]:
+            return self._safe_control(method, "skills", segments[2:], payload)
+        if segments[:2] == ["api", "mcp"]:
+            return self._safe_control(method, "mcp", segments[2:], payload)
+        if segments[:2] == ["api", "conversations"]:
+            return self._safe_control(method, "conversations", segments[2:], payload)
+        if segments == ["api", "system", "reload"]:
+            if method != "POST":
+                return self._error(405, "method_not_allowed")
+            return self._ok(self._reload_control_plane())
         if segments[:2] != ["api", "runs"]:
             return self._error(404, "route_not_found")
         try:
@@ -155,33 +174,6 @@ class WebApi:
             return self._error(400, str(exc))
         except Exception as exc:  # pragma: no cover - defensive protocol boundary
             return self._error(500, f"internal_error:{type(exc).__name__}")
-
-    def system_info(self) -> dict[str, Any]:
-        loop = self.service.model_loop
-        if loop is None:
-            provider: dict[str, Any] = {"configured": False, "name": "", "model": ""}
-        else:
-            capabilities = loop.model.capabilities()
-            provider = {
-                "configured": True,
-                "name": str(capabilities.metadata.get("provider") or type(loop.model).__name__),
-                "model": loop.model_name or str(capabilities.metadata.get("model") or ""),
-                "capabilities": {
-                    "native_system_role": capabilities.native_system_role,
-                    "native_tool_calls": capabilities.native_tool_calls,
-                    "parallel_tool_calls": capabilities.parallel_tool_calls,
-                    "structured_output": capabilities.structured_output,
-                    "streaming": capabilities.streaming,
-                    "usage_reporting": capabilities.usage_reporting,
-                    "max_context_tokens": capabilities.max_context_tokens,
-                    "modalities": list(capabilities.modalities),
-                },
-            }
-        return {
-            "service": "Trace",
-            "provider": provider,
-            "run_statuses": sorted(CANONICAL_RUN_STATUSES),
-        }
 
     def _get(self, tail: list[str], query: Mapping[str, str]) -> WebResponse:
         if not tail:
@@ -519,7 +511,6 @@ class WebApi:
                 return [self._event_projection(item) for item in events]
             time.sleep(0.1)
 
-
 class _TraceHandler(BaseHTTPRequestHandler):
     server_version = "TraceWeb/1"
 
@@ -528,8 +519,6 @@ class _TraceHandler(BaseHTTPRequestHandler):
         return self.server.api  # type: ignore[attr-defined]
 
     def _request_boundary(self) -> WebResponse | None:
-        """Keep browser pages on other origins out of the local control API."""
-
         try:
             host = urlsplit(f"http://{self.headers.get('Host', '')}")
             hostname = host.hostname or ""
@@ -537,14 +526,14 @@ class _TraceHandler(BaseHTTPRequestHandler):
                 return self.api._error(400, "invalid_host")
             bound_host, bound_port = self.server.server_address[:2]
             if ipaddress.ip_address(bound_host).is_loopback:
-                if hostname not in {"localhost", "127.0.0.1", "::1"} or (host.port or 80) != bound_port:
+                if hostname.casefold() not in {"localhost", "127.0.0.1", "::1"} or (host.port or 80) != bound_port:
                     return self.api._error(403, "host_not_allowed")
             origin_value = self.headers.get("Origin")
             if origin_value:
                 origin = urlsplit(origin_value)
                 if (
-                    origin.scheme != "http"
-                    or origin.hostname != hostname
+                    origin.scheme not in {"http", "https"}
+                    or (origin.hostname or "").casefold() != hostname.casefold()
                     or (origin.port or 80) != (host.port or 80)
                     or origin.username is not None
                     or origin.password is not None
@@ -579,12 +568,12 @@ class _TraceHandler(BaseHTTPRequestHandler):
         self.send_header("X-Trace-Schema-Version", str(WEB_SCHEMA_VERSION))
         for name, value in _SECURITY_HEADERS.items():
             self.send_header(name, value)
+        for name, value in response.headers.items():
+            self.send_header(str(name), str(value))
         self.end_headers()
         self.wfile.write(response.body)
 
     def _reject_post(self, response: WebResponse) -> None:
-        # Closing a socket with unread request bytes can reset it on Windows,
-        # discarding the error response. Drain only bounded, framed bodies.
         try:
             length = int(self.headers.get("Content-Length", "0") or 0)
         except ValueError:
@@ -632,11 +621,19 @@ class _TraceHandler(BaseHTTPRequestHandler):
             return
         try:
             payload = self._body()
-            self._write(self.api.dispatch("POST", self.path, body=payload, headers=self.headers))
+            headers = {str(key).casefold(): str(value) for key, value in self.headers.items()}
+            headers["x-trace-client"] = str(self.client_address[0])
+            self._write(self.api.dispatch("POST", self.path, body=payload, headers=headers))
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
             self._write(self.api._error(400, str(exc)))
 
     def _write_sse(self, parsed: Any) -> None:
+        if (self.api.control.auth_required or self.api.force_auth) and not self.api.control.authenticated(
+            {str(key).casefold(): str(value) for key, value in self.headers.items()},
+            force=self.api.force_auth,
+        ):
+            self._write(self.api._error(401, "authentication_required"))
+            return
         segments = [unquote(item) for item in parsed.path.split("/") if item]
         if len(segments) != 4 or segments[:2] != ["api", "runs"] or segments[3] != "events":
             self._write(self.api._error(404, "route_not_found"))
@@ -698,12 +695,10 @@ class _TraceHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         return
 
-
 class TraceHTTPServer(ThreadingHTTPServer):
     def __init__(self, address: tuple[str, int], api: WebApi) -> None:
         super().__init__(address, _TraceHandler)
         self.api = api
-
 
 def model_provider_from_environment(
     environ: Mapping[str, str] | None = None,
@@ -740,7 +735,6 @@ def model_provider_from_environment(
         max_context_tokens=resolved_context,
     )
 
-
 def serve(
     root: Path,
     *,
@@ -764,13 +758,21 @@ def serve(
         provider.capabilities().metadata.get("model") if provider is not None else ""
     )
     service = AgentService(root=root, model_port=provider, model_name=resolved_model)
-    server = TraceHTTPServer((host, int(port)), WebApi(service))
+    try:
+        is_loopback = ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        is_loopback = host.casefold() == "localhost"
+    if not is_loopback and not (os.environ.get("TRACE_ADMIN_PASSWORD") or os.environ.get("TRACE_ADMIN_TOKEN")):
+        service.close()
+        raise ValueError("non_loopback_requires_trace_admin_credentials")
+    api = WebApi(service)
+    api.force_auth = not is_loopback
+    server = TraceHTTPServer((host, int(port)), api)
     try:
         server.serve_forever()
     finally:
         server.server_close()
         service.close()
-
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="redteam-agent-web")
@@ -794,6 +796,5 @@ def main(argv: list[str] | None = None) -> int:
         model_context_tokens=arguments.model_context_tokens,
     )
     return 0
-
 
 __all__ = ["DEFAULT_EVENT_LIMIT", "MAX_REQUEST_BYTES", "WEB_SCHEMA_VERSION", "TraceHTTPServer", "WebApi", "WebResponse", "main", "model_provider_from_environment", "serve"]

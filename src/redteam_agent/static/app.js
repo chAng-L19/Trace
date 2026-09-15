@@ -27,6 +27,8 @@ const state = {
   pendingCommands: new Set(),
   tabVersion: 0,
   collectionPages: {},
+  view: "runs",
+  authenticated: false,
 };
 
 function commandId() {
@@ -86,6 +88,135 @@ async function loadSystem() {
     setConnection("服务连接失败", false);
     showNotice(error.message, true);
   }
+}
+
+async function loadAuth() {
+  const result = await api("/api/auth/status");
+  state.authenticated = Boolean(result.authenticated || !result.required);
+  $("#logout").hidden = !state.authenticated;
+  if (result.required && !state.authenticated) {
+    $("#login-dialog").showModal();
+    return false;
+  }
+  return true;
+}
+
+function setView(view) {
+  state.view = view;
+  $$(".top-nav .nav-button").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
+  $(".app-shell").hidden = view !== "runs";
+  $("#control-plane").hidden = view !== "control";
+  if (view === "control") loadControl();
+}
+
+async function loadControl() {
+  try {
+    await Promise.all([loadProviders(), loadSkills(), loadMcp(), loadConversations(), loadSystemSettings()]);
+  } catch (error) { showNotice(error.message, true); }
+}
+
+function renderSettingsList(container, items, renderItem, empty = "暂无配置") {
+  container.replaceChildren();
+  if (!items.length) return appendEmpty(container, empty);
+  items.forEach((item) => container.append(renderItem(item)));
+}
+
+async function loadProviders() {
+  const result = await api("/api/providers");
+  renderSettingsList($("#provider-list"), result.providers || [], (item) => {
+    const row = document.createElement("article"); row.className = "setting-row";
+    const main = document.createElement("div"); main.className = "setting-main";
+    const title = document.createElement("strong"); title.textContent = `${item.name} · ${item.model}`;
+    const meta = document.createElement("code"); meta.textContent = `${item.base_url} · key ${item.api_key_set ? "已绑定" : "未绑定"}`;
+    main.append(title, meta);
+    const actions = document.createElement("div"); actions.className = "button-row";
+    const activate = document.createElement("button"); activate.type = "button"; activate.textContent = item.active ? "当前模型" : "切换"; activate.disabled = item.active;
+    activate.addEventListener("click", async () => { await api("/api/providers/active", { method: "POST", body: JSON.stringify({ provider_id: item.provider_id }) }); showNotice("Provider 已切换"); await loadControl(); await loadSystem(); });
+    const remove = document.createElement("button"); remove.type = "button"; remove.className = "danger"; remove.textContent = "删除";
+    remove.addEventListener("click", async () => { if (!confirm("确认删除此 Provider？")) return; await api(`/api/providers/${encodeURIComponent(item.provider_id)}`, { method: "DELETE" }); await loadProviders(); });
+    actions.append(activate, remove); row.append(main, actions); return row;
+  });
+}
+
+async function loadSkills() {
+  const result = await api("/api/skills");
+  renderSettingsList($("#skill-list"), result.skills || [], (item) => {
+    const row = document.createElement("article"); row.className = "setting-row";
+    const main = document.createElement("div"); main.className = "setting-main";
+    const title = document.createElement("strong"); title.textContent = item.resource_id;
+    const meta = document.createElement("code"); meta.textContent = `${item.byte_count} bytes · ${item.content_hash.slice(0, 12)}`;
+    main.append(title, meta);
+    const toggle = document.createElement("button"); toggle.type = "button"; toggle.textContent = item.enabled ? "已启用" : "已停用"; toggle.className = item.enabled ? "primary" : "quiet";
+    toggle.addEventListener("click", async () => { await api(`/api/skills/${encodeURIComponent(item.resource_id)}`, { method: "POST", body: JSON.stringify({ enabled: !item.enabled }) }); await loadSkills(); });
+    row.append(main, toggle); return row;
+  });
+}
+
+async function loadMcp() {
+  const result = await api("/api/mcp");
+  renderSettingsList($("#mcp-list"), result.servers || [], (item) => {
+    const row = document.createElement("article"); row.className = "setting-row";
+    const main = document.createElement("div"); main.className = "setting-main";
+    const title = document.createElement("strong"); title.textContent = item.server_id;
+    const meta = document.createElement("code"); meta.textContent = `${item.transport} · ${item.status?.status || "configured"} · ${item.status?.tool_count || 0} tools`;
+    main.append(title, meta);
+    const remove = document.createElement("button"); remove.type = "button"; remove.className = "danger"; remove.textContent = "移除";
+    remove.addEventListener("click", async () => { if (!confirm("确认移除 MCP 服务器？")) return; await api(`/api/mcp/${encodeURIComponent(item.server_id)}`, { method: "DELETE" }); await loadMcp(); });
+    row.append(main, remove); return row;
+  });
+}
+
+async function loadConversations() {
+  const result = await api("/api/conversations");
+  renderSettingsList($("#conversation-list"), result.conversations || [], (item) => {
+    const row = document.createElement("article"); row.className = "setting-row";
+    const main = document.createElement("div"); main.className = "setting-main";
+    const title = document.createElement("strong"); title.textContent = valueOr(item.run?.goal?.objective, item.run?.run?.session_id);
+    const meta = document.createElement("code"); meta.textContent = `${item.run?.run?.run_id || "-"} · ${item.message_count || 0} messages`;
+    main.append(title, meta);
+    const open = document.createElement("button"); open.type = "button"; open.textContent = "打开"; open.addEventListener("click", () => { setView("runs"); loadRun(item.run?.run?.run_id); });
+    row.append(main, open); return row;
+  });
+}
+
+async function loadSystemSettings() {
+  const result = await api("/api/system");
+  $("#system-view").textContent = safeJson({ ...result.control_plane, provider: result.provider, auth: result.auth });
+}
+
+async function login(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const password = String(new FormData(form).get("password") || "");
+  try {
+    await api("/api/auth/login", { method: "POST", body: JSON.stringify({ password }) });
+    $("#login-dialog").close(); form.reset(); state.authenticated = true; $("#logout").hidden = false;
+    await Promise.all([loadSystem(), loadRuns({ keepSelection: false })]);
+    showNotice("已登录 Trace");
+  } catch (error) { showNotice("登录失败：" + error.message, true); }
+}
+
+async function logout() {
+  await api("/api/auth/logout", { method: "POST", body: "{}" });
+  state.authenticated = false; state.selectedId = ""; closeEvents(); setView("runs"); $("#logout").hidden = true; $("#login-dialog").showModal();
+}
+
+async function submitProvider(event) {
+  event.preventDefault(); if (event.submitter?.value === "cancel") return $("#provider-dialog").close();
+  const form = event.currentTarget; const data = new FormData(form); const payload = Object.fromEntries(data.entries());
+  payload.timeout_seconds = Number(payload.timeout_seconds); payload.max_context_tokens = Number(payload.max_context_tokens);
+  try { await api("/api/providers", { method: "POST", body: JSON.stringify(payload) }); $("#provider-dialog").close(); form.reset(); await loadProviders(); showNotice("Provider 已保存"); } catch (error) { showNotice(error.message, true); }
+}
+
+async function submitMcp(event) {
+  event.preventDefault(); if (event.submitter?.value === "cancel") return $("#mcp-dialog").close();
+  const form = event.currentTarget; const data = new FormData(form); const payload = Object.fromEntries(data.entries()); payload.args = String(payload.args || "").split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+  for (const field of ["env", "headers"]) {
+    const raw = String(payload[field] || "").trim();
+    if (!raw) { delete payload[field]; continue; }
+    try { payload[field] = JSON.parse(raw); } catch (error) { showNotice(`${field} JSON 无效`, true); return; }
+  }
+  try { await api("/api/mcp", { method: "POST", body: JSON.stringify(payload) }); $("#mcp-dialog").close(); form.reset(); await loadMcp(); showNotice("MCP 已保存"); } catch (error) { showNotice(error.message, true); }
 }
 
 async function loadRuns({ keepSelection = true } = {}) {
@@ -265,6 +396,15 @@ function openEvents() {
       showNotice(`事件解析失败：${error.message}`, true);
     }
   });
+  source.onerror = async () => {
+    if (state.eventSource !== source) return;
+    try {
+      const auth = await api("/api/auth/status");
+      if (auth.required && !auth.authenticated) {
+        source.close(); state.eventSource = null; state.authenticated = false; $("#login-dialog").showModal(); showNotice("会话已过期，请重新登录", true);
+      }
+    } catch (_) { /* reconnect keeps the live view available during transient failures */ }
+  };
   source.onopen = () => $("#event-cursor").textContent = `序号 ${state.eventCursor} · 实时`;
   state.eventSource = source;
 }
@@ -484,6 +624,22 @@ function exportReport() {
 }
 
 function bind() {
+  $$(".top-nav .nav-button").forEach((button) => button.addEventListener("click", () => setView(button.dataset.view)));
+  $$(".control-tab").forEach((button) => button.addEventListener("click", async () => {
+    $$(".control-tab").forEach((item) => item.classList.toggle("active", item === button));
+    $$("[data-control-panel]").forEach((panel) => { panel.hidden = panel.dataset.controlPanel !== button.dataset.controlTab; });
+    await loadControl();
+  }));
+  $("#logout").addEventListener("click", logout);
+  $("#login-form").addEventListener("submit", login);
+  $("#add-provider").addEventListener("click", () => $("#provider-dialog").showModal());
+  $("#provider-form").addEventListener("submit", submitProvider);
+  $("#add-mcp").addEventListener("click", () => $("#mcp-dialog").showModal());
+  $("#mcp-form").addEventListener("submit", submitMcp);
+  $("#refresh-skills").addEventListener("click", loadSkills);
+  $("#refresh-mcp").addEventListener("click", loadMcp);
+  $("#refresh-conversations").addEventListener("click", loadConversations);
+  $("#reload-system").addEventListener("click", async () => { await api("/api/system/reload", { method: "POST", body: "{}" }); await loadControl(); showNotice("MCP 配置已重载"); });
   $("#new-run").addEventListener("click", openCreateDialog);
   $("#empty-new-run").addEventListener("click", openCreateDialog);
   $("#refresh-runs").addEventListener("click", () => loadRuns());
@@ -528,7 +684,13 @@ function bind() {
 
 async function start() {
   bind();
-  await Promise.all([loadSystem(), loadRuns({ keepSelection: false })]);
+  try {
+    if (await loadAuth()) {
+      await Promise.all([loadSystem(), loadRuns({ keepSelection: false })]);
+    }
+  } catch (error) {
+    showNotice(error.message, true);
+  }
 }
 
 start();

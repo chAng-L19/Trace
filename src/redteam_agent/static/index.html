@@ -16,9 +16,16 @@
       <span>Trace</span>
       <span class="brand-subtitle">Agent Workbench</span>
     </div>
-    <div class="connection" id="connection" role="status">
-      <span class="connection-dot" aria-hidden="true"></span>
-      <span id="connection-text">正在连接</span>
+    <div class="header-tools">
+      <nav class="top-nav" aria-label="控制面导航">
+        <button class="nav-button active" data-view="runs" type="button">运行</button>
+        <button class="nav-button" data-view="control" type="button">控制面</button>
+      </nav>
+      <div class="connection" id="connection" role="status">
+        <span class="connection-dot" aria-hidden="true"></span>
+        <span id="connection-text">正在连接</span>
+      </div>
+      <button class="quiet small" id="logout" type="button" hidden>退出</button>
     </div>
   </header>
 
@@ -142,6 +149,40 @@
     </section>
   </main>
 
+  <main class="control-plane" id="control-plane" hidden>
+    <aside class="control-nav" aria-label="控制面设置">
+      <p class="eyebrow">TRACE CONTROL PLANE</p>
+      <h1>系统设置</h1>
+      <button class="control-tab active" data-control-tab="providers" type="button">模型与 API</button>
+      <button class="control-tab" data-control-tab="skills" type="button">Skills</button>
+      <button class="control-tab" data-control-tab="mcp" type="button">MCP 接入</button>
+      <button class="control-tab" data-control-tab="conversations" type="button">对话管理</button>
+      <button class="control-tab" data-control-tab="system" type="button">运行环境</button>
+    </aside>
+    <section class="control-content">
+      <section class="control-section" data-control-panel="providers">
+        <div class="panel-heading"><div><h2>模型与 API</h2><p>Provider 切换立即作用于后续 Agent 回合，密钥只显示绑定状态。</p></div><button class="primary" id="add-provider" type="button">添加 Provider</button></div>
+        <div class="settings-list" id="provider-list"></div>
+      </section>
+      <section class="control-section" data-control-panel="skills" hidden>
+        <div class="panel-heading"><div><h2>Skills</h2><p>资源索引来自当前 Trace 根目录，启用状态持久保存。</p></div><button class="quiet" id="refresh-skills" type="button">刷新索引</button></div>
+        <div class="settings-list" id="skill-list"></div>
+      </section>
+      <section class="control-section" data-control-panel="mcp" hidden>
+        <div class="panel-heading"><div><h2>MCP 接入</h2><p>每个服务器独立展示连接状态、作用域和工具数量。</p></div><div class="button-row"><button class="quiet" id="refresh-mcp" type="button">刷新</button><button class="primary" id="add-mcp" type="button">添加服务器</button></div></div>
+        <div class="settings-list" id="mcp-list"></div>
+      </section>
+      <section class="control-section" data-control-panel="conversations" hidden>
+        <div class="panel-heading"><div><h2>对话管理</h2><p>运行与模型 transcript 保持同一条持久链路，可查看分支树。</p></div><button class="quiet" id="refresh-conversations" type="button">刷新</button></div>
+        <div class="settings-list" id="conversation-list"></div>
+      </section>
+      <section class="control-section" data-control-panel="system" hidden>
+        <div class="panel-heading"><div><h2>运行环境</h2><p>平台、Python、工作区和托管配置路径。</p></div><button class="quiet" id="reload-system" type="button">重载 MCP</button></div>
+        <pre class="json-view" id="system-view"></pre>
+      </section>
+    </section>
+  </main>
+
   <dialog id="create-dialog" aria-labelledby="create-title">
     <form id="create-form" method="dialog">
       <div class="dialog-heading"><h2 id="create-title">新建运行</h2><button class="icon-button" value="cancel" aria-label="关闭" type="submit" formnovalidate>×</button></div>
@@ -167,6 +208,45 @@
       </div>
       <label class="check"><input name="acknowledge_missing_usage" type="checkbox">确认模型缺失的 Token 用量</label>
       <div class="dialog-actions"><button value="cancel" type="submit" formnovalidate>取消</button><button class="primary" value="default" type="submit">应用</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="provider-dialog" aria-labelledby="provider-title">
+    <form id="provider-form" method="dialog">
+      <div class="dialog-heading"><h2 id="provider-title">Provider 配置</h2><button class="icon-button" value="cancel" aria-label="关闭" type="submit" formnovalidate>×</button></div>
+      <label>标识<input name="provider_id" required maxlength="100" pattern="[A-Za-z0-9_-]+"></label>
+      <label>名称<input name="name" required maxlength="160"></label>
+      <label>Base URL<input name="base_url" type="url" value="https://api.openai.com/v1" required></label>
+      <label>模型<input name="model" required maxlength="200"></label>
+      <label>API Key 环境变量<input name="api_key_env" placeholder="OPENAI_API_KEY"></label>
+      <label>本次进程 API Key（不会回显或写入数据库）<input name="api_key" type="password" autocomplete="new-password"></label>
+      <div class="form-grid"><label>超时（秒）<input name="timeout_seconds" type="number" min="1" max="3600" value="120"></label><label>上下文 Token<input name="max_context_tokens" type="number" min="1" value="128000"></label></div>
+      <div class="dialog-actions"><button value="cancel" type="submit" formnovalidate>取消</button><button class="primary" value="default" type="submit">保存</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="mcp-dialog" aria-labelledby="mcp-title">
+    <form id="mcp-form" method="dialog">
+      <div class="dialog-heading"><h2 id="mcp-title">MCP 服务器</h2><button class="icon-button" value="cancel" aria-label="关闭" type="submit" formnovalidate>×</button></div>
+      <label>服务器 ID<input name="server_id" required maxlength="100" pattern="[A-Za-z0-9_\-]+"></label>
+      <label>传输<select name="transport"><option value="stdio">stdio</option><option value="http">HTTP</option></select></label>
+      <label>命令（stdio）<input name="command" placeholder="npx"></label>
+      <label>参数（每行一个）<textarea name="args" rows="3" maxlength="2000"></textarea></label>
+      <label>URL（HTTP）<input name="url" type="url"></label>
+      <label>Preset<input name="preset" placeholder="playwright"></label>
+      <label>作用域<select name="scope"><option value="run">每个运行独立</option><option value="shared">共享连接</option></select></label>
+      <label>环境变量 JSON<textarea name="env" rows="2" placeholder='{"TOKEN":"${MCP_TOKEN}"}'></textarea></label>
+      <label>请求头 JSON<textarea name="headers" rows="2" placeholder='{"Authorization":"Bearer ${MCP_TOKEN}"}'></textarea></label>
+      <div class="dialog-actions"><button value="cancel" type="submit" formnovalidate>取消</button><button class="primary" value="default" type="submit">保存并连接</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="login-dialog" aria-labelledby="login-title">
+    <form id="login-form" method="dialog">
+      <div class="dialog-heading"><h2 id="login-title">进入 Trace</h2></div>
+      <p class="dialog-copy">当前控制面需要管理员会话。</p>
+      <label>访问凭据<input name="password" type="password" autocomplete="current-password" required></label>
+      <div class="dialog-actions"><button class="primary" value="default" type="submit">登录</button></div>
     </form>
   </dialog>
 
