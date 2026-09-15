@@ -31,7 +31,7 @@ package-dir = { "" = "src" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-redteam_agent = ["workflows/*.toml"]
+redteam_agent = ["workflows/*.toml", "static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

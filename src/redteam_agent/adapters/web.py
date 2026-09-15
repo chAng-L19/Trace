@@ -10,17 +10,20 @@ import argparse
 import ipaddress
 import json
 import math
+import os
 import time
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from importlib.resources import files
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import parse_qs, unquote, urlsplit
 from uuid import uuid4
 
 from ..application import AgentService
-from ..application.contracts import BudgetDelta
-from ..core import contract_hash
+from ..application.contracts import CANONICAL_RUN_STATUSES, BudgetDelta
+from ..core import ModelPort, contract_hash
+from ..providers import OpenAICompatibleProvider
 from ..runtime.store_common import ImmutableRecordError, StoreConflictError
 
 
@@ -29,6 +32,22 @@ MAX_REQUEST_BYTES = 2 * 1024 * 1024
 DEFAULT_EVENT_LIMIT = 200
 MAX_EVENT_PAYLOAD_BYTES = 16 * 1024
 _RAW_EVENT_KEYS = frozenset({"state_snapshot", "payload", "output", "response", "request", "result", "stdout", "stderr"})
+_STATIC_FILES = {
+    "/": ("index.html", "text/html; charset=utf-8"),
+    "/index.html": ("index.html", "text/html; charset=utf-8"),
+    "/app.css": ("app.css", "text/css; charset=utf-8"),
+    "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+}
+_SECURITY_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+        "connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; "
+        "frame-ancestors 'none'"
+    ),
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+}
 
 
 def _event_value(value: Any, *, depth: int = 0) -> Any:
@@ -116,6 +135,10 @@ class WebApi:
         query = {key: values[-1] for key, values in parse_qs(parsed.query).items() if values}
         payload = dict(body or {})
         request_headers = {str(key).casefold(): str(value) for key, value in (headers or {}).items()}
+        if segments == ["api", "system"]:
+            if method != "GET":
+                return self._error(405, "method_not_allowed")
+            return self._ok(self.system_info())
         if segments[:2] != ["api", "runs"]:
             return self._error(404, "route_not_found")
         try:
@@ -132,6 +155,33 @@ class WebApi:
             return self._error(400, str(exc))
         except Exception as exc:  # pragma: no cover - defensive protocol boundary
             return self._error(500, f"internal_error:{type(exc).__name__}")
+
+    def system_info(self) -> dict[str, Any]:
+        loop = self.service.model_loop
+        if loop is None:
+            provider: dict[str, Any] = {"configured": False, "name": "", "model": ""}
+        else:
+            capabilities = loop.model.capabilities()
+            provider = {
+                "configured": True,
+                "name": str(capabilities.metadata.get("provider") or type(loop.model).__name__),
+                "model": loop.model_name or str(capabilities.metadata.get("model") or ""),
+                "capabilities": {
+                    "native_system_role": capabilities.native_system_role,
+                    "native_tool_calls": capabilities.native_tool_calls,
+                    "parallel_tool_calls": capabilities.parallel_tool_calls,
+                    "structured_output": capabilities.structured_output,
+                    "streaming": capabilities.streaming,
+                    "usage_reporting": capabilities.usage_reporting,
+                    "max_context_tokens": capabilities.max_context_tokens,
+                    "modalities": list(capabilities.modalities),
+                },
+            }
+        return {
+            "service": "Trace",
+            "provider": provider,
+            "run_statuses": sorted(CANONICAL_RUN_STATUSES),
+        }
 
     def _get(self, tail: list[str], query: Mapping[str, str]) -> WebResponse:
         if not tail:
@@ -527,6 +577,8 @@ class _TraceHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(response.body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Trace-Schema-Version", str(WEB_SCHEMA_VERSION))
+        for name, value in _SECURITY_HEADERS.items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(response.body)
 
@@ -554,6 +606,16 @@ class _TraceHandler(BaseHTTPRequestHandler):
             self._write(boundary_error)
             return
         parsed = urlsplit(self.path)
+        static_file = _STATIC_FILES.get(parsed.path)
+        if static_file is not None:
+            name, content_type = static_file
+            try:
+                body = files("redteam_agent").joinpath("static", name).read_bytes()
+            except (FileNotFoundError, OSError):
+                self._write(self.api._error(404, "static_resource_not_found"))
+                return
+            self._write(WebResponse(200, body, content_type))
+            return
         accepts_sse = "text/event-stream" in self.headers.get("Accept", "").casefold()
         if accepts_sse and parsed.path.startswith("/api/runs/") and parsed.path.endswith("/events"):
             self._write_sse(parsed)
@@ -582,7 +644,7 @@ class _TraceHandler(BaseHTTPRequestHandler):
         query = {key: values[-1] for key, values in parse_qs(parsed.query).items() if values}
         headers_sent = False
         try:
-            if "after_sequence" not in query and self.headers.get("Last-Event-ID"):
+            if self.headers.get("Last-Event-ID"):
                 query = {**query, "after_sequence": self.headers.get("Last-Event-ID", "0")}
             after = self.api._int_query(query, "after_sequence", 0, 0, 2**63 - 1)
             wait = float(query.get("wait_seconds", "0") or 0)
@@ -594,10 +656,13 @@ class _TraceHandler(BaseHTTPRequestHandler):
             # EventSource can reconnect with Last-Event-ID instead of hanging.
             self.send_header("Connection", "close")
             self.send_header("X-Trace-Schema-Version", str(WEB_SCHEMA_VERSION))
+            for name, value in _SECURITY_HEADERS.items():
+                self.send_header(name, value)
             self.end_headers()
             headers_sent = True
+            event_name = "trace-event" if query.get("channel") == "ui" else ""
             for event in events:
-                event_type = str(event["event_type"]).replace("\r", "").replace("\n", "")
+                event_type = event_name or str(event["event_type"]).replace("\r", "").replace("\n", "")
                 self.wfile.write(
                     (
                         f"id: {event['sequence']}\n"
@@ -640,8 +705,65 @@ class TraceHTTPServer(ThreadingHTTPServer):
         self.api = api
 
 
-def serve(root: Path, *, host: str = "127.0.0.1", port: int = 8765) -> None:
-    service = AgentService(root=root)
+def model_provider_from_environment(
+    environ: Mapping[str, str] | None = None,
+    *,
+    model: str = "",
+    base_url: str = "",
+    api_key_env: str = "",
+    timeout_seconds: float | None = None,
+    max_context_tokens: int | None = None,
+) -> OpenAICompatibleProvider | None:
+    values = environ if environ is not None else os.environ
+    resolved_model = str(model or values.get("TRACE_MODEL") or "").strip()
+    if not resolved_model:
+        return None
+    resolved_base = str(
+        base_url or values.get("TRACE_API_BASE_URL") or "https://api.openai.com/v1"
+    ).strip()
+    key_name = str(api_key_env or values.get("TRACE_API_KEY_ENV") or "OPENAI_API_KEY").strip()
+    resolved_timeout = (
+        float(timeout_seconds)
+        if timeout_seconds is not None
+        else float(values.get("TRACE_API_TIMEOUT_SECONDS") or 120)
+    )
+    resolved_context = (
+        int(max_context_tokens)
+        if max_context_tokens is not None
+        else int(values.get("TRACE_MODEL_CONTEXT_TOKENS") or 128_000)
+    )
+    return OpenAICompatibleProvider(
+        resolved_base,
+        resolved_model,
+        str(values.get(key_name) or ""),
+        timeout_seconds=resolved_timeout,
+        max_context_tokens=resolved_context,
+    )
+
+
+def serve(
+    root: Path,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    model_port: ModelPort | None = None,
+    model_name: str = "",
+    api_base_url: str = "",
+    api_key_env: str = "",
+    api_timeout_seconds: float | None = None,
+    model_context_tokens: int | None = None,
+) -> None:
+    provider = model_port or model_provider_from_environment(
+        model=model_name,
+        base_url=api_base_url,
+        api_key_env=api_key_env,
+        timeout_seconds=api_timeout_seconds,
+        max_context_tokens=model_context_tokens,
+    )
+    resolved_model = model_name or str(
+        provider.capabilities().metadata.get("model") if provider is not None else ""
+    )
+    service = AgentService(root=root, model_port=provider, model_name=resolved_model)
     server = TraceHTTPServer((host, int(port)), WebApi(service))
     try:
         server.serve_forever()
@@ -655,9 +777,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--model", default="")
+    parser.add_argument("--api-base-url", default="")
+    parser.add_argument("--api-key-env", default="")
+    parser.add_argument("--api-timeout-seconds", type=float)
+    parser.add_argument("--model-context-tokens", type=int)
     arguments = parser.parse_args(argv)
-    serve(arguments.root.expanduser().resolve(), host=arguments.host, port=arguments.port)
+    serve(
+        arguments.root.expanduser().resolve(),
+        host=arguments.host,
+        port=arguments.port,
+        model_name=arguments.model,
+        api_base_url=arguments.api_base_url,
+        api_key_env=arguments.api_key_env,
+        api_timeout_seconds=arguments.api_timeout_seconds,
+        model_context_tokens=arguments.model_context_tokens,
+    )
     return 0
 
 
-__all__ = ["DEFAULT_EVENT_LIMIT", "MAX_REQUEST_BYTES", "WEB_SCHEMA_VERSION", "TraceHTTPServer", "WebApi", "WebResponse", "main", "serve"]
+__all__ = ["DEFAULT_EVENT_LIMIT", "MAX_REQUEST_BYTES", "WEB_SCHEMA_VERSION", "TraceHTTPServer", "WebApi", "WebResponse", "main", "model_provider_from_environment", "serve"]

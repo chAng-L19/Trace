@@ -266,7 +266,6 @@ class AgentService:
         before = self.status(run_id)
         arguments = {
             "run_id": run_id,
-            "action_id": resolved.action_id,
             "output": resolved.output,
             "tool": resolved.tool,
             "usage": dict(resolved.usage),
@@ -284,6 +283,7 @@ class AgentService:
                 )
             else:
                 result = self.runtime.submit_observation(
+                    action_id=resolved.action_id,
                     idempotency_key=resolved.idempotency_key,
                     **arguments,
                 )
