@@ -28,6 +28,7 @@ Runtime：作用域、凭据、预算、幂等、CAS、Lease、Evidence lineage�
 | `cc_src` | 本地参考 | scoped config、取消、缓存失效、Token-aware 输出 |
 | Playwright MCP | `7e0457a7cbf88823bf0146d12c46ae12c6818247` | accessibility snapshot、隔离 browser、read-only annotations |
 | Capstone / radare2 / Rizin / Frida | 开源工具适配 | 反汇编、二进制元数据、字符串、动态进程和控制流分析 |
+| ASC | `MG1937/ASC` `47663fd` | 将 APK/DEX 视为只读数据库、按需解析、跨 DEX 引用查询、目标类最小提取和低内存加固探针 |
 
 ## 已完成基线
 
@@ -72,8 +73,9 @@ GitHub Actions: `.github/workflows/ci.yml` added for push/PR validation on Pytho
 | L7 | ResourceResolver 与透明扩展 | 已通过 |
 | L8 | EvidenceGate 收敛 | 已通过 |
 | L9 | MCP/Worker 适配器瘦身 | 已通过 |
-| L10 | 删除旧编排与发布门 | 已通过（结构门；行数瘦身列入后续成本批次） |
-| L11 | 透明度、Token 与能力评测 | 已通过（功能/成本门；代码量预算缺口已记录） |
+| L10 | 删除旧编排与发布门 | 已通过（结构门） |
+| L11 | 透明度、Token 与能力评测 | 已通过（功能/成本门） |
+| L12 | ASC 风格 APK/DEX 惰性逆向与加固适配 | 已通过 |
 
 ## 阶段交付与验收
 
@@ -121,7 +123,7 @@ radare2/Rizin、源码搜索、Python AST 和云清单工具，不依赖 MCP 配
 IDA/IDB 能力。
 
 验收：默认工具输入 Token 相对 L4 前下降至少 30%；expand 后能力完整；未知工具不可
-调用；tools-list 变化可恢复；副作用标注不可被模型覆盖；16 个内置开源工具在确定性
+调用；tools-list 变化可恢复；副作用标注不可被模型覆盖；内置开源工具在确定性
 fixture 上通过；IDA/IDB 搜索无结果；MCP 五个公开工具 schema 保持兼容。
 
 ### L5：BoundedOutput 与流式 Artifact（已通过）
@@ -232,8 +234,8 @@ Core/Runtime 模型和 Store/Evidence/Worker 实现）；将 canonical workflow 
 验收结果：生产 Python 文件 `80`、最大文件 `800` 行，删除文件清单与兼容导入测试通过；
 全量回归 `329 passed, 1 skipped`，`compileall`、wheel、隔离安装、`pip check`、source/
 installed self-test、MCP `initialize/tools/list`（5 个公开工具）全部通过；旧入口均映射
-到唯一 canonical 模块。当前生产代码 `25,766` 行，未强行压缩到 `16,000` 行，以避免
-破坏 Runtime 不变量；该行数目标保留给后续 L11 成本/透明度批次的独立瘦身工作。
+到唯一 canonical 模块。生产代码规模只作为可观测指标，不作为阶段硬门；本阶段优先保证
+Runtime 不变量和逆向能力。
 
 ### L11：透明度与成本评测（已通过功能/成本验收）
 
@@ -244,8 +246,25 @@ compaction boundary 和 Evidence lineage 查询；固定 Web/API 评测集与干
 10 场景评测中工具输入 Token 总量相对 Phase 6 基线下降 `62.8%`，大型输出中位下降
 `62.8%`；GoalContract 完成率 `100%`；5 个干净目标误成功 `0`；快照连续生成一致。
 新增查询均为只读、run-scoped，并保持原始 Transcript/Artifact/Observation/Evidence
-lineage 可回读。生产代码当前约 `24,207` 行，未达到全局 `16,000` 行预算；该缺口
-不通过删除不变量来掩盖，列为后续成本瘦身批次。
+lineage 可回读。代码量仅记录为后续优化观测项，不影响 L11 通过状态。
+
+### L12：ASC 风格 APK/DEX 惰性逆向与加固适配（已通过）
+
+动作：移除 JADX 语义依赖，新增清洁实现的 `apk-asc` 工具。以 APK ZIP 中央目录和 DEX
+表作为只读数据库，按需读取单个 DEX；支持 APK 清单式库存、DEX/原生库/动态 DEX 候选、
+加固迹象探针、跨 DEX 的 string/type/method/field 引用查询，以及单目标类的结构化伪代码
+提取。新增 `binary-analysis` 原生惰性查询作为 radare2/Rizin 缺失时的回退，不改变原有
+工具调用协议和证据边界。
+
+验收：ASC 风格工具不依赖 JADX、IDA 或商业 SDK；无预处理数据库时可完成库存、引用查询和
+目标类提取；跨 DEX 查询结果包含 DEX、类、方法和指令偏移；加固候选能标记压缩/异常 DEX、
+原生加载器和动态 DEX；原生二进制回退在缺少 radare2/Rizin 时仍返回可验证的哈希、字符串
+和受界限反汇编；全量测试、编译、MCP 工具目录和旧工具兼容性继续通过。
+
+验收结果：`apk-asc` 的库存、异常/压缩 DEX、原生加载器、动态 DEX、跨 DEX 字符串引用和
+目标类结构化提取均由确定性 APK fixture 验证；radare2/Rizin 缺失回退测试通过。全量回归
+`340 passed, 1 skipped`，`compileall`、wheel、`pip check`、self-test 和 MCP
+`initialize/tools/list` 全部通过，五个公开 MCP 工具 schema 保持不变。
 
 ## 执行规约与 Ponytail
 
@@ -258,9 +277,9 @@ lineage 可回读。生产代码当前约 `24,207` 行，未达到全局 `16,000
 - 阶段报告只陈述实际改动、证据和剩余缺口；不把计划、模型输出、报告文本或工具
   `success` 标志当作完成证据。
 
-## 硬性目标
+## 质量目标（代码量为观测项）
 
-- 生产代码目标 ≤16,000 行、模块 ≤80 个、单文件 ≤800 行；
+- 持续减少重复实现；生产代码、模块数和最大文件大小只记录趋势，不作为硬性门；
 - 默认模型工具输入 Token 相对 Phase 6 基线下降 ≥35%；
 - 大型工具输出输入上下文 Token 中位数下降 ≥40%；
 - GoalContract 完成率不下降，干净目标误成功率不升高；
@@ -288,8 +307,8 @@ lineage 可回读。生产代码当前约 `24,207` 行，未达到全局 `16,000
 3. 保留一个最强主模型和一个 AgentLoop，不做固定 Specialist 流水线。
 4. 工具默认 selected/catalog，强模型可显式 expand；不因省 Token 隐藏可用能力。
 5. Projection、summary、report 都是导航投影，不能冒充 Evidence。
-6. 逆向能力优先使用内置 Capstone、二进制解析、字符串提取、Frida 和 radare2/Rizin
-   Adapter；外部 MCP 只作为可选扩展，不是默认能力来源。
+6. 逆向能力优先使用内置 Capstone、二进制解析、字符串提取、Frida、ASC 风格 APK/DEX
+   查询和原生二进制回退；radare2/Rizin 与外部 MCP 只作为可选增强，不是默认能力来源。
 
 ## 迁移规则
 

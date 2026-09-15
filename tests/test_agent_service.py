@@ -60,6 +60,39 @@ def test_internal_waiting_states_project_to_waiting_worker(tmp_path: Path) -> No
     assert waiting.next_action == "provide_target"
 
 
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        (
+            "waiting_worker",
+            {"waiting_worker", "waiting_goal_input", "waiting_host", "waiting_tools", "waiting_dependency"},
+        ),
+        ("failed", {"failed", "failed_integrity"}),
+    ],
+)
+def test_list_runs_expands_canonical_status_filters(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+    expected: set[str],
+) -> None:
+    service = AgentService(root=tmp_path / "operations")
+    captured: dict[str, object] = {}
+
+    def operations(*, limit: int, offset: int, statuses: tuple[str, ...]):
+        captured.update(limit=limit, offset=offset, statuses=statuses)
+        return ()
+
+    monkeypatch.setattr(service.runtime.store, "operations", operations)
+    try:
+        assert service.list_runs(limit=7, offset=2, status=status) == ()
+        assert captured["limit"] == 7
+        assert captured["offset"] == 2
+        assert set(captured["statuses"]) == expected
+    finally:
+        service.close()
+
+
 def test_budget_delta_with_same_idempotency_key_applies_once(tmp_path: Path) -> None:
     service = AgentService(root=tmp_path / "operations")
     started = service.start(

@@ -168,6 +168,14 @@ def test_token_limit_pauses_before_tool_and_resumes_from_durable_response(tmp_pa
     assert tools.calls == []
     assert paused.terminal.terminal is False
 
+    ordinary_resume = service.resume(run_id, execute=False)
+    assert ordinary_resume.run.status == "paused_budget"
+    assert ordinary_resume.run.budget.pause_reason == "token_limit_exhausted"
+
+    still_gated = service.pause(run_id, reason="operator_pause")
+    assert still_gated.run.status == "paused_budget"
+    assert still_gated.run.budget.pause_reason == "token_limit_exhausted"
+
     completed = service.run(
         run_id,
         BudgetDelta(tokens=10, idempotency_key="phase4-token-extension"),

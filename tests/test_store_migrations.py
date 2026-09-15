@@ -46,6 +46,50 @@ def test_new_database_records_migration_history_and_reopen_is_idempotent(tmp_pat
     assert _schema_projection(second) == first_schema
 
 
+def test_schema_v10_without_web_receipts_upgrades_with_migration_11(tmp_path: Path) -> None:
+    root = tmp_path / "v10-store"
+    store = DurableStore(root)
+    with store.transaction(immediate=True) as connection:
+        connection.execute("DROP TABLE web_command_receipts")
+        connection.execute("DELETE FROM schema_metadata WHERE key='migration:11'")
+        connection.execute("UPDATE schema_metadata SET value='10' WHERE key='schema_version'")
+        connection.execute("PRAGMA user_version=10")
+
+    upgraded = DurableStore(root)
+
+    assert upgraded.migration_report.detected_version == 10
+    assert upgraded.migration_report.applied == (11,)
+    assert upgraded.schema_version() == SCHEMA_VERSION
+    with upgraded.connection() as connection:
+        assert connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='web_command_receipts'"
+        ).fetchone() is not None
+
+
+def test_schema_v11_web_receipts_missing_fencing_column_is_repaired(tmp_path: Path) -> None:
+    root = tmp_path / "partial-v11-store"
+    store = DurableStore(root)
+    with store.transaction(immediate=True) as connection:
+        connection.execute("ALTER TABLE web_command_receipts RENAME TO web_command_receipts_current")
+        connection.execute(
+            "CREATE TABLE web_command_receipts ("
+            "command_id TEXT PRIMARY KEY, request_hash TEXT NOT NULL, "
+            "run_id TEXT NOT NULL DEFAULT '', owner TEXT NOT NULL, "
+            "status TEXT NOT NULL, response_json TEXT NOT NULL DEFAULT '{}', "
+            "lease_expires_at REAL NOT NULL DEFAULT 0, "
+            "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+        )
+        connection.execute("DROP TABLE web_command_receipts_current")
+
+    repaired = DurableStore(root)
+
+    assert repaired.migration_report.detected_version == SCHEMA_VERSION
+    assert repaired.migration_report.applied == ()
+    with repaired.connection() as connection:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(web_command_receipts)")}
+    assert "fencing_token" in columns
+
+
 def test_legacy_schema_migration_preserves_evidence_rows(tmp_path: Path) -> None:
     root = tmp_path / "legacy-store"
     root.mkdir()

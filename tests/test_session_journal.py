@@ -11,7 +11,7 @@ from redteam_agent.runtime.model_records import (
     ModelRequestRecord,
     ModelResponseRecord,
 )
-from redteam_agent.runtime.store_common import ImmutableRecordError, StoreConflictError
+from redteam_agent.runtime.store_common import ImmutableRecordError, SCHEMA_VERSION, StoreConflictError
 
 
 def _service(tmp_path: Path, session_id: str = "journal") -> tuple[AgentService, str]:
@@ -276,14 +276,16 @@ def test_schema_upgrade_backfills_existing_raw_records(tmp_path: Path) -> None:
         connection.execute("DROP TABLE session_journal_heads")
         connection.execute("DROP TABLE session_journal_state")
         connection.execute("DROP TABLE session_journal_entries")
+        connection.execute("DROP TABLE web_command_receipts")
         connection.execute("DELETE FROM schema_metadata WHERE key='migration:10'")
+        connection.execute("DELETE FROM schema_metadata WHERE key='migration:11'")
         connection.execute("UPDATE schema_metadata SET value='9' WHERE key='schema_version'")
         connection.execute("PRAGMA user_version=9")
 
     recovered = AgentService(root=root)
     entries = recovered.session_entries(run_id)
 
-    assert recovered.runtime.store.schema_version() == 10
+    assert recovered.runtime.store.schema_version() == SCHEMA_VERSION
     assert len(recovered.transcript(run_id)) == expected_messages
     assert {entry.raw_table for entry in entries} >= {
         "operation_events",

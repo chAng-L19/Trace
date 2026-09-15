@@ -422,6 +422,28 @@ def _migration_10_session_journal(context: Any, connection: sqlite3.Connection) 
         context._backfill_session_journal(connection)
 
 
+def _migration_11_web_command_receipts(context: Any, connection: sqlite3.Connection) -> None:
+    execute_sql_script(
+        connection,
+        """
+        CREATE TABLE IF NOT EXISTS web_command_receipts (
+            command_id TEXT PRIMARY KEY, request_hash TEXT NOT NULL,
+            run_id TEXT NOT NULL DEFAULT '', owner TEXT NOT NULL,
+            status TEXT NOT NULL, response_json TEXT NOT NULL DEFAULT '{}',
+            lease_expires_at REAL NOT NULL DEFAULT 0,
+            fencing_token INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_web_command_run
+            ON web_command_receipts(run_id, updated_at);
+        """,
+    )
+    if "fencing_token" not in context._columns(connection, "web_command_receipts"):
+        connection.execute(
+            "ALTER TABLE web_command_receipts ADD COLUMN fencing_token INTEGER NOT NULL DEFAULT 1"
+        )
+
+
 MIGRATIONS = (
     Migration(1, "base_runtime_schema", _migration_1_base),
     Migration(2, "operation_cas_and_lease_fencing", _migration_2_cas_and_fencing),
@@ -433,6 +455,7 @@ MIGRATIONS = (
     Migration(8, "isolated_worker_plane", _migration_8_worker_plane),
     Migration(9, "thin_tactical_exploration_ledger", _migration_9_tactical_exploration),
     Migration(10, "transparent_session_journal", _migration_10_session_journal),
+    Migration(11, "web_command_receipts", _migration_11_web_command_receipts),
 )
 
 

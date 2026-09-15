@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from ..adapters.runtime import (
+    LEGACY_TO_CORE_STATUS,
     evidence_from_runtime,
     goal_from_runtime,
     run_from_runtime,
@@ -294,6 +295,37 @@ class AgentService:
     def status(self, run_id: str) -> AgentRunView:
         return self._view(self.runtime.status(run_id))
 
+    def list_runs(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        status: str = "",
+    ) -> tuple[AgentRunView, ...]:
+        """Return bounded run projections for CLI/Web consumers."""
+
+        normalized_status = str(status or "").strip()
+        runtime_statuses = tuple(
+            dict.fromkeys(
+                (
+                    normalized_status,
+                    *(
+                        legacy
+                        for legacy, canonical in LEGACY_TO_CORE_STATUS.items()
+                        if canonical == normalized_status
+                    ),
+                )
+            )
+        ) if normalized_status else ()
+        return tuple(
+            self.status(state.run_id)
+            for state in self.runtime.store.operations(
+                limit=limit,
+                offset=offset,
+                statuses=runtime_statuses,
+            )
+        )
+
     def summary(self, run_id: str) -> dict[str, Any]:
         self.status(run_id)
         return self.runtime.status(run_id).summary()
@@ -304,6 +336,11 @@ class AgentService:
     def apply_budget_delta(self, run_id: str, **delta: Any) -> AgentRunView:
         before = self.status(run_id)
         view = self._view(self.runtime.apply_budget_delta(run_id, **delta))
+        return self._validate_result(before.run.status, view)
+
+    def apply_budget_delta_once(self, run_id: str, *, idempotency_key: str, **delta: Any) -> AgentRunView:
+        before = self.status(run_id)
+        view = self._view(self.runtime.apply_budget_delta_once(run_id, idempotency_key=idempotency_key, **delta))
         return self._validate_result(before.run.status, view)
 
     def apply_budget_delta_batch(self, run_ids: list[str], **delta: Any) -> None:
@@ -323,6 +360,45 @@ class AgentService:
             view = self._view(self.runtime.cancel(run_id, reason=reason))
         except (StateVersionConflict, StoreConflictError) as exc:
             view = self._settle_control_conflict(run_id, exc)
+        return self._validate_result(before.run.status, view)
+
+    def pause(self, run_id: str, reason: str = "user_requested") -> AgentRunView:
+        before = self.status(run_id)
+        view = self._view(self.runtime.pause_run(run_id, reason=reason))
+        return self._validate_result(before.run.status, view)
+
+    def resume(
+        self,
+        run_id: str,
+        budget_delta: BudgetDelta | Mapping[str, Any] | None = None,
+        *,
+        max_actions: int | None = None,
+        execute: bool = True,
+    ) -> AgentRunView:
+        delta = BudgetDelta.from_value(budget_delta)
+        before = self.status(run_id)
+        if delta.changes_budget and before.run.status in {"completed", "failed", "cancelled"}:
+            raise ValueError(f"operation_terminal:{before.run.status}")
+        if delta.changes_budget:
+            arguments = {
+                "actions": delta.actions,
+                "tokens": delta.tokens,
+                "time_seconds": delta.time_seconds,
+                "deadline": delta.deadline,
+                "acknowledge_missing_usage": delta.acknowledge_missing_usage,
+            }
+            if delta.idempotency_key:
+                self.runtime.apply_budget_delta_once(
+                    run_id,
+                    idempotency_key=delta.idempotency_key,
+                    **arguments,
+                )
+            else:
+                self.runtime.apply_budget_delta(run_id, **arguments)
+        self.runtime.resume_control(run_id)
+        if execute:
+            return self.run(run_id, max_actions=max_actions)
+        view = self.status(run_id)
         return self._validate_result(before.run.status, view)
 
     def events(

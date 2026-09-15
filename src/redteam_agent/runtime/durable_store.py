@@ -29,6 +29,7 @@ from .conversation_store import ConversationStoreMixin
 from .budget_store import BudgetStoreMixin
 from .exploration import ExplorationStoreMixin
 from .session_journal import JournalStoreMixin
+from .web_command_store import WebCommandStoreMixin
 
 __all__ = [
     "DurableStore",
@@ -161,6 +162,7 @@ class DurableStore(
     BudgetStoreMixin,
     ExplorationStoreMixin,
     JournalStoreMixin,
+    WebCommandStoreMixin,
     StoreSchemaMixin,
 ):
     def __init__(self, root: Path) -> None:
@@ -394,6 +396,13 @@ class DurableStore(
                 state = self._state_from_row(connection, row)
                 if state is None:
                     raise RuntimeError(f"operation_state_corrupt:{run_id}")
+                if state.status in {"completed", "failed", "failed_integrity", "cancelled"}:
+                    raise ValueError(f"operation_terminal:{state.status}")
+                states.append(state)
+
+            for state in states:
+                run_id = state.run_id
+                row = rows[run_id]
                 changed = state.budget.apply_delta(
                     actions=actions,
                     tokens=tokens,
@@ -402,7 +411,6 @@ class DurableStore(
                     acknowledge_missing_usage=acknowledge_missing_usage,
                 )
                 if not changed:
-                    states.append(state)
                     continue
                 if state.status == "paused_budget" and not state.budget.exhaustion_reason():
                     state.status = "running"
@@ -444,7 +452,6 @@ class DurableStore(
                         "state_snapshot": snapshot,
                     },
                 )
-                states.append(state)
         return tuple(states)
 
     def load_operation(self, run_id: str) -> OperationState | None:
@@ -472,6 +479,33 @@ class DurableStore(
         with self.connection() as connection:
             row = connection.execute(query, (session_id,)).fetchone()
             return self._state_from_row(connection, row) if row else None
+
+    def operations(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        statuses: Sequence[str] = (),
+    ) -> tuple[OperationState, ...]:
+        """Return a bounded, newest-first operation projection for adapters."""
+
+        bounded_limit = max(1, min(1000, int(limit)))
+        bounded_offset = max(0, int(offset))
+        query = "SELECT * FROM operations"
+        arguments: list[Any] = []
+        normalized_statuses = tuple(
+            dict.fromkeys(str(item).strip() for item in statuses if str(item).strip())
+        )
+        if normalized_statuses:
+            placeholders = ",".join("?" for _ in normalized_statuses)
+            query += f" WHERE status IN ({placeholders})"
+            arguments.extend(normalized_statuses)
+        query += " ORDER BY updated_at DESC, run_id DESC LIMIT ? OFFSET ?"
+        arguments.extend((bounded_limit, bounded_offset))
+        with self.connection() as connection:
+            rows = connection.execute(query, tuple(arguments)).fetchall()
+            states = [self._state_from_row(connection, row) for row in rows]
+        return tuple(state for state in states if state is not None)
 
     def operations_for_batch(self, batch_session_id: str) -> tuple[OperationState, ...]:
         batch_id = batch_session_id.strip()

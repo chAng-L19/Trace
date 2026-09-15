@@ -256,6 +256,8 @@ class OperationLifecycleMixin:
             raise ValueError(f"operation_busy:{run_id}")
         try:
             state = self.store.load_operation(run_id) or initial
+            if state.status in {"completed", "failed", "failed_integrity", "cancelled"}:
+                raise ValueError(f"operation_terminal:{state.status}")
             if state.budget.apply_delta(
                 actions=actions,
                 tokens=tokens,

@@ -16,7 +16,8 @@ Trace 是证据驱动、可持久恢复、面向强模型战术能力的专业�
 - Phase 6 薄战术循环、append-only ExplorationLedger、分支重开和 ReconDigest；
 - ToolRegistry 按能力/风险选择工具，支持目录 revision、按需 expand 和运行级可见性；
 - 内置开源工具面：HTTP、DNS、TCP 探测、Playwright 浏览器、Capstone 反汇编、
-  二进制信息/字符串、radare2/Rizin、Frida、源码搜索、Python AST 和云账号只读清单；
+  二进制信息/字符串、原生惰性二进制查询、Frida、源码搜索、Python AST、云账号只读清单，
+  以及 ASC 思路的 APK/DEX 按需分析、跨 DEX 引用查询和加固迹象探针；
 - 通用 run-scoped MCP Capability Plane，支持 roots、取消、目录刷新和资源清理；
 - EvidenceGraph、SemanticVerifier、TerminalJudge 和五个公开 MCP 工具。
 
@@ -30,9 +31,10 @@ python -m redteam_agent.runtime.mcp_transport --root .\state
 redteam-agent mcp-doctor --config .\config.toml
 ```
 
-默认 `OperationRuntime` 直接注册上述工具，不依赖 `config.toml`。Playwright 和 Capstone
-通过 Python API 调用，radare2/Rizin、Frida 和云 CLI 在本机存在时由内置 Adapter 直接
-执行。`config.toml.example` 仅保留通用 MCP 扩展示例。
+默认 `OperationRuntime` 直接注册上述工具，不依赖 `config.toml`。Playwright、Capstone
+和 ASC 风格 APK/DEX 查询通过 Python API 调用；radare2/Rizin、Frida 和云 CLI 在本机存在时
+由内置 Adapter 使用，缺少 radare2/Rizin 时自动回退到原生惰性二进制查询。
+`config.toml.example` 仅保留通用 MCP 扩展示例。
 
 开发测试：
 

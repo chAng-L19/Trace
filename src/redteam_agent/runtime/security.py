@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 MAX_HANDOFF_OBSERVATION_BYTES = 2 * 1024 * 1024
 
 

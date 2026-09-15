@@ -18,14 +18,16 @@ promotion.
 |---|---|---|
 | Web/API | `http-request`, `browser-navigate`, `browser-snapshot`, `browser-click`, `browser-fill`, `browser-screenshot` | Python standard library and Microsoft Playwright Python API |
 | Network | `dns-resolve`, `port-probe` | Python `socket` |
-| Reverse | `binary-info`, `binary-strings`, `binary-disassemble`, `binary-radare2`, `frida-processes` | PE/ELF/Mach-O/WASM parser, Capstone, radare2/Rizin and Frida when installed |
+| Reverse | `binary-info`, `binary-strings`, `binary-disassemble`, `binary-analysis`, `binary-radare2`, `frida-processes` | PE/ELF/Mach-O/WASM parser, Capstone, native lazy query, radare2/Rizin and Frida when installed |
+| Android | `apk-asc` | ASC-style lazy APK/DEX inventory, protection indicators, cross-DEX references and targeted class extraction |
 | Code audit | `code-search`, `python-ast-audit` | `pathlib`, `re`, Python `ast` |
 | Cloud | `cloud-inventory` | Read-only locally installed AWS/Azure/GCP CLI invocation |
 
-`binary-radare2` and `cloud-inventory` report a bounded availability result
-when their optional local executable or credentials are absent; the Frida
-Python runtime is installed as a project dependency. None of these adapters
-cause an implicit download or execute an unbounded shell command.
+`binary-radare2` uses the native `binary-analysis` query when its optional local
+executable is absent. `cloud-inventory` reports a bounded availability result
+when credentials are absent; the Frida Python runtime is installed as a project
+dependency. None of these adapters cause an implicit download or execute an
+unbounded shell command.
 
 ## Invariants
 
@@ -47,6 +49,8 @@ cause an implicit download or execute an unbounded shell command.
 | HTTP request returns bounded status/body/hash | `tests/test_open_source_tools.py::test_http_request_fixture` | pass |
 | Browser adapter controls a local page | `tests/test_open_source_tools.py::test_browser_snapshot_and_click_fixture` | pass |
 | Binary metadata, strings and Capstone disassembly work | `tests/test_open_source_tools.py::test_binary_tools_fixture` | pass |
+| Native binary fallback works without radare2/Rizin | `tests/test_open_source_tools.py::test_radare2_surface_falls_back_to_native_query` | pass |
+| ASC-style APK inventory, references and targeted class extraction work | `tests/test_android_asc.py` | pass |
 | Source search and AST audit preserve file/line provenance | `tests/test_open_source_tools.py::test_code_audit_tools_fixture` | pass |
 | Vendor-specific reverse lifecycle is absent | `rg` over `src`, `tests`, active config | pass |
 | Existing MCP lifecycle remains compatible | `tests/test_mcp_capability_integrations.py` | pass |

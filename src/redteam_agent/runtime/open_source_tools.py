@@ -13,6 +13,8 @@ import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
+from .android_asc import apk_asc
+
 if TYPE_CHECKING:
     from .tool_broker import ToolBroker
 
@@ -371,7 +373,10 @@ def binary_radare2(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
     path, _ = _read_path(arguments)
     executable = next((shutil.which(name) for name in ("r2", "radare2", "rizin") if shutil.which(name)), "")
     if not executable:
-        raise RuntimeError("open_source_disassembler_missing:install_radare2_or_rizin")
+        result = binary_analysis(arguments)
+        result["requested_command"] = str(arguments.get("command") or "aaa;afl")
+        result["fallback"] = "trace-binary-query"
+        return result
     command = str(arguments.get("command") or "aaa;afl").strip()
     try:
         timeout = max(1.0, min(300.0, float(arguments.get("timeout", 60.0))))
@@ -387,6 +392,50 @@ def binary_radare2(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
     )
     output, truncated = _bounded(process.stdout)
     return {"path": str(path), "tool": Path(executable).name, "return_code": process.returncode, "output": output, "truncated": truncated}
+
+
+def binary_analysis(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Query a binary without requiring a heavyweight disassembler database.
+
+    This is the native fallback for the radare2-compatible surface: metadata,
+    strings and a bounded Capstone window are collected only when requested.
+    """
+
+    path, _ = _read_path(arguments)
+    info = binary_info({"path": str(path)})
+    strings = binary_strings(
+        {
+            "path": str(path),
+            "minimum_length": arguments.get("minimum_length", 4),
+            "max_results": arguments.get("max_results", 200),
+        }
+    )
+    disassembly: Mapping[str, Any]
+    try:
+        disassembly = binary_disassemble(
+            {
+                "path": str(path),
+                "architecture": arguments.get("architecture") or info.get("architecture") or "x64",
+                "offset": arguments.get("offset", 0),
+                "max_bytes": arguments.get("max_bytes", 4096),
+                "max_instructions": arguments.get("max_instructions", 200),
+            }
+        )
+    except (RuntimeError, ValueError) as exc:
+        disassembly = {"error": type(exc).__name__ + ":" + str(exc), "instructions": [], "count": 0}
+    return {
+        "path": str(path),
+        "tool": "trace-binary-query",
+        "strategy": "lazy-metadata-strings-disassembly",
+        "format": info.get("format"),
+        "architecture": info.get("architecture"),
+        "sha256": info.get("sha256"),
+        "strings": strings.get("strings", []),
+        "strings_truncated": strings.get("truncated", False),
+        "instructions": disassembly.get("instructions", []),
+        "instruction_count": disassembly.get("count", 0),
+        "disassembly_error": disassembly.get("error", ""),
+    }
 
 
 def frida_processes(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -543,8 +592,18 @@ def register_open_source_tools(broker: ToolBroker) -> None:
     )
     broker.register_adapter(
         name="binary-radare2", capabilities=("binary_reverse", "decompile", "graph_analysis"), adapter=binary_radare2,
-        description="Direct read-only radare2/Rizin command adapter when the open-source executable is installed.", priority=620,
-        input_schema=_schema(("path",), {"path": text, "command": text, "timeout": {"type": "number"}}),
+        description="Read-only radare2/Rizin-compatible adapter with a native lazy binary-query fallback.", priority=620,
+        input_schema=_schema(("path",), {"path": text, "command": text, "timeout": {"type": "number"}, "architecture": text, "offset": {"type": "integer"}, "max_bytes": {"type": "integer"}, "max_instructions": {"type": "integer"}, "minimum_length": {"type": "integer"}, "max_results": {"type": "integer"}}),
+    )
+    broker.register_adapter(
+        name="binary-analysis", capabilities=("binary_reverse", "decompile", "graph_analysis"), adapter=binary_analysis,
+        description="Native lazy binary metadata, strings and bounded Capstone analysis without a database build.", priority=640,
+        input_schema=_schema(("path",), {"path": text, "architecture": text, "offset": {"type": "integer"}, "max_bytes": {"type": "integer"}, "max_instructions": {"type": "integer"}, "minimum_length": {"type": "integer"}, "max_results": {"type": "integer"}}),
+    )
+    broker.register_adapter(
+        name="apk-asc", capabilities=("binary_reverse", "apk_decompile", "android_static_analysis", "graph_analysis"), adapter=apk_asc,
+        description="Lazy ASC-style APK/DEX query: inventory protected containers, find cross-DEX references, and extract one target class on demand.", priority=650,
+        input_schema=_schema(("path",), {"path": text, "operation": {"type": "string", "enum": ["inventory", "protection", "triage", "findrefs", "getclass"]}, "query_type": {"type": "string", "enum": ["string", "type", "method", "field"]}, "query": text, "value": text, "class_name": text, "fuzzy_class": {"type": "boolean"}, "max_results": {"type": "integer"}, "max_methods": {"type": "integer"}, "max_dex_bytes": {"type": "integer"}, "workers": {"type": "integer"}}),
     )
     broker.register_adapter(
         name="frida-processes", capabilities=("binary_reverse", "binary_debug"), adapter=frida_processes,
@@ -570,6 +629,7 @@ def register_open_source_tools(broker: ToolBroker) -> None:
 
 __all__ = [
     "binary_disassemble",
+    "binary_analysis",
     "binary_info",
     "binary_radare2",
     "binary_strings",
@@ -579,6 +639,7 @@ __all__ = [
     "browser_screenshot",
     "browser_snapshot",
     "cloud_inventory",
+    "apk_asc",
     "code_search",
     "dns_resolve",
     "frida_processes",
