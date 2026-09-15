@@ -46,6 +46,26 @@ def test_new_database_records_migration_history_and_reopen_is_idempotent(tmp_pat
     assert _schema_projection(second) == first_schema
 
 
+def test_schema_v10_without_web_receipts_upgrades_with_migration_11(tmp_path: Path) -> None:
+    root = tmp_path / "v10-store"
+    store = DurableStore(root)
+    with store.transaction(immediate=True) as connection:
+        connection.execute("DROP TABLE web_command_receipts")
+        connection.execute("DELETE FROM schema_metadata WHERE key='migration:11'")
+        connection.execute("UPDATE schema_metadata SET value='10' WHERE key='schema_version'")
+        connection.execute("PRAGMA user_version=10")
+
+    upgraded = DurableStore(root)
+
+    assert upgraded.migration_report.detected_version == 10
+    assert upgraded.migration_report.applied == (11,)
+    assert upgraded.schema_version() == SCHEMA_VERSION
+    with upgraded.connection() as connection:
+        assert connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='web_command_receipts'"
+        ).fetchone() is not None
+
+
 def test_legacy_schema_migration_preserves_evidence_rows(tmp_path: Path) -> None:
     root = tmp_path / "legacy-store"
     root.mkdir()

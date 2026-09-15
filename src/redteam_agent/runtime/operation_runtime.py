@@ -33,6 +33,18 @@ from .workflow_registry import WorkflowRegistry
 from .exploration import TacticalAttemptRecord
 
 
+OPERATOR_PAUSE_REASONS = frozenset({"user_requested", "operator_pause"})
+BUDGET_PAUSE_REASONS = frozenset(
+    {
+        "action_limit_exhausted",
+        "token_limit_exhausted",
+        "token_usage_unknown",
+        "time_limit_exhausted",
+        "cycle_action_limit",
+    }
+)
+
+
 class OperationRuntime(
     OperationContractMixin,
     OperationLifecycleMixin,
@@ -99,6 +111,92 @@ class OperationRuntime(
                 {"servers": list(cleanup)},
             )
 
+    def pause_run(self, run_id: str, *, reason: str = "user_requested") -> OperationResult:
+        """Persist an operator pause without introducing a second state machine."""
+
+        state = self.store.load_operation(run_id)
+        if state is None:
+            raise KeyError(f"operation_not_found:{run_id}")
+        workflow = self._workflow_for(state)
+        normalized_reason = reason.strip() or "user_requested"
+        if state.status in {"completed", "failed", "failed_integrity", "cancelled"}:
+            raise ValueError(f"operation_terminal:{state.status}")
+        if state.status == "paused_budget":
+            # Never overwrite a budget or missing-usage gate with an operator
+            # reason: doing so would let a normal resume bypass enforcement.
+            return self._result(state, workflow)
+        token = self.store.acquire_lease(
+            run_id,
+            "__operation__",
+            f"{self.owner}:pause:{uuid4().hex}",
+            ttl_seconds=self._operation_lease_ttl(workflow),
+        )
+        if token is None:
+            raise ValueError(f"operation_busy:{run_id}")
+        try:
+            current = self.store.load_operation(run_id)
+            if current is None:
+                raise KeyError(f"operation_not_found:{run_id}")
+            if current.status in {"completed", "failed", "failed_integrity", "cancelled"}:
+                raise ValueError(f"operation_terminal:{current.status}")
+            current.status = "paused_budget"
+            # If the budget is already exhausted, preserve its machine reason
+            # even when an operator pause arrives concurrently.
+            current.budget.pause(current.budget.exhaustion_reason() or normalized_reason)
+            self.store.save_operation(
+                current,
+                expected_version=current.state_version,
+                lease_token=token,
+                event_type="run_paused",
+                event={"reason": current.budget.pause_reason},
+            )
+            return self._result(current, self._workflow_for(current))
+        finally:
+            self.store.release_lease(token)
+
+    def resume_control(self, run_id: str) -> OperationResult:
+        """Clear an operator pause; budget exhaustion remains enforced by resume()."""
+
+        state = self.store.load_operation(run_id)
+        if state is None:
+            raise KeyError(f"operation_not_found:{run_id}")
+        workflow = self._workflow_for(state)
+        if (
+            state.status != "paused_budget"
+            or state.budget.pause_reason in BUDGET_PAUSE_REASONS
+            or bool(state.budget.exhaustion_reason())
+        ):
+            return self._result(state, workflow)
+        token = self.store.acquire_lease(
+            run_id,
+            "__operation__",
+            f"{self.owner}:resume-control:{uuid4().hex}",
+            ttl_seconds=self._operation_lease_ttl(workflow),
+        )
+        if token is None:
+            raise ValueError(f"operation_busy:{run_id}")
+        try:
+            current = self.store.load_operation(run_id)
+            if current is None:
+                raise KeyError(f"operation_not_found:{run_id}")
+            if (
+                current.status == "paused_budget"
+                and current.budget.pause_reason not in BUDGET_PAUSE_REASONS
+                and not current.budget.exhaustion_reason()
+            ):
+                current.status = "running"
+                current.budget.resume()
+                self.store.save_operation(
+                    current,
+                    expected_version=current.state_version,
+                    lease_token=token,
+                    event_type="run_resumed",
+                    event={},
+                )
+            return self._result(current, self._workflow_for(current))
+        finally:
+            self.store.release_lease(token)
+
     def record_tactical_attempt(
         self,
         record: TacticalAttemptRecord,
@@ -143,4 +241,4 @@ class OperationRuntime(
             self.store.release_lease(token)
 
 
-__all__ = ["OperationResult", "OperationRuntime"]
+__all__ = ["BUDGET_PAUSE_REASONS", "OPERATOR_PAUSE_REASONS", "OperationResult", "OperationRuntime"]

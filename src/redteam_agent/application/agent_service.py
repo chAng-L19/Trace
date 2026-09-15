@@ -294,6 +294,24 @@ class AgentService:
     def status(self, run_id: str) -> AgentRunView:
         return self._view(self.runtime.status(run_id))
 
+    def list_runs(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        status: str = "",
+    ) -> tuple[AgentRunView, ...]:
+        """Return bounded run projections for CLI/Web consumers."""
+
+        return tuple(
+            self.status(state.run_id)
+            for state in self.runtime.store.operations(
+                limit=limit,
+                offset=offset,
+                status=status,
+            )
+        )
+
     def summary(self, run_id: str) -> dict[str, Any]:
         self.status(run_id)
         return self.runtime.status(run_id).summary()
@@ -304,6 +322,11 @@ class AgentService:
     def apply_budget_delta(self, run_id: str, **delta: Any) -> AgentRunView:
         before = self.status(run_id)
         view = self._view(self.runtime.apply_budget_delta(run_id, **delta))
+        return self._validate_result(before.run.status, view)
+
+    def apply_budget_delta_once(self, run_id: str, *, idempotency_key: str, **delta: Any) -> AgentRunView:
+        before = self.status(run_id)
+        view = self._view(self.runtime.apply_budget_delta_once(run_id, idempotency_key=idempotency_key, **delta))
         return self._validate_result(before.run.status, view)
 
     def apply_budget_delta_batch(self, run_ids: list[str], **delta: Any) -> None:
@@ -323,6 +346,26 @@ class AgentService:
             view = self._view(self.runtime.cancel(run_id, reason=reason))
         except (StateVersionConflict, StoreConflictError) as exc:
             view = self._settle_control_conflict(run_id, exc)
+        return self._validate_result(before.run.status, view)
+
+    def pause(self, run_id: str, reason: str = "user_requested") -> AgentRunView:
+        before = self.status(run_id)
+        view = self._view(self.runtime.pause_run(run_id, reason=reason))
+        return self._validate_result(before.run.status, view)
+
+    def resume(
+        self,
+        run_id: str,
+        budget_delta: BudgetDelta | Mapping[str, Any] | None = None,
+        *,
+        max_actions: int | None = None,
+        execute: bool = True,
+    ) -> AgentRunView:
+        before = self.status(run_id)
+        self.runtime.resume_control(run_id)
+        if execute:
+            return self.run(run_id, budget_delta=budget_delta, max_actions=max_actions)
+        view = self.status(run_id)
         return self._validate_result(before.run.status, view)
 
     def events(

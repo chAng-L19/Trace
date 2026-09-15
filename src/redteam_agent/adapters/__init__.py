@@ -1,3 +1,9 @@
+"""Protocol adapters.
+
+Adapters are imported explicitly (for example ``redteam_agent.adapters.web``)
+so package initialization never constructs application services or transports.
+"""
+
 import sys
 
 from . import runtime as _runtime
