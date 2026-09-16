@@ -21,6 +21,7 @@ from ..providers import OpenAICompatibleProvider
 from ..runtime.store_common import ImmutableRecordError, StoreConflictError
 from .web_control import ControlPlane
 from .web_routes import ControlRoutesMixin
+from .web_projection import MAX_SEARCH_RECORDS, search_graph_projection, search_record_projection
 WEB_SCHEMA_VERSION = 1
 MAX_REQUEST_BYTES = 2 * 1024 * 1024
 MAX_JSON_RESPONSE_BYTES = 8 * 1024 * 1024
@@ -31,6 +32,13 @@ _STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/index.html": ("index.html", "text/html; charset=utf-8"),
     "/app.css": ("app.css", "text/css; charset=utf-8"),
+    "/base.css": ("base.css", "text/css; charset=utf-8"),
+    "/registry.css": ("registry.css", "text/css; charset=utf-8"),
+    "/workbench.css": ("workbench.css", "text/css; charset=utf-8"),
+    "/control.css": ("control.css", "text/css; charset=utf-8"),
+    "/ui.js": ("ui.js", "text/javascript; charset=utf-8"),
+    "/control.js": ("control.js", "text/javascript; charset=utf-8"),
+    "/session.js": ("session.js", "text/javascript; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
 }
 _SECURITY_HEADERS = {
@@ -295,7 +303,14 @@ class WebApi(ControlRoutesMixin):
         if resource == "search-graph":
             if len(tail) != 2:
                 return self._error(404, "resource_not_found")
-            return self._ok({"run_id": run_id, "search_graph": _jsonable(self.service.exploration_state(run_id))})
+            records = self.service.exploration_records(run_id)
+            visible_records = records[-MAX_SEARCH_RECORDS:]
+            return self._ok({
+                "run_id": run_id,
+                "search_graph": search_graph_projection(self.service.exploration_state(run_id)),
+                "records": [search_record_projection(item.to_dict()) for item in visible_records],
+                "records_truncated": len(records) > len(visible_records),
+            })
         if resource == "evidence-graph":
             if len(tail) != 2:
                 return self._error(404, "resource_not_found")

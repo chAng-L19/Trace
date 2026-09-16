@@ -15,7 +15,9 @@ from test_agent_service import _plan_request
 def _page(server):
     sync_api = pytest.importorskip("playwright.sync_api")
     with sync_api.sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
+        browser = playwright.chromium.launch(
+            headless=True, args=[f"--explicitly-allowed-ports={server.server_port}"],
+        )
         page = browser.new_page()
         try:
             page.goto(f"http://127.0.0.1:{server.server_port}/", wait_until="networkidle")
