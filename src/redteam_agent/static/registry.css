@@ -1,0 +1,238 @@
+/* Run registry */
+.page-heading,
+.control-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-7);
+}
+
+.page-heading h1,
+.control-heading h1 {
+  margin: 7px 0 0;
+  font-size: 38px;
+  font-weight: 650;
+  line-height: 1.15;
+}
+
+.heading-line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+}
+
+.run-count {
+  color: var(--ink-muted);
+  font-size: 13px;
+}
+
+.page-description,
+.control-heading p:not(.kicker) {
+  max-width: 620px;
+  margin: 9px 0 0;
+  color: var(--ink-secondary);
+}
+
+.run-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-5);
+  margin-top: var(--space-6);
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
+.run-summary strong {
+  color: var(--ink-secondary);
+  font-weight: 650;
+}
+
+.run-toolbar {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) 180px auto;
+  align-items: end;
+  gap: var(--space-3);
+  margin-top: var(--space-6);
+  padding: var(--space-4) 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.run-toolbar label,
+dialog label {
+  display: grid;
+  gap: 6px;
+  color: var(--ink-secondary);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.run-toolbar input,
+.run-toolbar select {
+  height: 40px;
+}
+
+.run-list-heading,
+.run-item {
+  display: grid;
+  grid-template-columns: 110px minmax(280px, 1fr) 150px 190px;
+  gap: var(--space-5);
+}
+
+.run-list-heading {
+  align-items: center;
+  padding: 19px 15px 10px;
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.run-list {
+  border-top: 1px solid var(--line-strong);
+}
+
+.run-item {
+  position: relative;
+  width: 100%;
+  min-height: 98px;
+  align-items: center;
+  padding: 17px 15px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.run-item:hover:not(:disabled),
+.run-item.selected {
+  border-color: var(--line);
+  background: var(--surface-hover);
+}
+
+.run-item:hover .run-objective,
+.run-item.selected .run-objective {
+  color: var(--accent);
+}
+
+.run-status {
+  color: var(--ink-secondary);
+  font-weight: 690;
+}
+
+.run-status::before {
+  content: "";
+  display: inline-block;
+  width: 14px;
+  height: 2px;
+  margin-right: 8px;
+  background: var(--line-strong);
+  vertical-align: 4px;
+}
+
+.run-status[data-status="running"]::before,
+.run-status[data-status="waiting_worker"]::before {
+  background: var(--accent);
+}
+
+.run-status[data-status="paused_budget"]::before {
+  width: 11px;
+  height: 5px;
+  border-top: 2px solid var(--ink-secondary);
+  border-bottom: 2px solid var(--ink-secondary);
+  background: transparent;
+}
+
+.run-main {
+  min-width: 0;
+}
+
+.run-objective,
+.run-target,
+.run-identity code,
+.run-identity time {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-objective {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 680;
+  transition: color 120ms ease;
+}
+
+.run-target {
+  margin-top: 6px;
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
+.run-budget {
+  display: grid;
+  gap: 9px;
+  color: var(--ink-secondary);
+  font-size: 12px;
+}
+
+.budget-line {
+  position: relative;
+  width: 100%;
+  height: 2px;
+  overflow: hidden;
+  background: var(--line);
+}
+
+.budget-line > span {
+  display: block;
+  width: var(--budget-percent, 0%);
+  height: 100%;
+  background: var(--accent);
+}
+
+.run-identity {
+  min-width: 0;
+  color: var(--ink-muted);
+  font-size: 10px;
+}
+
+.run-identity time {
+  margin-bottom: 6px;
+  font-family: var(--font-ui);
+  font-size: 11px;
+}
+
+.runs-empty {
+  min-height: 280px;
+  display: grid;
+  align-content: center;
+  justify-items: start;
+  padding: var(--space-7) var(--space-4);
+  border-bottom: 1px solid var(--line);
+}
+
+.empty-rule {
+  width: 32px;
+  height: 3px;
+  background: var(--accent);
+}
+
+.runs-empty h2 {
+  margin: 18px 0 7px;
+  font-size: 24px;
+}
+
+.runs-empty p {
+  max-width: 500px;
+  margin: 0 0 22px;
+  color: var(--ink-secondary);
+}
+
+.run-empty {
+  margin: 0;
+  padding: 26px 2px;
+  color: var(--ink-muted);
+}

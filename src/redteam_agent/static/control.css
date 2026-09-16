@@ -1,0 +1,264 @@
+/* Control plane */
+.control-plane {
+  display: block;
+}
+
+.control-heading {
+  align-items: flex-start;
+}
+
+.control-heading .control-health {
+  margin-top: 25px;
+}
+
+.control-tabs {
+  margin-top: var(--space-7);
+}
+
+.control-content {
+  max-width: 1120px;
+  padding-top: var(--space-7);
+}
+
+.control-section {
+  animation: panel-in 180ms ease both;
+}
+
+.button-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.setting-row {
+  position: relative;
+  min-height: 89px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-6);
+  padding: 17px 2px;
+  border-bottom: 1px solid var(--line);
+}
+
+.setting-row.is-active {
+  padding-left: 15px;
+}
+
+.setting-row.is-active::before {
+  content: "";
+  position: absolute;
+  top: 19px;
+  bottom: 19px;
+  left: 0;
+  width: 3px;
+  background: var(--accent);
+}
+
+.setting-main {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.setting-main strong {
+  overflow-wrap: anywhere;
+}
+
+.setting-main code,
+.setting-detail {
+  color: var(--ink-muted);
+  font: 10px/1.55 var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+/* Dialogs */
+dialog {
+  width: min(660px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-dialog);
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 24px 72px rgb(32 35 38 / 20%);
+}
+
+dialog[open] {
+  animation: dialog-in 160ms ease both;
+}
+
+dialog::backdrop {
+  background: rgb(32 35 38 / 50%);
+}
+
+dialog form {
+  padding: 28px;
+}
+
+.dialog-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-5);
+  margin-bottom: var(--space-5);
+}
+
+.dialog-heading h2 {
+  margin: 5px 0 0;
+  font-size: 23px;
+  font-weight: 650;
+}
+
+.icon-button {
+  width: 36px;
+  min-height: 36px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--ink-muted);
+  font-size: 22px;
+  font-weight: 400;
+}
+
+.icon-button:hover:not(:disabled) {
+  border-color: var(--line);
+  background: var(--surface-hover);
+}
+
+dialog input,
+dialog textarea,
+dialog select {
+  margin-top: 0;
+  background: #fafafa;
+  font-weight: 400;
+}
+
+dialog label + label,
+dialog label + .form-grid,
+dialog .form-grid + label,
+dialog .dialog-copy + label {
+  margin-top: var(--space-4);
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.form-grid.two-columns {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+}
+
+.check input {
+  width: auto;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.dialog-copy {
+  margin: 0 0 var(--space-4);
+  color: var(--ink-secondary);
+}
+
+.form-error {
+  margin: 10px 0 0;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.dialog-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-5);
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.login-dialog {
+  width: 100vw;
+  max-width: none;
+  height: 100dvh;
+  max-height: none;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: var(--canvas);
+  box-shadow: none;
+}
+
+.login-dialog::backdrop {
+  background: var(--canvas);
+}
+
+.login-dialog form {
+  width: min(400px, calc(100vw - 40px));
+  margin: 16vh 0 0 38vw;
+  padding: 0;
+}
+
+.login-brand {
+  position: relative;
+  width: max-content;
+  margin-bottom: var(--space-8);
+  padding-bottom: 9px;
+}
+
+.login-brand .brand-word {
+  font-size: 31px;
+}
+
+.login-copy h2 {
+  margin: 8px 0 6px;
+  font-size: 32px;
+  font-weight: 650;
+}
+
+.login-copy > p:last-child {
+  margin: 0 0 var(--space-6);
+  color: var(--ink-secondary);
+}
+
+.login-submit {
+  width: 100%;
+  min-height: 44px;
+  margin-top: var(--space-5);
+}
+
+.login-note {
+  margin: 14px 0 0;
+  color: var(--ink-muted);
+  font-size: 11px;
+  text-align: center;
+}
+
+.notice {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 40;
+  max-width: min(440px, calc(100vw - 48px));
+  padding: 12px 15px;
+  border: 1px solid #ad3f29;
+  border-radius: var(--radius-control);
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 12px 36px rgb(32 35 38 / 18%);
+  animation: notice-in 180ms ease both;
+}
+
+.notice.error {
+  border-color: #8f2525;
+  background: var(--danger);
+}

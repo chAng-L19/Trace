@@ -1,310 +1,686 @@
 <!doctype html>
 <html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
-  <title>Trace Workbench</title>
-  <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="/app.css">
-  <script src="/app.js" defer></script>
-</head>
-<body>
-  <header class="app-header">
-    <div class="brand" aria-label="Trace">
-      <span class="brand-mark" aria-hidden="true">/</span>
-      <span class="brand-word">Trace</span>
-      <span class="brand-subtitle">OPERATIONAL AGENT WORKBENCH</span>
-    </div>
-    <div class="header-tools">
-      <nav class="top-nav" aria-label="控制面导航">
-        <button class="nav-button active" data-view="runs" type="button">运行</button>
-        <button class="nav-button" data-view="control" type="button">控制面</button>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#f4f5f6" />
+    <title>Trace Workbench</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/app.css" />
+    <script src="/ui.js" defer></script>
+    <script src="/control.js" defer></script>
+    <script src="/session.js" defer></script>
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header class="app-header">
+      <a class="brand" href="/" aria-label="Trace 工作台">
+        <span class="brand-word">Trace</span>
+        <span class="brand-rule" aria-hidden="true"></span>
+      </a>
+
+      <nav class="top-nav" aria-label="主导航">
+        <button class="nav-button active" data-view="runs" type="button">
+          运行
+        </button>
+          <button class="nav-button" data-view="control" type="button">
+          设置
+        </button>
       </nav>
-      <div class="connection" id="connection" role="status">
-        <span class="connection-dot" aria-hidden="true"></span>
-        <span id="connection-text">正在连接</span>
-      </div>
-      <span class="runtime-badge" id="runtime-badge">runtime / --</span>
-      <span class="api-badge" id="api-badge">API / --</span>
-      <button class="quiet small" id="logout" type="button" hidden>退出</button>
-    </div>
-  </header>
 
-  <main class="app-shell">
-    <aside class="run-rail" aria-label="运行列表">
-      <div class="rail-toolbar">
-        <div><p class="eyebrow">TRACE / RUNS</p><h1>运行</h1></div>
-        <button class="primary small" id="new-run" type="button">新建</button>
+      <div class="header-tools">
+        <div class="connection" id="connection" role="status">
+          <span class="connection-dot" aria-hidden="true"></span>
+          <span id="connection-text">正在连接</span>
+        </div>
+        <span class="runtime-badge" id="runtime-badge">runtime / --</span>
+        <span class="api-badge" id="api-badge">API / --</span>
+        <button class="text-button small" id="logout" type="button" hidden>
+          退出
+        </button>
       </div>
-      <div class="rail-filters">
-        <label for="run-search">查找运行</label>
-        <input id="run-search" type="search" placeholder="目标、会话或 ID" autocomplete="off">
-        <label for="status-filter">状态</label>
-        <select id="status-filter">
-          <option value="">全部</option>
-          <option value="created">已创建</option>
-          <option value="running">运行中</option>
-          <option value="waiting_worker">等待 Worker</option>
-          <option value="paused_budget">已暂停</option>
-          <option value="cancelling">取消中</option>
-          <option value="completed">已完成</option>
-          <option value="failed">失败</option>
-          <option value="cancelled">已取消</option>
-        </select>
-        <button class="quiet" id="refresh-runs" type="button">刷新</button>
-      </div>
-      <div class="run-list" id="run-list" aria-live="polite"></div>
-    </aside>
+    </header>
 
-    <section class="workspace" aria-label="运行工作区">
-      <div class="empty-state" id="empty-state">
-        <div class="empty-mark" aria-hidden="true"><span></span><span></span><span></span></div>
-        <p class="eyebrow">TRACE / CONTROL PLANE</p>
-        <h2>选择一个运行</h2>
-        <p>从持久事件、搜索图和可信证据开始读取运行状态，或建立新的目标。</p>
-        <button class="primary" id="empty-new-run" type="button">新建运行</button>
-      </div>
+    <main class="app-shell">
+      <section class="runs-index" id="runs-index" aria-labelledby="runs-title">
+        <header class="page-heading">
+          <div>
+            <p class="kicker">运行空间</p>
+            <div class="heading-line">
+              <h1 id="runs-title">所有运行</h1>
+              <span class="run-count" id="run-count">0</span>
+            </div>
+            <p class="page-description">
+              检索任务，读取当前状态，然后进入一条运行继续工作。
+            </p>
+          </div>
+          <button class="primary" id="new-run" type="button">新建</button>
+        </header>
 
-      <div class="workbench" id="workbench" hidden>
-        <header class="run-header">
-          <div class="run-identity">
+        <section class="run-summary" id="run-summary" aria-label="当前列表状态">
+          <span>当前列表</span>
+          <strong id="summary-active">运行中 0</strong>
+          <strong id="summary-waiting">待处理 0</strong>
+          <strong id="summary-complete">已完成 0</strong>
+        </section>
+
+        <section class="run-toolbar" aria-label="筛选运行">
+          <label class="search-field" for="run-search">
+            <span>搜索运行</span>
+            <input id="run-search" type="search" placeholder="目标、资产、会话或运行 ID" autocomplete="off" />
+          </label>
+        <label class="status-field" for="status-filter">
+            <span>状态</span>
+            <select id="status-filter">
+              <option value="">全部状态</option>
+              <option value="created">已创建</option>
+              <option value="running">运行中</option>
+              <option value="waiting_worker">等待 Worker</option>
+              <option value="paused_budget">已暂停</option>
+              <option value="cancelling">取消中</option>
+              <option value="completed">已完成</option>
+              <option value="failed">失败</option>
+              <option value="cancelled">已取消</option>
+            </select>
+          </label>
+          <button class="secondary toolbar-button" id="refresh-runs" type="button">
+            刷新
+          </button>
+        </section>
+
+        <div class="run-list-heading" aria-hidden="true">
+          <span>状态</span><span>任务目标</span><span>动作预算</span><span>运行标识</span>
+        </div>
+        <div class="run-list" id="run-list" aria-live="polite"></div>
+
+        <div class="runs-empty" id="empty-state" hidden>
+          <span class="empty-rule" aria-hidden="true"></span>
+          <h2>还没有运行</h2>
+          <p>创建第一个目标，Trace 会在持久运行中记录计划、事件和可信证据。</p>
+          <button class="primary" id="empty-new-run" type="button">
+            新建运行
+          </button>
+        </div>
+      </section>
+
+      <section class="workbench" id="workbench" aria-label="运行详情" hidden>
+        <button class="back-button" id="back-to-runs" type="button">
+          <span aria-hidden="true">←</span> 返回运行
+        </button>
+
+        <header class="dossier-header">
+          <div class="dossier-meta">
+            <p class="kicker">当前运行</p>
             <div class="identity-line">
               <span class="status-badge" id="run-status">-</span>
               <code id="run-id">-</code>
             </div>
-            <h2 id="run-objective">-</h2>
-            <p id="run-targets">-</p>
           </div>
+          <h1 id="run-objective">-</h1>
+          <p class="run-targets" id="run-targets">-</p>
           <div class="run-actions" aria-label="运行控制">
-            <button class="primary" data-command="run" type="button">运行</button>
-            <button data-command="pause" type="button">暂停</button>
-            <button data-command="resume" type="button">恢复</button>
-            <button data-command="observation" type="button">提交观察</button>
-            <button id="open-budget" type="button">预算</button>
-            <button class="danger" data-command="cancel" type="button">取消</button>
+            <button class="primary" data-command="run" type="button">
+              运行
+            </button>
+          <button class="secondary" data-command="pause" type="button">
+              暂停
+            </button>
+          <button class="secondary" data-command="resume" type="button">
+              恢复
+            </button>
+          <button class="secondary" data-command="observation" type="button">
+              提交观察
+            </button>
+          <button class="secondary" id="open-budget" type="button">
+              预算
+            </button>
+          <button class="danger" data-command="cancel" type="button">
+              取消
+            </button>
           </div>
         </header>
 
         <section class="metrics" aria-label="运行指标">
           <div class="metric">
-            <span>动作</span>
+            <span>动作预算</span>
             <strong id="metric-actions">0 / 0</strong>
             <progress id="actions-progress" aria-label="动作预算用量" max="1" value="0"></progress>
           </div>
           <div class="metric">
-            <span>Token</span>
+            <span>Token 用量</span>
             <strong id="metric-tokens">未设置</strong>
             <progress id="tokens-progress" aria-label="Token 预算用量" max="1"></progress>
           </div>
-          <div class="metric">
-            <span>下一动作</span>
-            <strong id="metric-next">-</strong>
+          <div class="metric metric-action">
+            <span>下一动作</span><strong id="metric-next">-</strong>
           </div>
           <div class="metric">
-            <span>状态版本</span>
-            <strong id="metric-version">0</strong>
+            <span>状态版本</span><strong id="metric-version">0</strong>
           </div>
         </section>
 
         <nav class="tabs" role="tablist" aria-label="运行详情">
-          <button role="tab" aria-selected="true" data-tab="events" type="button">事件</button>
-          <button role="tab" aria-selected="false" data-tab="search" type="button">搜索图</button>
-          <button role="tab" aria-selected="false" data-tab="evidence" type="button">证据</button>
-          <button role="tab" aria-selected="false" data-tab="artifacts" type="button">产物</button>
-          <button role="tab" aria-selected="false" data-tab="transcript" type="button">会话</button>
-          <button role="tab" aria-selected="false" data-tab="tools" type="button">工具</button>
-          <button role="tab" aria-selected="false" data-tab="attack" type="button">攻击路径</button>
-          <button role="tab" aria-selected="false" data-tab="transparency" type="button">透明度</button>
-          <button role="tab" aria-selected="false" data-tab="report" type="button">报告</button>
+          <button role="tab" aria-selected="true" data-tab="events" type="button">
+            事件
+          </button>
+          <button role="tab" aria-selected="false" data-tab="search" type="button">
+            搜索图
+          </button>
+          <button role="tab" aria-selected="false" data-tab="evidence" type="button">
+            证据
+          </button>
+          <button role="tab" aria-selected="false" data-tab="artifacts" type="button">
+            产物
+          </button>
+          <button role="tab" aria-selected="false" data-tab="transcript" type="button">
+            会话
+          </button>
+          <button role="tab" aria-selected="false" data-tab="tools" type="button">
+            工具
+          </button>
+          <button role="tab" aria-selected="false" data-tab="attack" type="button">
+            攻击路径
+          </button>
+          <button role="tab" aria-selected="false" data-tab="transparency" type="button">
+            透明度
+          </button>
+          <button role="tab" aria-selected="false" data-tab="report" type="button">
+            报告
+          </button>
         </nav>
 
         <div class="tab-content">
           <section class="tab-panel" role="tabpanel" data-panel="events">
             <div class="panel-heading">
-              <div><h3>实时事件</h3><p id="event-cursor">序号 0</p></div>
-              <button class="quiet" id="clear-events" type="button">清空视图</button>
+              <div>
+                <h2>事件脊线</h2>
+                <p id="event-cursor">序号 0</p>
+              </div>
+              <button class="text-button" id="clear-events" type="button">
+                清空视图
+              </button>
             </div>
             <ol class="event-list" id="event-list"></ol>
           </section>
           <section class="tab-panel" role="tabpanel" data-panel="search" hidden>
-            <div class="panel-heading"><div><h3>SearchGraph</h3><p>意图、假设和活动分支</p></div></div>
-            <pre class="json-view" id="search-view"></pre>
+            <div class="panel-heading">
+              <div>
+                <h2>探索空间</h2>
+                <p>由模型生成的方向、假设、尝试与重开路径；仅用于导航，不等同于证据。</p>
+              </div>
+              <span class="graph-count" id="search-count">0 条记录</span>
+            </div>
+            <div class="search-workspace" id="search-view">
+              <div class="search-canvas">
+                <div class="search-origin" aria-hidden="true">
+                  <span>ORIGIN</span><i></i><span>SEARCH SPACE</span>
+                </div>
+                <div class="search-map" id="search-map" aria-label="探索记录图"></div>
+              </div>
+              <aside class="search-inspector" id="search-inspector" aria-live="polite">
+                <p class="inspector-empty">选择一条探索记录以查看状态、来源与引用。</p>
+              </aside>
+            </div>
+            <details class="raw-projection">
+              <summary>原始 SearchGraph 投影</summary>
+              <pre class="json-view" id="search-raw"></pre>
+            </details>
           </section>
           <section class="tab-panel" role="tabpanel" data-panel="evidence" hidden>
-            <div class="panel-heading"><div><h3>EvidenceGraph</h3><p>已验证及待验证证据</p></div></div>
+            <div class="panel-heading">
+              <div>
+                <h2>证据图</h2>
+                <p>已验证及待验证证据</p>
+              </div>
+            </div>
             <div class="record-list" id="evidence-list"></div>
-            <button type="button" data-more="evidence" hidden>加载更多证据</button>
+            <button class="secondary load-more" type="button" data-more="evidence" hidden>
+              加载更多证据
+            </button>
           </section>
           <section class="tab-panel" role="tabpanel" data-panel="artifacts" hidden>
-            <div class="panel-heading"><div><h3>Artifacts</h3><p>内容寻址产物与原始输出</p></div></div>
+            <div class="panel-heading">
+              <div>
+                <h2>运行产物</h2>
+                <p>内容寻址产物与原始输出</p>
+              </div>
+            </div>
             <div class="record-list" id="artifact-list"></div>
-            <button type="button" data-more="artifacts" hidden>加载更多产物</button>
+            <button class="secondary load-more" type="button" data-more="artifacts" hidden>
+              加载更多产物
+            </button>
           </section>
           <section class="tab-panel" role="tabpanel" data-panel="transcript" hidden>
-            <div class="panel-heading"><div><h3>Transcript</h3><p>完整模型与工具会话</p></div></div>
+            <div class="panel-heading">
+              <div>
+                <h2>会话记录</h2>
+                <p>模型与工具的完整 transcript</p>
+              </div>
+            </div>
             <div class="transcript" id="transcript-list"></div>
-            <button type="button" data-more="transcript" hidden>加载更多会话</button>
+            <button class="secondary load-more" type="button" data-more="transcript" hidden>
+              加载更多会话
+            </button>
           </section>
           <section class="tab-panel" role="tabpanel" data-panel="tools" hidden>
-            <div class="panel-heading"><div><h3>工具可见性</h3><p>当前运行可发现与可调用的工具目录</p></div></div>
+            <div class="panel-heading">
+              <div>
+                <h2>工具可见性</h2>
+                <p>当前运行可发现与可调用的工具目录</p>
+              </div>
+            </div>
             <pre class="json-view" id="tools-view"></pre>
           </section>
           <section class="tab-panel" role="tabpanel" data-panel="attack" hidden>
-            <div class="panel-heading"><div><h3>AssetAttackGraph</h3><p>仅展示经 Core contract 验证的资产、发现和攻击路径</p></div></div>
+            <div class="panel-heading">
+              <div>
+                <h2>资产与攻击路径</h2>
+                <p>经 Core contract 验证的资产、发现和路径</p>
+              </div>
+            </div>
             <pre class="json-view" id="attack-view"></pre>
           </section>
           <section class="tab-panel" role="tabpanel" data-panel="transparency" hidden>
-            <div class="panel-heading"><div><h3>运行透明度</h3><p>上下文、模型回合、预算和事件的可追溯投影</p></div></div>
+            <div class="panel-heading">
+              <div>
+                <h2>运行透明度</h2>
+                <p>上下文、模型回合、预算和事件投影</p>
+              </div>
+            </div>
             <pre class="json-view" id="transparency-view"></pre>
           </section>
           <section class="tab-panel" role="tabpanel" data-panel="report" hidden>
             <div class="panel-heading">
-              <div><h3>运行报告</h3><p>终态、证据与产物投影</p></div>
-              <button class="quiet" id="export-report" type="button">导出 JSON</button>
+              <div>
+                <h2>运行报告</h2>
+                <p>终态、证据与产物投影</p>
+              </div>
+              <button class="secondary" id="export-report" type="button">
+                导出 JSON
+              </button>
             </div>
             <pre class="json-view" id="report-view"></pre>
           </section>
         </div>
+      </section>
+    </main>
+
+    <main class="control-plane" id="control-plane" hidden>
+      <header class="control-heading">
+        <div>
+          <p class="kicker">工作台设置</p>
+          <h1>控制面</h1>
+          <p>管理模型连接、能力资源、外部工具和持久会话。</p>
+        </div>
+        <div class="control-health" id="control-health">
+          <span class="connection-dot" aria-hidden="true"></span><span>正在读取系统状态</span>
+        </div>
+      </header>
+      <nav class="control-tabs" aria-label="设置分类">
+        <button class="control-tab active" data-control-tab="providers" type="button">
+          模型与 API
+        </button>
+          <button class="control-tab" data-control-tab="skills" type="button">
+          Skills
+        </button>
+          <button class="control-tab" data-control-tab="mcp" type="button">
+          MCP 接入
+        </button>
+          <button class="control-tab" data-control-tab="conversations" type="button">
+          对话管理
+        </button>
+          <button class="control-tab" data-control-tab="system" type="button">
+          运行环境
+        </button>
+      </nav>
+      <div class="control-content">
+        <section class="control-section" data-control-panel="providers">
+          <div class="panel-heading">
+            <div>
+              <h2>模型与 API</h2>
+              <p>切换 Provider 会作用于后续 Agent 回合，密钥仅显示绑定状态。</p>
+            </div>
+            <button class="primary" id="add-provider" type="button">
+              添加 Provider
+            </button>
+          </div>
+          <div class="settings-list" id="provider-list"></div>
+        </section>
+        <section class="control-section" data-control-panel="skills" hidden>
+          <div class="panel-heading">
+            <div>
+              <h2>Skills</h2>
+              <p>能力资源来自当前 Trace 根目录，启用状态会持久保存。</p>
+            </div>
+            <button class="secondary" id="refresh-skills" type="button">
+              刷新索引
+            </button>
+          </div>
+          <div class="settings-list" id="skill-list"></div>
+        </section>
+        <section class="control-section" data-control-panel="mcp" hidden>
+          <div class="panel-heading">
+            <div>
+              <h2>MCP 接入</h2>
+              <p>检查每个服务器的连接状态、作用域和工具数量。</p>
+            </div>
+            <div class="button-row">
+              <button class="secondary" id="refresh-mcp" type="button">
+                刷新</button>
+          <button class="primary" id="add-mcp" type="button">
+                添加服务器
+              </button>
+            </div>
+          </div>
+          <div class="settings-list" id="mcp-list"></div>
+        </section>
+        <section class="control-section" data-control-panel="conversations" hidden>
+          <div class="panel-heading">
+            <div>
+              <h2>对话管理</h2>
+              <p>查看模型 transcript 与会话分支树。</p>
+            </div>
+            <button class="secondary" id="refresh-conversations" type="button">
+              刷新
+            </button>
+          </div>
+          <div class="settings-list" id="conversation-list"></div>
+        </section>
+        <section class="control-section" data-control-panel="system" hidden>
+          <div class="panel-heading">
+            <div>
+              <h2>运行环境</h2>
+              <p>平台、Python、工作区和托管配置路径。</p>
+            </div>
+            <button class="secondary" id="reload-system" type="button">
+              重载 MCP
+            </button>
+          </div>
+          <pre class="json-view" id="system-view"></pre>
+        </section>
       </div>
-    </section>
-  </main>
+    </main>
 
-  <main class="control-plane" id="control-plane" hidden>
-    <aside class="control-nav" aria-label="控制面设置">
-      <p class="eyebrow">TRACE / CONFIG</p>
-      <h1>系统设置</h1>
-      <p class="control-intro">模型、工具和会话配置通过同一 AgentService 控制面提交。</p>
-      <button class="control-tab active" data-control-tab="providers" type="button">模型与 API</button>
-      <button class="control-tab" data-control-tab="skills" type="button">Skills</button>
-      <button class="control-tab" data-control-tab="mcp" type="button">MCP 接入</button>
-      <button class="control-tab" data-control-tab="conversations" type="button">对话管理</button>
-      <button class="control-tab" data-control-tab="system" type="button">运行环境</button>
-      <div class="control-health" id="control-health"><span class="connection-dot" aria-hidden="true"></span><span>正在读取系统状态</span></div>
-    </aside>
-    <section class="control-content">
-      <section class="control-section" data-control-panel="providers">
-        <div class="panel-heading"><div><h2>模型与 API</h2><p>Provider 切换立即作用于后续 Agent 回合，密钥只显示绑定状态。</p></div><button class="primary" id="add-provider" type="button">添加 Provider</button></div>
-        <div class="settings-list" id="provider-list"></div>
-      </section>
-      <section class="control-section" data-control-panel="skills" hidden>
-        <div class="panel-heading"><div><h2>Skills</h2><p>资源索引来自当前 Trace 根目录，启用状态持久保存。</p></div><button class="quiet" id="refresh-skills" type="button">刷新索引</button></div>
-        <div class="settings-list" id="skill-list"></div>
-      </section>
-      <section class="control-section" data-control-panel="mcp" hidden>
-        <div class="panel-heading"><div><h2>MCP 接入</h2><p>每个服务器独立展示连接状态、作用域和工具数量。</p></div><div class="button-row"><button class="quiet" id="refresh-mcp" type="button">刷新</button><button class="primary" id="add-mcp" type="button">添加服务器</button></div></div>
-        <div class="settings-list" id="mcp-list"></div>
-      </section>
-      <section class="control-section" data-control-panel="conversations" hidden>
-        <div class="panel-heading"><div><h2>对话管理</h2><p>运行与模型 transcript 保持同一条持久链路，可查看分支树。</p></div><button class="quiet" id="refresh-conversations" type="button">刷新</button></div>
-        <div class="settings-list" id="conversation-list"></div>
-      </section>
-      <section class="control-section" data-control-panel="system" hidden>
-        <div class="panel-heading"><div><h2>运行环境</h2><p>平台、Python、工作区和托管配置路径。</p></div><button class="quiet" id="reload-system" type="button">重载 MCP</button></div>
-        <pre class="json-view" id="system-view"></pre>
-      </section>
-    </section>
-  </main>
+    <dialog id="create-dialog" aria-labelledby="create-title">
+      <form id="create-form" method="dialog">
+        <div class="dialog-heading">
+          <div>
+            <p class="kicker">任务配置</p>
+            <h2 id="create-title">新建运行</h2>
+          </div>
+          <button class="icon-button" value="cancel" aria-label="关闭" type="submit" formnovalidate>
+            ×
+          </button>
+        </div>
+        <label>会话 ID
+          <input id="session-id" name="session_id" required maxlength="160" />
+        </label>
+        <label>目标描述
+          <textarea name="objective" required rows="5" maxlength="12000"></textarea>
+        </label>
+        <label>目标，每行一个
+          <textarea name="targets" rows="3" maxlength="12000"></textarea>
+        </label>
+        <div class="form-grid">
+          <label>最大动作
+          <input name="max_actions" type="number" min="1" max="4096" value="64" required />
+        </label>
+        <label>Token 上限
+          <input name="token_limit" type="number" min="1" placeholder="可选" />
+        </label>
+        <label>时间上限，秒
+          <input name="time_limit_seconds" type="number" min="1" step="1" placeholder="可选" />
+        </label>
+        </div>
+        <div class="dialog-actions">
+          <button class="secondary" value="cancel" type="submit" formnovalidate>
+            取消</button>
+          <button class="primary" id="create-submit" value="default" type="submit">
+            创建
+          </button>
+        </div>
+      </form>
+    </dialog>
 
-  <dialog id="create-dialog" aria-labelledby="create-title">
-    <form id="create-form" method="dialog">
-      <div class="dialog-heading"><h2 id="create-title">新建运行</h2><button class="icon-button" value="cancel" aria-label="关闭" type="submit" formnovalidate>×</button></div>
-      <label>会话 ID<input id="session-id" name="session_id" required maxlength="160"></label>
-      <label>目标描述<textarea name="objective" required rows="5" maxlength="12000"></textarea></label>
-      <label>目标（每行一个）<textarea name="targets" rows="3" maxlength="12000"></textarea></label>
-      <div class="form-grid">
-        <label>最大动作<input name="max_actions" type="number" min="1" max="4096" value="64" required></label>
-        <label>Token 上限<input name="token_limit" type="number" min="1" placeholder="可选"></label>
-        <label>时间上限（秒）<input name="time_limit_seconds" type="number" min="1" step="1" placeholder="可选"></label>
-      </div>
-      <div class="dialog-actions"><button value="cancel" type="submit" formnovalidate>取消</button><button class="primary" id="create-submit" value="default" type="submit">创建</button></div>
-    </form>
-  </dialog>
+    <dialog id="budget-dialog" aria-labelledby="budget-title">
+      <form id="budget-form" method="dialog">
+        <div class="dialog-heading">
+          <div>
+            <p class="kicker">运行资源</p>
+            <h2 id="budget-title">增加预算</h2>
+          </div>
+          <button class="icon-button" value="cancel" aria-label="关闭" type="submit" formnovalidate>
+            ×
+          </button>
+        </div>
+        <div class="form-grid">
+          <label>动作增量
+          <input name="actions" type="number" min="0" value="0" />
+        </label>
+        <label>Token 增量
+          <input name="tokens" type="number" min="0" value="0" />
+        </label>
+        <label>时间增量，秒
+          <input name="time_seconds" type="number" min="0" step="1" value="0" />
+        </label>
+        </div>
+        <label class="check">
+          <input name="acknowledge_missing_usage" type="checkbox" />确认模型缺失的 Token 用量</label>
+        <div class="dialog-actions">
+          <button class="secondary" value="cancel" type="submit" formnovalidate>
+            取消</button>
+          <button class="primary" value="default" type="submit">
+            应用预算
+          </button>
+        </div>
+      </form>
+    </dialog>
 
-  <dialog id="budget-dialog" aria-labelledby="budget-title">
-    <form id="budget-form" method="dialog">
-      <div class="dialog-heading"><h2 id="budget-title">增加预算</h2><button class="icon-button" value="cancel" aria-label="关闭" type="submit" formnovalidate>×</button></div>
-      <div class="form-grid">
-        <label>动作增量<input name="actions" type="number" min="0" value="0"></label>
-        <label>Token 增量<input name="tokens" type="number" min="0" value="0"></label>
-        <label>时间增量（秒）<input name="time_seconds" type="number" min="0" step="1" value="0"></label>
-      </div>
-      <label class="check"><input name="acknowledge_missing_usage" type="checkbox">确认模型缺失的 Token 用量</label>
-      <div class="dialog-actions"><button value="cancel" type="submit" formnovalidate>取消</button><button class="primary" value="default" type="submit">应用</button></div>
-    </form>
-  </dialog>
+    <dialog id="provider-dialog" aria-labelledby="provider-title">
+      <form id="provider-form" method="dialog">
+        <div class="dialog-heading">
+          <div>
+            <p class="kicker">模型连接</p>
+            <h2 id="provider-title">Provider 配置</h2>
+          </div>
+          <button class="icon-button" value="cancel" aria-label="关闭" type="submit" formnovalidate>
+            ×
+          </button>
+        </div>
+        <label>标识
+          <input name="provider_id" required maxlength="100" pattern="[A-Za-z0-9_-]+" />
+        </label>
+        <label>名称
+          <input name="name" required maxlength="160" />
+        </label>
+        <label>Base URL
+          <input name="base_url" type="url" value="https://api.openai.com/v1" required />
+        </label>
+        <label>模型
+          <input name="model" required maxlength="200" />
+        </label>
+        <label>API Key 环境变量
+          <input name="api_key_env" placeholder="OPENAI_API_KEY" />
+        </label>
+        <label>本次进程 API Key，不会回显或写入数据库
+          <input name="api_key" type="password" autocomplete="new-password" />
+        </label>
+        <label class="check">
+          <input id="provider-clear-key" name="clear_api_key" type="checkbox" />清除已绑定的进程密钥</label>
+        <div class="form-grid two-columns">
+          <label>超时，秒
+          <input name="timeout_seconds" type="number" min="1" max="3600" value="120" />
+        </label>
+        <label>上下文 Token
+          <input name="max_context_tokens" type="number" min="1" value="128000" />
+        </label>
+        </div>
+        <div class="dialog-actions">
+          <button class="secondary" value="cancel" type="submit" formnovalidate>
+            取消</button>
+          <button class="primary" value="default" type="submit">
+            保存配置
+          </button>
+        </div>
+      </form>
+    </dialog>
 
-  <dialog id="provider-dialog" aria-labelledby="provider-title">
-    <form id="provider-form" method="dialog">
-      <div class="dialog-heading"><h2 id="provider-title">Provider 配置</h2><button class="icon-button" value="cancel" aria-label="关闭" type="submit" formnovalidate>×</button></div>
-      <label>标识<input name="provider_id" required maxlength="100" pattern="[A-Za-z0-9_-]+"></label>
-      <label>名称<input name="name" required maxlength="160"></label>
-      <label>Base URL<input name="base_url" type="url" value="https://api.openai.com/v1" required></label>
-      <label>模型<input name="model" required maxlength="200"></label>
-      <label>API Key 环境变量<input name="api_key_env" placeholder="OPENAI_API_KEY"></label>
-      <label>本次进程 API Key（不会回显或写入数据库）<input name="api_key" type="password" autocomplete="new-password"></label>
-      <label class="check"><input id="provider-clear-key" name="clear_api_key" type="checkbox">清除已绑定的进程密钥</label>
-      <div class="form-grid"><label>超时（秒）<input name="timeout_seconds" type="number" min="1" max="3600" value="120"></label><label>上下文 Token<input name="max_context_tokens" type="number" min="1" value="128000"></label></div>
-      <div class="dialog-actions"><button value="cancel" type="submit" formnovalidate>取消</button><button class="primary" value="default" type="submit">保存</button></div>
-    </form>
-  </dialog>
+    <dialog id="skill-dialog" aria-labelledby="skill-title">
+      <form id="skill-form" method="dialog">
+        <div class="dialog-heading">
+          <div>
+            <p class="kicker">能力配置</p>
+            <h2 id="skill-title">Skill 配置</h2>
+          </div>
+          <button class="icon-button" value="cancel" aria-label="关闭" type="submit" formnovalidate>
+            ×
+          </button>
+        </div>
+        <input id="skill-id" name="skill_id" type="hidden" />
+        <p class="dialog-copy" id="skill-name"></p>
+        <label>配置 JSON
+          <textarea id="skill-config" name="config" rows="10" spellcheck="false" placeholder="{}"></textarea>
+        </label>
+        <div class="dialog-actions">
+          <button class="secondary" value="cancel" type="submit" formnovalidate>
+            取消</button>
+          <button class="primary" value="default" type="submit">
+            保存配置
+          </button>
+        </div>
+      </form>
+    </dialog>
 
-  <dialog id="skill-dialog" aria-labelledby="skill-title">
-    <form id="skill-form" method="dialog">
-      <div class="dialog-heading"><h2 id="skill-title">Skill 配置</h2><button class="icon-button" value="cancel" aria-label="关闭" type="submit" formnovalidate>×</button></div>
-      <input id="skill-id" name="skill_id" type="hidden">
-      <p class="dialog-copy" id="skill-name"></p>
-      <label>配置 JSON<textarea id="skill-config" name="config" rows="10" spellcheck="false" placeholder="{}"></textarea></label>
-      <div class="dialog-actions"><button value="cancel" type="submit" formnovalidate>取消</button><button class="primary" value="default" type="submit">保存配置</button></div>
-    </form>
-  </dialog>
+    <dialog id="mcp-dialog" aria-labelledby="mcp-title">
+      <form id="mcp-form" method="dialog">
+        <div class="dialog-heading">
+          <div>
+            <p class="kicker">外部工具</p>
+            <h2 id="mcp-title">MCP 服务器</h2>
+          </div>
+          <button class="icon-button" value="cancel" aria-label="关闭" type="submit" formnovalidate>
+            ×
+          </button>
+        </div>
+        <label>服务器 ID
+          <input name="server_id" required maxlength="100" pattern="[A-Za-z0-9_\-]+" />
+        </label>
+        <label>传输
+          <select name="transport">
+            <option value="stdio">stdio</option>
+            <option value="http">HTTP</option>
+          </select>
+        </label>
+        <label>命令，stdio
+          <input name="command" placeholder="npx" />
+        </label>
+        <label>参数，每行一个
+          <textarea name="args" rows="3" maxlength="2000"></textarea>
+        </label>
+        <label>URL，HTTP
+          <input name="url" type="url" />
+        </label>
+        <label>Preset
+          <input name="preset" placeholder="playwright" />
+        </label>
+        <label>作用域
+          <select name="scope">
+            <option value="run">每个运行独立</option>
+            <option value="shared">共享连接</option>
+          </select>
+        </label>
+        <label>环境变量 JSON
+          <textarea name="env" rows="2" placeholder='{"TOKEN":"${MCP_TOKEN}"}'></textarea>
+        </label>
+        <label>请求头 JSON
+          <textarea name="headers" rows="2" placeholder='{"Authorization":"Bearer ${MCP_TOKEN}"}'></textarea>
+        </label>
+        <div class="dialog-actions">
+          <button class="secondary" value="cancel" type="submit" formnovalidate>
+            取消</button>
+          <button class="primary" value="default" type="submit">
+            保存并连接
+          </button>
+        </div>
+      </form>
+    </dialog>
 
-  <dialog id="mcp-dialog" aria-labelledby="mcp-title">
-    <form id="mcp-form" method="dialog">
-      <div class="dialog-heading"><h2 id="mcp-title">MCP 服务器</h2><button class="icon-button" value="cancel" aria-label="关闭" type="submit" formnovalidate>×</button></div>
-      <label>服务器 ID<input name="server_id" required maxlength="100" pattern="[A-Za-z0-9_\-]+"></label>
-      <label>传输<select name="transport"><option value="stdio">stdio</option><option value="http">HTTP</option></select></label>
-      <label>命令（stdio）<input name="command" placeholder="npx"></label>
-      <label>参数（每行一个）<textarea name="args" rows="3" maxlength="2000"></textarea></label>
-      <label>URL（HTTP）<input name="url" type="url"></label>
-      <label>Preset<input name="preset" placeholder="playwright"></label>
-      <label>作用域<select name="scope"><option value="run">每个运行独立</option><option value="shared">共享连接</option></select></label>
-      <label>环境变量 JSON<textarea name="env" rows="2" placeholder='{"TOKEN":"${MCP_TOKEN}"}'></textarea></label>
-      <label>请求头 JSON<textarea name="headers" rows="2" placeholder='{"Authorization":"Bearer ${MCP_TOKEN}"}'></textarea></label>
-      <div class="dialog-actions"><button value="cancel" type="submit" formnovalidate>取消</button><button class="primary" value="default" type="submit">保存并连接</button></div>
-    </form>
-  </dialog>
+    <dialog id="fork-dialog" aria-labelledby="fork-title">
+      <form id="fork-form" method="dialog">
+        <div class="dialog-heading">
+          <div>
+            <p class="kicker">持久会话</p>
+            <h2 id="fork-title">创建会话分支</h2>
+          </div>
+          <button class="icon-button" value="cancel" aria-label="关闭" type="submit" formnovalidate>
+            ×
+          </button>
+        </div>
+        <input id="fork-run-id" name="run_id" type="hidden" /><label>分支起点
+          <select id="fork-entry" name="from_entry_id" required></select>
+        </label>
+        <label>分支 ID
+          <input id="fork-branch-id" name="branch_id" required maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9._-]*" />
+        </label>
+        <div class="dialog-actions">
+          <button class="secondary" value="cancel" type="submit" formnovalidate>
+            取消</button>
+          <button class="primary" value="default" type="submit">
+            创建分支
+          </button>
+        </div>
+      </form>
+    </dialog>
 
-  <dialog id="fork-dialog" aria-labelledby="fork-title">
-    <form id="fork-form" method="dialog">
-      <div class="dialog-heading"><h2 id="fork-title">创建会话分支</h2><button class="icon-button" value="cancel" aria-label="关闭" type="submit" formnovalidate>×</button></div>
-      <input id="fork-run-id" name="run_id" type="hidden">
-      <label>分支起点<select id="fork-entry" name="from_entry_id" required></select></label>
-      <label>分支 ID<input id="fork-branch-id" name="branch_id" required maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9._-]*"></label>
-      <div class="dialog-actions"><button value="cancel" type="submit" formnovalidate>取消</button><button class="primary" value="default" type="submit">创建分支</button></div>
-    </form>
-  </dialog>
+    <dialog id="observation-dialog" aria-labelledby="observation-title">
+      <form id="observation-form" method="dialog">
+        <div class="dialog-heading">
+          <div>
+            <p class="kicker">Worker 输入</p>
+            <h2 id="observation-title">提交观察</h2>
+          </div>
+          <button class="icon-button" value="cancel" aria-label="关闭" type="submit" formnovalidate>
+            ×
+          </button>
+        </div>
+        <p class="dialog-copy">
+          观察先进入 Observation，再由 Runtime 验证并晋升为证据。
+        </p>
+        <label>观察 JSON
+          <textarea id="observation-json" name="observation" rows="12" required spellcheck="false" placeholder='{"outcome":"progressed","summary":"..."}'></textarea>
+        </label>
+        <div class="dialog-actions">
+          <button class="secondary" value="cancel" type="submit" formnovalidate>
+            取消</button>
+          <button class="primary" value="default" type="submit">
+            提交观察
+          </button>
+        </div>
+      </form>
+    </dialog>
 
-  <dialog id="observation-dialog" aria-labelledby="observation-title">
-    <form id="observation-form" method="dialog">
-      <div class="dialog-heading"><h2 id="observation-title">提交 Worker 观察</h2><button class="icon-button" value="cancel" aria-label="关闭" type="submit" formnovalidate>×</button></div>
-      <p class="dialog-copy">观察先进入 Observation，再由 Runtime 验证和晋升为证据。</p>
-      <label>观察 JSON<textarea id="observation-json" name="observation" rows="12" required spellcheck="false" placeholder='{"outcome":"progressed","summary":"..."}'></textarea></label>
-      <div class="dialog-actions"><button value="cancel" type="submit" formnovalidate>取消</button><button class="primary" value="default" type="submit">提交</button></div>
-    </form>
-  </dialog>
+    <dialog id="login-dialog" class="login-dialog" aria-labelledby="login-title">
+      <form id="login-form" method="dialog">
+        <div class="login-brand">
+          <span class="brand-word">Trace</span><span class="brand-rule" aria-hidden="true"></span>
+        </div>
+        <div class="login-copy">
+          <p class="kicker">工作台访问</p>
+          <h2 id="login-title">进入 Trace</h2>
+          <p>输入工作台密码以继续。</p>
+        </div>
+        <label for="login-password">密码
+          <input id="login-password" name="password" type="password" autocomplete="current-password" required />
+        </label>
+        <p class="form-error" id="login-error" role="alert" hidden></p>
+        <button class="primary login-submit" id="login-submit" value="default" type="submit">
+          进入工作台
+        </button>
+        <p class="login-note">会话将在当前浏览器中保持。</p>
+      </form>
+    </dialog>
 
-  <dialog id="login-dialog" aria-labelledby="login-title">
-    <form id="login-form" method="dialog">
-      <div class="login-brand"><span class="brand-mark" aria-hidden="true">/</span><span><b>Trace</b><small>OPERATIONAL AGENT WORKBENCH</small></span></div>
-      <div class="dialog-heading"><div><p class="eyebrow">AUTH / SESSION</p><h2 id="login-title">进入控制面</h2></div></div>
-      <p class="dialog-copy">建立管理员会话后，才能读取运行、凭据绑定和工具配置。</p>
-      <label for="login-password">访问凭据<input id="login-password" name="password" type="password" autocomplete="current-password" required></label>
-      <p class="form-error" id="login-error" role="alert" hidden></p>
-      <div class="dialog-actions"><button class="primary" id="login-submit" value="default" type="submit">建立会话</button></div>
-    </form>
-  </dialog>
-
-  <div class="notice" id="notice" role="status" aria-live="polite" hidden></div>
-</body>
+    <div class="notice" id="notice" role="status" aria-live="polite" hidden></div>
+  </body>
 </html>

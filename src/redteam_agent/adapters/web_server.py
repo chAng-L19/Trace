@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from .web import (
     MAX_REQUEST_BYTES,
     _SECURITY_HEADERS as SECURITY_HEADERS,
+    _STATIC_FILES as STATIC_FILES,
     WEB_SCHEMA_VERSION,
     WebApi,
     WebResponse,
@@ -98,12 +99,7 @@ class TraceRequestHandler(BaseHTTPRequestHandler):
             self._write(error)
             return
         parsed = urlsplit(self.path)
-        static_file = {
-            "/": ("index.html", "text/html; charset=utf-8"),
-            "/index.html": ("index.html", "text/html; charset=utf-8"),
-            "/app.css": ("app.css", "text/css; charset=utf-8"),
-            "/app.js": ("app.js", "text/javascript; charset=utf-8"),
-        }.get(parsed.path)
+        static_file = STATIC_FILES.get(parsed.path)
         if static_file is not None:
             try:
                 name, content_type = static_file

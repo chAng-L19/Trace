@@ -62,7 +62,14 @@ def _request(server: TraceHTTPServer, method: str, path: str, body: bytes = b"")
     ("path", "content_type", "needle"),
     [
         ("/", "text/html", b"Trace Workbench"),
-        ("/app.css", "text/css", b"--green"),
+        ("/app.css", "text/css", b"--accent"),
+        ("/base.css", "text/css", b".app-header"),
+        ("/registry.css", "text/css", b".run-item"),
+        ("/workbench.css", "text/css", b".dossier-header"),
+        ("/control.css", "text/css", b".login-dialog"),
+        ("/ui.js", "text/javascript", b"renderRunList"),
+        ("/control.js", "text/javascript", b"loadProviders"),
+        ("/session.js", "text/javascript", b"/api/auth/status"),
         ("/app.js", "text/javascript", b"/api/runs"),
     ],
 )
