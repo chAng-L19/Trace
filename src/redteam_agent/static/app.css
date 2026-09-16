@@ -155,7 +155,7 @@ progress::-moz-progress-bar { background: var(--accent); }
 .setting-main strong { overflow-wrap: anywhere; }
 .setting-main code, .setting-detail { overflow-wrap: anywhere; color: var(--muted); font: 10px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
 
-dialog { width: min(650px, calc(100vw - 28px)); padding: 0; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); color: var(--text); box-shadow: 0 24px 80px #000c; }
+dialog { width: min(650px, calc(100vw - 28px)); max-height: calc(100dvh - 28px); overflow: auto; padding: 0; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); color: var(--text); box-shadow: 0 24px 80px #000c; }
 dialog::backdrop { background: #050806d9; }
 dialog form { padding: 25px; }
 .dialog-heading { justify-content: space-between; margin-bottom: 20px; }

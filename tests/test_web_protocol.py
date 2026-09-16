@@ -133,3 +133,15 @@ def test_unsupported_http_methods_return_structured_errors(tmp_path: Path) -> No
     assert response.status == 405
     assert body["error"] == "method_not_allowed"
     assert response.getheader("X-Content-Type-Options") == "nosniff"
+
+
+def test_in_process_adapter_rejects_unsupported_methods_consistently(tmp_path: Path) -> None:
+    service = AgentService(root=tmp_path / "runtime")
+    try:
+        api = WebApi(service)
+        for method in ("PUT", "PATCH", "OPTIONS", "TRACE"):
+            response = api.dispatch(method, "/api/runs")
+            assert response.status == 405
+            assert response.payload()["error"] == "method_not_allowed"
+    finally:
+        service.close()

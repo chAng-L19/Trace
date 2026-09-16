@@ -136,6 +136,11 @@ class WebApi(ControlRoutesMixin):
         headers: Mapping[str, str] | None = None,
     ) -> WebResponse:
         method = str(method or "GET").upper()
+        if method not in {"GET", "POST", "DELETE"}:
+            # Keep the in-process adapter contract identical to the HTTP
+            # handler.  Unsupported verbs must never reach a resource
+            # dispatcher and be misreported as a missing route.
+            return self._error(405, "method_not_allowed")
         parsed = urlsplit(path)
         segments = [unquote(item) for item in parsed.path.split("/") if item]
         query = {key: values[-1] for key, values in parse_qs(parsed.query).items() if values}
@@ -649,7 +654,6 @@ class WebApi(ControlRoutesMixin):
                 return [self._event_projection(item) for item in events]
             time.sleep(0.1)
 
-from .web_server import TraceHTTPServer
 
 def model_provider_from_environment(
     environ: Mapping[str, str] | None = None,
@@ -698,6 +702,11 @@ def serve(
     api_timeout_seconds: float | None = None,
     model_context_tokens: int | None = None,
 ) -> None:
+    # Import lazily so ``python -m redteam_agent.adapters.web`` and the
+    # installed ``redteam-agent-web`` entry point do not create a cycle:
+    # web_server depends on WebApi while the server is only needed at startup.
+    from .web_server import TraceHTTPServer
+
     tls_cert, tls_key = os.environ.get("TRACE_TLS_CERT", ""), os.environ.get("TRACE_TLS_KEY", "")
     tls_enabled = bool(tls_cert or tls_key)
     if bool(tls_cert) != bool(tls_key):
@@ -746,3 +755,17 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 __all__ = ["DEFAULT_EVENT_LIMIT", "MAX_JSON_RESPONSE_BYTES", "MAX_REQUEST_BYTES", "WEB_SCHEMA_VERSION", "TraceHTTPServer", "WebApi", "WebResponse", "main", "model_provider_from_environment", "serve"]
+
+
+def __getattr__(name: str) -> Any:
+    """Lazily expose the HTTP server while keeping the adapter importable."""
+
+    if name == "TraceHTTPServer":
+        from .web_server import TraceHTTPServer
+
+        return TraceHTTPServer
+    raise AttributeError(name)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
