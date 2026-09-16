@@ -1,18 +1,14 @@
 from __future__ import annotations
 
-"""Small REST/SSE adapter over :class:`AgentService`.
-
-The adapter owns protocol concerns only.  Runtime state, evidence promotion,
-leases and terminal decisions remain inside ``AgentService``/``OperationRuntime``.
-"""
-
 import argparse
+import base64
 import ipaddress
 import json
 import math
+import os
+import ssl
 import time
-from dataclasses import dataclass
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -20,17 +16,33 @@ from uuid import uuid4
 
 from ..application import AgentService
 from ..application.contracts import BudgetDelta
-from ..core import contract_hash
+from ..core import ModelPort, contract_hash
+from ..providers import OpenAICompatibleProvider
 from ..runtime.store_common import ImmutableRecordError, StoreConflictError
-
-
+from .web_control import ControlPlane
+from .web_routes import ControlRoutesMixin
 WEB_SCHEMA_VERSION = 1
 MAX_REQUEST_BYTES = 2 * 1024 * 1024
+MAX_JSON_RESPONSE_BYTES = 8 * 1024 * 1024
 DEFAULT_EVENT_LIMIT = 200
 MAX_EVENT_PAYLOAD_BYTES = 16 * 1024
 _RAW_EVENT_KEYS = frozenset({"state_snapshot", "payload", "output", "response", "request", "result", "stdout", "stderr"})
-
-
+_STATIC_FILES = {
+    "/": ("index.html", "text/html; charset=utf-8"),
+    "/index.html": ("index.html", "text/html; charset=utf-8"),
+    "/app.css": ("app.css", "text/css; charset=utf-8"),
+    "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+}
+_SECURITY_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+        "connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; "
+        "frame-ancestors 'none'"
+    ),
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+}
 def _event_value(value: Any, *, depth: int = 0) -> Any:
     """Project metadata recursively; preserve full content behind its hash."""
 
@@ -58,8 +70,6 @@ def _event_value(value: Any, *, depth: int = 0) -> Any:
     if len(json.dumps(result, ensure_ascii=False, default=str).encode("utf-8")) > MAX_EVENT_PAYLOAD_BYTES:
         return reference()
     return result
-
-
 def _jsonable(value: Any) -> Any:
     if hasattr(value, "to_dict"):
         return value.to_dict()
@@ -68,40 +78,55 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_jsonable(item) for item in value]
     return value
-
-
 @dataclass(frozen=True, slots=True)
 class WebResponse:
     status: int
     body: bytes
     content_type: str = "application/json; charset=utf-8"
+    headers: Mapping[str, str] = field(default_factory=dict)
 
     @classmethod
-    def json(cls, payload: Mapping[str, Any], *, status: int = 200) -> "WebResponse":
-        return cls(
-            status=status,
-            body=json.dumps(
-                _jsonable(dict(payload)),
+    def json(
+        cls,
+        payload: Mapping[str, Any],
+        *,
+        status: int = 200,
+        headers: Mapping[str, str] | None = None,
+    ) -> "WebResponse":
+        body = json.dumps(
+            _jsonable(dict(payload)),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+        if len(body) > MAX_JSON_RESPONSE_BYTES:
+            bounded_body = json.dumps(
+                {
+                    "schema_version": WEB_SCHEMA_VERSION,
+                    "ok": False,
+                    "error": "response_too_large",
+                    "max_bytes": MAX_JSON_RESPONSE_BYTES,
+                },
                 ensure_ascii=False,
                 sort_keys=True,
                 separators=(",", ":"),
-                default=str,
-            ).encode("utf-8"),
-        )
-
+            ).encode("utf-8")
+            return cls(status=413, body=bounded_body, headers=headers or {})
+        return cls(status=status, body=body, headers=headers or {})
     def payload(self) -> Mapping[str, Any]:
         value = json.loads(self.body.decode("utf-8"))
         return value if isinstance(value, Mapping) else {"value": value}
-
-
-class WebApi:
-    """Deterministic HTTP projection and command dispatcher for Trace."""
-
+class WebApi(ControlRoutesMixin):
     def __init__(self, service: AgentService, *, command_ttl_seconds: float = 30.0) -> None:
         self.service = service
         self.command_ttl_seconds = max(1.0, float(command_ttl_seconds))
         self.owner = f"web-{uuid4().hex}"
-
+        self.control = ControlPlane(service.runtime.store, service.runtime.root)
+        self.force_auth = False
+        self.tls_enabled = False
+        self.service.runtime.broker.set_secret_bindings(self.control.mcp_secret_bindings())
+        self._load_active_provider()
     def dispatch(
         self,
         method: str,
@@ -111,11 +136,37 @@ class WebApi:
         headers: Mapping[str, str] | None = None,
     ) -> WebResponse:
         method = str(method or "GET").upper()
+        if method not in {"GET", "POST", "DELETE"}:
+            # Keep the in-process adapter contract identical to the HTTP
+            # handler.  Unsupported verbs must never reach a resource
+            # dispatcher and be misreported as a missing route.
+            return self._error(405, "method_not_allowed")
         parsed = urlsplit(path)
         segments = [unquote(item) for item in parsed.path.split("/") if item]
         query = {key: values[-1] for key, values in parse_qs(parsed.query).items() if values}
         payload = dict(body or {})
         request_headers = {str(key).casefold(): str(value) for key, value in (headers or {}).items()}
+        if segments[:2] == ["api", "auth"]:
+            return self._auth(method, segments[2:], payload, request_headers)
+        if (self.control.auth_required or self.force_auth) and segments[:2] != ["api", "auth"]:
+            if not self.control.authenticated(request_headers, force=self.force_auth):
+                return self._error(401, "authentication_required")
+        if segments == ["api", "system"]:
+            if method != "GET":
+                return self._error(405, "method_not_allowed")
+            return self._ok(self.system_info())
+        if segments[:2] == ["api", "providers"]:
+            return self._control_request(method, "providers", segments[2:], payload, request_headers)
+        if segments[:2] == ["api", "skills"]:
+            return self._control_request(method, "skills", segments[2:], payload, request_headers)
+        if segments[:2] == ["api", "mcp"]:
+            return self._control_request(method, "mcp", segments[2:], payload, request_headers)
+        if segments[:2] == ["api", "conversations"]:
+            return self._control_request(method, "conversations", segments[2:], payload, request_headers)
+        if segments == ["api", "system", "reload"]:
+            if method != "POST":
+                return self._error(405, "method_not_allowed")
+            return self._control_request(method, "system", ["reload"], payload, request_headers)
         if segments[:2] != ["api", "runs"]:
             return self._error(404, "route_not_found")
         try:
@@ -133,6 +184,83 @@ class WebApi:
         except Exception as exc:  # pragma: no cover - defensive protocol boundary
             return self._error(500, f"internal_error:{type(exc).__name__}")
 
+    def _control_request(
+        self,
+        method: str,
+        domain: str,
+        tail: list[str],
+        body: Mapping[str, Any],
+        headers: Mapping[str, str],
+    ) -> WebResponse:
+        """Apply durable single-flight semantics to browser control writes."""
+
+        command_id = str(headers.get("x-command-id") or body.get("command_id") or "").strip()
+        command_body = {key: value for key, value in body.items() if key != "command_id"}
+        run_id = tail[0] if domain == "conversations" and tail else ""
+        if method == "GET":
+            if domain == "system" and tail == ["reload"]:
+                return self._ok(self._reload_control_plane())
+            return self._safe_control(method, domain, tail, body)
+        if not command_id:
+            command_id = self._implicit_command_id(["control", domain, *tail], command_body, run_id=run_id)
+        request_hash = contract_hash({"route": [domain, *tail], "body": command_body})
+        owner = f"{self.owner}:{uuid4().hex}"
+        try:
+            receipt = self.service.runtime.store.claim_web_command(
+                command_id, request_hash, owner=owner, run_id=run_id, ttl_seconds=self.command_ttl_seconds,
+            )
+            if receipt["status"] == "completed":
+                saved = receipt["response"]
+                replay = self._replay_receipt(saved)
+                if replay is not None:
+                    return self._command_response(replay, command_id)
+                if isinstance(saved.get("payload"), Mapping):
+                    return self._command_response(WebResponse.json(saved["payload"], status=int(saved.get("status", 200))), command_id)
+                return self._command_response(WebResponse.json(saved, status=200), command_id)
+            if not receipt.get("claimed") or receipt["owner"] != owner or receipt["status"] != "pending":
+                return self._error(409, "command_in_progress")
+            if receipt.get("reclaimed"):
+                response = self._error(409, "command_result_uncertain")
+                self.service.runtime.store.complete_web_command(
+                    command_id, self._receipt_payload(response),
+                    owner=owner, fencing_token=int(receipt["fencing_token"]), run_id=run_id,
+                )
+                return self._command_response(response, command_id)
+            if domain == "system" and tail == ["reload"]:
+                response = self._ok(self._reload_control_plane())
+            else:
+                response = self._safe_control(method, domain, tail, command_body)
+            if response.status < 500:
+                self.service.runtime.store.complete_web_command(
+                    command_id, self._receipt_payload(response),
+                    owner=owner, fencing_token=int(receipt["fencing_token"]), run_id=run_id,
+                )
+            return self._command_response(response, command_id)
+        except ImmutableRecordError as exc:
+            return self._error(409, str(exc))
+        except StoreConflictError as exc:
+            return self._error(409, str(exc))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            return self._error(400, str(exc))
+
+    @staticmethod
+    def _receipt_payload(response: WebResponse) -> dict[str, Any]:
+        encoded = base64.urlsafe_b64encode(response.body).decode("ascii")
+        return {"status": response.status, "payload_encoding": "json-base64", "payload": encoded}
+
+    @staticmethod
+    def _replay_receipt(saved: Mapping[str, Any]) -> WebResponse | None:
+        if saved.get("payload_encoding") != "json-base64":
+            return None
+        try:
+            body = base64.urlsafe_b64decode(str(saved["payload"]).encode("ascii"))
+            json.loads(body.decode("utf-8"))
+        except (KeyError, ValueError, TypeError, UnicodeError, json.JSONDecodeError):
+            return WebResponse.json(
+                {"schema_version": WEB_SCHEMA_VERSION, "ok": False, "error": "command_receipt_corrupt"},
+                status=409,
+            )
+        return WebResponse(int(saved.get("status", 200)), body)
     def _get(self, tail: list[str], query: Mapping[str, str]) -> WebResponse:
         if not tail:
             views = self.service.list_runs(
@@ -177,10 +305,41 @@ class WebApi:
                 limit=self._int_query(query, "limit", 1000, 1, 10000),
                 offset=self._int_query(query, "offset", 0, 0, 1_000_000),
             ))
+        if resource == "asset-attack-graph":
+            if len(tail) != 2:
+                return self._error(404, "resource_not_found")
+            # Only explicitly versioned Core objects are materialized here;
+            # ordinary EvidenceGraph payloads remain ordinary evidence.
+            return self._ok(self.service.asset_attack_graph(
+                run_id,
+                limit=self._int_query(query, "limit", 1000, 1, 10000),
+                offset=self._int_query(query, "offset", 0, 0, 1_000_000),
+            ))
+        if resource == "attack-paths":
+            if len(tail) != 2:
+                return self._error(404, "resource_not_found")
+            graph = self.service.asset_attack_graph(
+                run_id,
+                limit=self._int_query(query, "limit", 1000, 1, 10000),
+                offset=self._int_query(query, "offset", 0, 0, 1_000_000),
+            )
+            return self._ok({
+                "run_id": run_id,
+                "materialized": bool(graph.get("materialized")),
+                "attack_paths": list(graph.get("attack_paths", ())),
+                "edges": list(graph.get("edges", ())),
+                "source_evidence_ids": list(graph.get("source_evidence_ids", ())),
+                "truncated": bool(graph.get("truncated")),
+                "next_offset": graph.get("next_offset"),
+            })
         if resource == "transparency":
             if len(tail) != 2:
                 return self._error(404, "resource_not_found")
-            return self._ok(self.service.inspect_session(run_id, event_limit=self._int_query(query, "limit", 1000, 1, 10000)))
+            projection = self.service.inspect_session(
+                run_id,
+                event_limit=self._int_query(query, "limit", 1000, 1, 10000),
+            )
+            return self._ok({"run_id": run_id, **_jsonable(projection)})
         if resource == "tools":
             if len(tail) != 2:
                 return self._error(404, "resource_not_found")
@@ -229,8 +388,10 @@ class WebApi:
     ) -> WebResponse:
         command_id = str(headers.get("x-command-id") or body.get("command_id") or "").strip()
         command_body = {key: value for key, value in body.items() if key != "command_id"}
-        request_hash = contract_hash({"route": tail, "body": command_body})
         run_id = tail[0] if tail else ""
+        if not command_id:
+            command_id = self._implicit_command_id(["runs", *tail], command_body, run_id=run_id)
+        request_hash = contract_hash({"route": tail, "body": command_body})
         claim_owner = f"{self.owner}:{uuid4().hex}"
         fencing_token = 0
         if command_id:
@@ -243,9 +404,12 @@ class WebApi:
             )
             if receipt["status"] == "completed":
                 saved = receipt["response"]
+                replay = self._replay_receipt(saved)
+                if replay is not None:
+                    return self._command_response(replay, command_id)
                 if isinstance(saved.get("payload"), Mapping):
-                    return WebResponse.json(saved["payload"], status=int(saved.get("status", 200)))
-                return WebResponse.json(saved, status=200)
+                    return self._command_response(WebResponse.json(saved["payload"], status=int(saved.get("status", 200))), command_id)
+                return self._command_response(WebResponse.json(saved, status=200), command_id)
             if not receipt.get("claimed") or receipt["owner"] != claim_owner or receipt["status"] != "pending":
                 return self._error(409, "command_in_progress")
             fencing_token = int(receipt["fencing_token"])
@@ -253,12 +417,12 @@ class WebApi:
                 response = self._error(409, "command_result_uncertain")
                 self.service.runtime.store.complete_web_command(
                     command_id,
-                    {"status": response.status, "payload": response.payload()},
+                    self._receipt_payload(response),
                     owner=claim_owner,
                     fencing_token=fencing_token,
                     run_id=run_id,
                 )
-                return response
+                return self._command_response(response, command_id)
         try:
             response = self._post_once(tail, command_body, command_id=command_id)
         except Exception:
@@ -273,12 +437,22 @@ class WebApi:
             saved_run_id = response_run.get("run_id") or (first_run.get("run_id") if isinstance(first_run, Mapping) else "")
             self.service.runtime.store.complete_web_command(
                 command_id,
-                {"status": response.status, "payload": response_payload},
+                self._receipt_payload(response),
                 owner=claim_owner,
                 fencing_token=fencing_token,
                 run_id=run_id or str(saved_run_id or ""),
             )
-        return response
+        return self._command_response(response, command_id)
+
+    @staticmethod
+    def _command_response(response: WebResponse, command_id: str) -> WebResponse:
+        """Expose the effective id so legacy clients can retry durably."""
+
+        if not command_id:
+            return response
+        headers = dict(response.headers)
+        headers.setdefault("X-Command-ID", command_id)
+        return WebResponse(response.status, response.body, response.content_type, headers)
 
     def _post_once(
         self,
@@ -350,7 +524,18 @@ class WebApi:
                 str(body.get("from_entry_id") or ""),
                 str(body.get("branch_id") or ""),
             )
-            return self._ok({"entry": _jsonable(entry)})
+            session = _jsonable(self.service.export_session(run_id))
+            metadata = session.get("session", {})
+            active = str(metadata.get("active_branch_id") or "")
+            branches = metadata.get("branches", {})
+            return self._ok({
+                "run_id": run_id,
+                "entry": _jsonable(entry),
+                "branch_id": active,
+                "active_branch_id": active,
+                "branches": branches,
+                "leaf_entry_id": branches.get(active),
+            })
         return self._error(404, "command_not_found")
 
     @staticmethod
@@ -470,194 +655,117 @@ class WebApi:
             time.sleep(0.1)
 
 
-class _TraceHandler(BaseHTTPRequestHandler):
-    server_version = "TraceWeb/1"
-
-    @property
-    def api(self) -> WebApi:
-        return self.server.api  # type: ignore[attr-defined]
-
-    def _request_boundary(self) -> WebResponse | None:
-        """Keep browser pages on other origins out of the local control API."""
-
-        try:
-            host = urlsplit(f"http://{self.headers.get('Host', '')}")
-            hostname = host.hostname or ""
-            if host.username is not None or host.password is not None or host.path or host.query or host.fragment:
-                return self.api._error(400, "invalid_host")
-            bound_host, bound_port = self.server.server_address[:2]
-            if ipaddress.ip_address(bound_host).is_loopback:
-                if hostname not in {"localhost", "127.0.0.1", "::1"} or (host.port or 80) != bound_port:
-                    return self.api._error(403, "host_not_allowed")
-            origin_value = self.headers.get("Origin")
-            if origin_value:
-                origin = urlsplit(origin_value)
-                if (
-                    origin.scheme != "http"
-                    or origin.hostname != hostname
-                    or (origin.port or 80) != (host.port or 80)
-                    or origin.username is not None
-                    or origin.password is not None
-                    or origin.path
-                    or origin.query
-                    or origin.fragment
-                ):
-                    return self.api._error(403, "origin_not_allowed")
-        except ValueError:
-            return self.api._error(400, "invalid_request_origin")
+def model_provider_from_environment(
+    environ: Mapping[str, str] | None = None,
+    *,
+    model: str = "",
+    base_url: str = "",
+    api_key_env: str = "",
+    timeout_seconds: float | None = None,
+    max_context_tokens: int | None = None,
+) -> OpenAICompatibleProvider | None:
+    values = environ if environ is not None else os.environ
+    resolved_model = str(model or values.get("TRACE_MODEL") or "").strip()
+    if not resolved_model:
         return None
+    resolved_base = str(
+        base_url or values.get("TRACE_API_BASE_URL") or "https://api.openai.com/v1"
+    ).strip()
+    key_name = str(api_key_env or values.get("TRACE_API_KEY_ENV") or "OPENAI_API_KEY").strip()
+    resolved_timeout = (
+        float(timeout_seconds)
+        if timeout_seconds is not None
+        else float(values.get("TRACE_API_TIMEOUT_SECONDS") or 120)
+    )
+    resolved_context = (
+        int(max_context_tokens)
+        if max_context_tokens is not None
+        else int(values.get("TRACE_MODEL_CONTEXT_TOKENS") or 128_000)
+    )
+    return OpenAICompatibleProvider(
+        resolved_base,
+        resolved_model,
+        str(values.get(key_name) or ""),
+        timeout_seconds=resolved_timeout,
+        max_context_tokens=resolved_context,
+    )
 
-    def _body(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length", "0") or 0)
-        if length < 0:
-            raise ValueError("invalid_content_length")
-        if length > MAX_REQUEST_BYTES:
-            raise ValueError("request_body_too_large")
-        if length <= 0:
-            return {}
-        raw = self.rfile.read(length)
-        payload = json.loads(raw.decode("utf-8"))
-        if not isinstance(payload, Mapping):
-            raise TypeError("request_body_must_be_object")
-        return dict(payload)
+def serve(
+    root: Path,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    model_port: ModelPort | None = None,
+    model_name: str = "",
+    api_base_url: str = "",
+    api_key_env: str = "",
+    api_timeout_seconds: float | None = None,
+    model_context_tokens: int | None = None,
+) -> None:
+    # Import lazily so ``python -m redteam_agent.adapters.web`` and the
+    # installed ``redteam-agent-web`` entry point do not create a cycle:
+    # web_server depends on WebApi while the server is only needed at startup.
+    from .web_server import TraceHTTPServer
 
-    def _write(self, response: WebResponse) -> None:
-        self.send_response(response.status)
-        self.send_header("Content-Type", response.content_type)
-        self.send_header("Content-Length", str(len(response.body)))
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Trace-Schema-Version", str(WEB_SCHEMA_VERSION))
-        self.end_headers()
-        self.wfile.write(response.body)
-
-    def _reject_post(self, response: WebResponse) -> None:
-        # Closing a socket with unread request bytes can reset it on Windows,
-        # discarding the error response. Drain only bounded, framed bodies.
-        try:
-            length = int(self.headers.get("Content-Length", "0") or 0)
-        except ValueError:
-            length = 0
-        if 0 < length <= MAX_REQUEST_BYTES:
-            previous_timeout = self.connection.gettimeout()
-            try:
-                self.connection.settimeout(5.0)
-                self.rfile.read(length)
-            except OSError:
-                pass
-            finally:
-                self.connection.settimeout(previous_timeout)
-        self._write(response)
-
-    def do_GET(self) -> None:  # noqa: N802
-        boundary_error = self._request_boundary()
-        if boundary_error is not None:
-            self._write(boundary_error)
-            return
-        parsed = urlsplit(self.path)
-        accepts_sse = "text/event-stream" in self.headers.get("Accept", "").casefold()
-        if accepts_sse and parsed.path.startswith("/api/runs/") and parsed.path.endswith("/events"):
-            self._write_sse(parsed)
-            return
-        self._write(self.api.dispatch("GET", self.path, headers=self.headers))
-
-    def do_POST(self) -> None:  # noqa: N802
-        boundary_error = self._request_boundary()
-        if boundary_error is not None:
-            self._reject_post(boundary_error)
-            return
-        if self.headers.get_content_type() != "application/json":
-            self._reject_post(self.api._error(415, "application_json_required"))
-            return
-        try:
-            payload = self._body()
-            self._write(self.api.dispatch("POST", self.path, body=payload, headers=self.headers))
-        except (ValueError, TypeError, json.JSONDecodeError) as exc:
-            self._write(self.api._error(400, str(exc)))
-
-    def _write_sse(self, parsed: Any) -> None:
-        segments = [unquote(item) for item in parsed.path.split("/") if item]
-        if len(segments) != 4 or segments[:2] != ["api", "runs"] or segments[3] != "events":
-            self._write(self.api._error(404, "route_not_found"))
-            return
-        query = {key: values[-1] for key, values in parse_qs(parsed.query).items() if values}
-        headers_sent = False
-        try:
-            if "after_sequence" not in query and self.headers.get("Last-Event-ID"):
-                query = {**query, "after_sequence": self.headers.get("Last-Event-ID", "0")}
-            after = self.api._int_query(query, "after_sequence", 0, 0, 2**63 - 1)
-            wait = float(query.get("wait_seconds", "0") or 0)
-            events = self.api.sse_events(segments[2], after_sequence=after, wait_seconds=wait)
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-            self.send_header("Cache-Control", "no-cache")
-            # This endpoint emits a bounded batch. EOF terminates the batch so
-            # EventSource can reconnect with Last-Event-ID instead of hanging.
-            self.send_header("Connection", "close")
-            self.send_header("X-Trace-Schema-Version", str(WEB_SCHEMA_VERSION))
-            self.end_headers()
-            headers_sent = True
-            for event in events:
-                event_type = str(event["event_type"]).replace("\r", "").replace("\n", "")
-                self.wfile.write(
-                    (
-                        f"id: {event['sequence']}\n"
-                        f"event: {event_type}\n"
-                        f"data: {json.dumps(event, ensure_ascii=False, sort_keys=True, default=str)}\n\n"
-                    ).encode("utf-8")
-                )
-            if not events:
-                self.wfile.write(b": keep-alive\n\n")
-            self.wfile.flush()
-        except Exception as exc:
-            if headers_sent:
-                # The HTTP framing is already committed; keep the stream valid
-                # instead of appending a JSON response after SSE data.
-                try:
-                    self.wfile.write(
-                        (
-                            "event: error\n"
-                            f"data: {json.dumps({'error': str(exc)}, ensure_ascii=False)}\n\n"
-                        ).encode("utf-8")
-                    )
-                    self.wfile.flush()
-                except OSError:
-                    return
-            else:
-                if isinstance(exc, KeyError):
-                    self._write(self.api._error(404, str(exc)))
-                elif isinstance(exc, (ValueError, TypeError)):
-                    self._write(self.api._error(400, str(exc)))
-                else:
-                    self._write(self.api._error(500, f"internal_error:{type(exc).__name__}"))
-
-    def log_message(self, format: str, *args: Any) -> None:
-        return
-
-
-class TraceHTTPServer(ThreadingHTTPServer):
-    def __init__(self, address: tuple[str, int], api: WebApi) -> None:
-        super().__init__(address, _TraceHandler)
-        self.api = api
-
-
-def serve(root: Path, *, host: str = "127.0.0.1", port: int = 8765) -> None:
-    service = AgentService(root=root)
-    server = TraceHTTPServer((host, int(port)), WebApi(service))
+    tls_cert, tls_key = os.environ.get("TRACE_TLS_CERT", ""), os.environ.get("TRACE_TLS_KEY", "")
+    tls_enabled = bool(tls_cert or tls_key)
+    if bool(tls_cert) != bool(tls_key):
+        raise ValueError("trace_tls_cert_and_key_required")
+    tls_context = None
+    if tls_enabled:
+        tls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        tls_context.load_cert_chain(tls_cert, tls_key)
+    provider = model_port or model_provider_from_environment(model=model_name, base_url=api_base_url, api_key_env=api_key_env, timeout_seconds=api_timeout_seconds, max_context_tokens=model_context_tokens)
+    resolved_model = model_name or str(provider.capabilities().metadata.get("model") if provider is not None else "")
+    service = AgentService(root=root, model_port=provider, model_name=resolved_model)
+    try:
+        is_loopback = ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        is_loopback = host.casefold() == "localhost"
+    if not is_loopback and not (os.environ.get("TRACE_ADMIN_PASSWORD") or os.environ.get("TRACE_ADMIN_TOKEN")):
+        service.close()
+        raise ValueError("non_loopback_requires_trace_admin_credentials")
+    if not is_loopback and not tls_enabled and os.environ.get("TRACE_ALLOW_INSECURE_HTTP") != "1":
+        service.close()
+        raise ValueError("non_loopback_requires_tls_or_explicit_insecure_http")
+    api = WebApi(service)
+    api.force_auth = not is_loopback
+    api.tls_enabled = tls_enabled
+    server = TraceHTTPServer((host, int(port)), api)
+    if tls_context is not None:
+        server.socket = tls_context.wrap_socket(server.socket, server_side=True)
     try:
         server.serve_forever()
     finally:
         server.server_close()
         service.close()
 
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="redteam-agent-web")
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--model", default="")
+    parser.add_argument("--api-base-url", default="")
+    parser.add_argument("--api-key-env", default="")
+    parser.add_argument("--api-timeout-seconds", type=float)
+    parser.add_argument("--model-context-tokens", type=int)
     arguments = parser.parse_args(argv)
-    serve(arguments.root.expanduser().resolve(), host=arguments.host, port=arguments.port)
+    serve(arguments.root.expanduser().resolve(), host=arguments.host, port=arguments.port, model_name=arguments.model, api_base_url=arguments.api_base_url, api_key_env=arguments.api_key_env, api_timeout_seconds=arguments.api_timeout_seconds, model_context_tokens=arguments.model_context_tokens)
     return 0
 
+__all__ = ["DEFAULT_EVENT_LIMIT", "MAX_JSON_RESPONSE_BYTES", "MAX_REQUEST_BYTES", "WEB_SCHEMA_VERSION", "TraceHTTPServer", "WebApi", "WebResponse", "main", "model_provider_from_environment", "serve"]
 
-__all__ = ["DEFAULT_EVENT_LIMIT", "MAX_REQUEST_BYTES", "WEB_SCHEMA_VERSION", "TraceHTTPServer", "WebApi", "WebResponse", "main", "serve"]
+
+def __getattr__(name: str) -> Any:
+    """Lazily expose the HTTP server while keeping the adapter importable."""
+
+    if name == "TraceHTTPServer":
+        from .web_server import TraceHTTPServer
+
+        return TraceHTTPServer
+    raise AttributeError(name)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

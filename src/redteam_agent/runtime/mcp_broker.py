@@ -14,6 +14,16 @@ from .security import safe_error_text, secure_directory
 
 
 class McpBrokerMixin:
+    def set_secret_bindings(self, bindings: Mapping[str, Mapping[str, str]]) -> None:
+        """Bind only the current server's transient secrets during rendering."""
+
+        with self._lifecycle_lock:
+            self._mcp_secret_bindings = {
+                str(server): {str(name): str(value) for name, value in values.items()}
+                for server, values in bindings.items()
+                if isinstance(values, Mapping)
+            }
+
     def bind_workspace_root(self, root: Path) -> None:
         resolved = root.expanduser().resolve(strict=False)
         secure_directory(resolved)
@@ -32,6 +42,13 @@ class McpBrokerMixin:
     def discover_from_configs(self, paths: Sequence[Path]) -> tuple[ToolDescriptor, ...]:
         with self._lifecycle_lock:
             return self._discover_from_configs_locked(paths)
+
+    def register_config_paths(self, paths: Sequence[Path]) -> None:
+        with self._lifecycle_lock:
+            for path in paths:
+                resolved = path.expanduser().resolve(strict=False)
+                if resolved not in self._config_paths:
+                    self._config_paths.append(resolved)
 
     def _discover_from_configs_locked(self, paths: Sequence[Path]) -> tuple[ToolDescriptor, ...]:
         for path in paths:
@@ -133,7 +150,11 @@ class McpBrokerMixin:
         run_id: str = "",
     ) -> StdioMcpClient | HttpMcpClient:
         workspace = self._workspace_for(run_id) if run_id else None
-        rendered = spec.render(run_id=run_id, workspace=workspace)
+        rendered = spec.render(
+            run_id=run_id,
+            workspace=workspace,
+            environment=self._mcp_secret_bindings.get(spec.name, {}),
+        )
         if rendered.transport == "stdio":
             return StdioMcpClient(
                 rendered.name,

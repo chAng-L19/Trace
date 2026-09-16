@@ -29,6 +29,16 @@ MAX_MCP_PENDING_RESPONSES = 2048
 MAX_TOOL_OUTPUT_BYTES = 16 * 1024 * 1024
 MCP_READ_CHUNK_BYTES = 64 * 1024
 MAX_ERROR_TEXT_BYTES = 1024
+_CHILD_ENV_KEYS = frozenset({
+    "APPDATA", "COMSPEC", "HOME", "LANG", "LC_ALL", "LOCALAPPDATA", "LOGNAME",
+    "PATH", "PATHEXT", "SHELL", "SYSTEMROOT", "TEMP", "TMP", "USER", "USERPROFILE",
+})
+
+
+def _child_environment(values: Mapping[str, str] | None) -> dict[str, str]:
+    environment = {key: value for key, value in os.environ.items() if key.upper() in _CHILD_ENV_KEYS}
+    environment.update({str(key): str(value) for key, value in dict(values or {}).items()})
+    return environment
 
 
 @dataclass
@@ -105,8 +115,7 @@ class StdioMcpClient:
     ) -> None:
         self.server_name = server_name
         self.roots = tuple(path.expanduser().resolve(strict=False) for path in roots)
-        environment = dict(os.environ)
-        environment.update({str(key): str(value) for key, value in dict(env or {}).items()})
+        environment = _child_environment(env)
         executable = shutil.which(command) or command
         self.process = subprocess.Popen(
             [executable, *args],

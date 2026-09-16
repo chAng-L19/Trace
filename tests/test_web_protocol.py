@@ -9,7 +9,7 @@ from threading import Thread
 import pytest
 
 from redteam_agent import AgentService
-from redteam_agent.adapters.web import TraceHTTPServer, WebApi
+from redteam_agent.adapters.web import MAX_JSON_RESPONSE_BYTES, TraceHTTPServer, WebApi, WebResponse
 from redteam_agent.core import Event, contract_hash
 
 
@@ -45,6 +45,14 @@ def test_default_event_projection_recursively_omits_raw_and_large_values() -> No
     assert len(serialized.encode()) < 20_000
     assert projected["payload_hash"] == contract_hash(payload)
     assert WebApi._event_projection(event, include_payload=True)["payload"] == payload
+
+
+def test_json_responses_are_bounded_at_the_protocol_boundary() -> None:
+    response = WebResponse.json({"error": "response_too_large", "blob": "x" * (MAX_JSON_RESPONSE_BYTES + 1)})
+
+    assert response.status == 413
+    assert response.payload()["error"] == "response_too_large"
+    assert response.payload()["max_bytes"] == MAX_JSON_RESPONSE_BYTES
 
 
 def test_http_events_negotiate_json_and_sse_and_close_completed_batch(tmp_path: Path) -> None:
@@ -113,3 +121,27 @@ def test_empty_sse_batch_terminates_with_comment(tmp_path: Path) -> None:
         response = connection.getresponse()
         assert response.read() == b": keep-alive\n\n"
         connection.close()
+
+
+def test_unsupported_http_methods_return_structured_errors(tmp_path: Path) -> None:
+    with _server(tmp_path) as (server, _, _):
+        connection = HTTPConnection(*server.server_address, timeout=2)
+        connection.request("PUT", "/api/runs")
+        response = connection.getresponse()
+        body = json.loads(response.read())
+
+    assert response.status == 405
+    assert body["error"] == "method_not_allowed"
+    assert response.getheader("X-Content-Type-Options") == "nosniff"
+
+
+def test_in_process_adapter_rejects_unsupported_methods_consistently(tmp_path: Path) -> None:
+    service = AgentService(root=tmp_path / "runtime")
+    try:
+        api = WebApi(service)
+        for method in ("PUT", "PATCH", "OPTIONS", "TRACE"):
+            response = api.dispatch(method, "/api/runs")
+            assert response.status == 405
+            assert response.payload()["error"] == "method_not_allowed"
+    finally:
+        service.close()

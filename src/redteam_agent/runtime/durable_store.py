@@ -30,6 +30,7 @@ from .budget_store import BudgetStoreMixin
 from .exploration import ExplorationStoreMixin
 from .session_journal import JournalStoreMixin
 from .web_command_store import WebCommandStoreMixin
+from .pause_reasons import BUDGET_PAUSE_REASONS
 
 __all__ = [
     "DurableStore",
@@ -87,8 +88,16 @@ class ServiceStoreMixin:
                 return state
             if state.status in {"completed", "failed", "failed_integrity", "cancelled"}:
                 raise ValueError(f"operation_terminal:{state.status}")
+            previous_pause_reason = state.budget.pause_reason
+            operator_pause = state.status == "paused_budget" and previous_pause_reason not in BUDGET_PAUSE_REASONS
             changed = state.budget.apply_delta(**request)
-            if state.status == "paused_budget" and not state.budget.exhaustion_reason():
+            if operator_pause:
+                state.budget.pause(previous_pause_reason)
+            elif (
+                state.status == "paused_budget"
+                and previous_pause_reason in BUDGET_PAUSE_REASONS
+                and not state.budget.exhaustion_reason()
+            ):
                 state.status = "running"
             current_version = int(row["version"])
             if changed:
@@ -403,6 +412,8 @@ class DurableStore(
             for state in states:
                 run_id = state.run_id
                 row = rows[run_id]
+                previous_pause_reason = state.budget.pause_reason
+                operator_pause = state.status == "paused_budget" and previous_pause_reason not in BUDGET_PAUSE_REASONS
                 changed = state.budget.apply_delta(
                     actions=actions,
                     tokens=tokens,
@@ -412,7 +423,13 @@ class DurableStore(
                 )
                 if not changed:
                     continue
-                if state.status == "paused_budget" and not state.budget.exhaustion_reason():
+                if operator_pause:
+                    state.budget.pause(previous_pause_reason)
+                elif (
+                    state.status == "paused_budget"
+                    and previous_pause_reason in BUDGET_PAUSE_REASONS
+                    and not state.budget.exhaustion_reason()
+                ):
                     state.status = "running"
                 current_version = int(row["version"])
                 next_version = current_version + 1

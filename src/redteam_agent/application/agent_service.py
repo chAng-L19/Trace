@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -36,6 +37,7 @@ from .contracts import (
     validate_run_transition,
 )
 from .bounded_output import BoundedOutput
+from .asset_graph import project_asset_attack_graph
 from .model_loop import AgentLoop
 from .context import ContextSelection, ContextSelector, ConversationLedger, TraceableCompactor
 from .resources import ResourceIndex, ResourceResolver, ResourceSelection
@@ -131,6 +133,34 @@ class AgentService:
     @property
     def model_loop(self) -> AgentLoop | None:
         return self.agent_loop
+
+    def configure_model(
+        self,
+        model_port: ModelPort | None,
+        *,
+        model_name: str = "",
+        streaming: bool = False,
+    ) -> None:
+        """Replace the provider used by future turns through the canonical service."""
+        self.agent_loop = (
+            AgentLoop(
+                service=self,
+                model=model_port,
+                tools=self.tools,
+                model_name=model_name,
+                streaming=streaming,
+                max_retries=2,
+                max_turns=8,
+            )
+            if model_port is not None
+            else None
+        )
+
+    def control_write(self, operation: Any, *args: Any, **kwargs: Any) -> Any:
+        """Single application boundary for adapter-owned durable settings."""
+        if not callable(operation):
+            raise TypeError("control_operation_required")
+        return operation(*args, **kwargs)
 
     @staticmethod
     def _view(result: OperationResult) -> AgentRunView:
@@ -266,7 +296,6 @@ class AgentService:
         before = self.status(run_id)
         arguments = {
             "run_id": run_id,
-            "action_id": resolved.action_id,
             "output": resolved.output,
             "tool": resolved.tool,
             "usage": dict(resolved.usage),
@@ -284,6 +313,7 @@ class AgentService:
                 )
             else:
                 result = self.runtime.submit_observation(
+                    action_id=resolved.action_id,
                     idempotency_key=resolved.idempotency_key,
                     **arguments,
                 )
@@ -364,6 +394,8 @@ class AgentService:
 
     def pause(self, run_id: str, reason: str = "user_requested") -> AgentRunView:
         before = self.status(run_id)
+        if self.model_loop is not None and before.run.status != "paused_budget":
+            self.model_loop.interrupt(run_id)
         view = self._view(self.runtime.pause_run(run_id, reason=reason))
         return self._validate_result(before.run.status, view)
 
@@ -396,6 +428,8 @@ class AgentService:
             else:
                 self.runtime.apply_budget_delta(run_id, **arguments)
         self.runtime.resume_control(run_id)
+        if self.model_loop is not None:
+            self.model_loop.resume(run_id)
         if execute:
             return self.run(run_id, max_actions=max_actions)
         view = self.status(run_id)
@@ -484,6 +518,15 @@ class AgentService:
             include_payload=include_payload,
         )
 
+    def asset_attack_graph(
+        self,
+        run_id: str,
+        *,
+        limit: int = 1000,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        return project_asset_attack_graph(self, run_id, limit=limit, offset=offset)
+
     def replay_session(self, run_id: str, leaf_id: str | None = None):
         return self.journal.replay(run_id, leaf_id)
 
@@ -536,11 +579,40 @@ class AgentService:
             requested_values = ()
         if not isinstance(disabled_values, Sequence):
             disabled_values = ()
+        configured_requested: list[str] = []
+        configured_disabled: list[str] = []
+        configured_budget = max(1, int(token_budget))
+        try:
+            with self.runtime.store.connection() as connection:
+                rows = connection.execute("SELECT skill_id,enabled,config_json FROM trace_skills").fetchall()
+                for row in rows:
+                    skill_id = str(row["skill_id"])
+                    if not bool(row["enabled"]):
+                        configured_disabled.append(skill_id)
+                        continue
+                    try:
+                        config = json.loads(str(row["config_json"] or "{}"))
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        config = {}
+                    if not isinstance(config, Mapping):
+                        continue
+                    for key, target in (("requested", configured_requested), ("resources", configured_requested), ("disabled", configured_disabled), ("exclude", configured_disabled)):
+                        values = config.get(key, ())
+                        if isinstance(values, Sequence) and not isinstance(values, (str, bytes)):
+                            target.extend(str(item) for item in values if str(item).strip())
+                    try:
+                        configured_budget = min(configured_budget, max(1, int(config.get("token_budget", configured_budget))))
+                    except (TypeError, ValueError, OverflowError):
+                        pass
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc).casefold():
+                raise RuntimeError("skill_state_unavailable") from exc
+            configured_disabled = []
         return self.resources.select(
             self.resource_index(run_id),
-            requested=tuple(str(item) for item in requested_values),
-            disabled=tuple(str(item) for item in disabled_values),
-            token_budget=token_budget,
+            requested=tuple(dict.fromkeys((*map(str, requested_values), *configured_requested))),
+            disabled=tuple(dict.fromkeys((*map(str, disabled_values), *configured_disabled))),
+            token_budget=configured_budget,
         )
 
     def compact_context(self, run_id: str, message_ids: tuple[str, ...] = ()):

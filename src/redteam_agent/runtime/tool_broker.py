@@ -46,6 +46,7 @@ class ToolBroker(McpBrokerMixin):
         self._server_status: dict[str, dict[str, Any]] = {}
         self._config_paths: list[Path] = []
         self._workspace_root: Path | None = None
+        self._mcp_secret_bindings: dict[str, Mapping[str, str]] = {}
         self._last_refresh = 0.0
         self._lifecycle_lock = threading.RLock()
         self._active_calls = 0
