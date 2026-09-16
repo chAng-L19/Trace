@@ -194,7 +194,12 @@ class TraceRequestHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             if headers_sent:
                 try:
-                    self.wfile.write(("event: error\n" f"data: {json.dumps({'error': str(exc)}, ensure_ascii=False)}\n\n").encode("utf-8"))
+                    # The response headers are already committed, so the
+                    # client receives an SSE error event. Keep that event
+                    # bounded and redact exception text, which may contain
+                    # filesystem paths, request data or provider details.
+                    error_payload = {"error": f"sse_error:{type(exc).__name__}"}
+                    self.wfile.write(("event: error\n" f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n").encode("utf-8"))
                     self.wfile.flush()
                 except OSError:
                     return
