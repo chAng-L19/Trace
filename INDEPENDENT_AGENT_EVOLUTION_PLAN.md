@@ -3,9 +3,8 @@
 技术兼容标识：仓库 `codex-redteam-agent`，Python 包 `redteam_agent`。
 MCP `serverInfo.name` 继续使用 `redteam-agent-runtime`，作为兼容协议标识。
 
-> 本文件是当前权威计划；`docs/architecture/lean-transparent-refactor.md` 只提供
-> 架构背景和参考映射。每个阶段完成时，必须在同一提交中更新本文件的状态、验收
-> 证据、基线和下一阶段入口。
+> 本文件是当前权威计划。每个阶段完成时，在同一提交中更新状态、验收证据、
+> 基线和下一阶段入口。
 
 ## 定位
 
@@ -228,8 +227,8 @@ MCP initialize/tools/list（5 个公开工具）全部通过。生产 Python 文
 
 交付：按删除优先矩阵移除 25 个重复/纯转发模块（含 mapping、独立 Scheduler、重复
 Core/Runtime 模型和 Store/Evidence/Worker 实现）；将 canonical workflow 固化到类型化
-`WorkflowRegistry`，TOML 仅保留为历史导出；必要的旧导入路径只保留一层无状态 shim。
-新增 L10 回归验证 canonical import identity、删除文件清单和 legacy workflow 不被读取。
+`WorkflowRegistry`，并在兼容周期结束后删除重复 TOML；必要的旧导入路径只保留一层
+无状态 shim。新增 L10 回归验证 canonical import identity 和删除文件清单。
 
 验收结果：生产 Python 文件 `80`、最大文件 `800` 行，删除文件清单与兼容导入测试通过；
 全量回归 `329 passed, 1 skipped`，`compileall`、wheel、隔离安装、`pip check`、source/
@@ -297,8 +296,7 @@ lineage 可回读。代码量仅记录为后续优化观测项，不影响 L11 �
 - 每个候选先锁定调用者、替代路径、恢复路径和 Evidence/Terminal 不变量；
 - 先迁移测试，再删除引用，再删除导出，最后删除文件；
 - shim 只能转发，最多保留一个版本周期；
-- 代码减少必须伴随能力覆盖、终态准确率和回归时间数据；
-- 详细候选矩阵见 `docs/architecture/lean-transparent-refactor.md`。
+- 代码减少必须伴随能力覆盖、终态准确率和回归时间数据。
 
 ## 核心架构决策
 
@@ -313,21 +311,15 @@ lineage 可回读。代码量仅记录为后续优化观测项，不影响 L11 �
 ## 迁移规则
 
 - 旧 `OperationRuntime` 在迁移期间只保留兼容 facade，不能继续扩张调用面；
-- `generic-adaptive` 作为兼容路径，L10 前不得删除；
+- L10 后删除重复的 `generic-adaptive.toml`；权威生命周期契约由
+  `WorkflowRegistry` 的内置定义提供；
 - 每次删除前先添加调用者/恢复/攻击性回归测试；
 - SQLite 只做向前、可重复、非破坏性迁移；
 - Phase L2/L6 的 compaction 不删除原始记录；
 - Phase L4/L5 的 Token 优化必须和能力覆盖、终态准确率一起验收；
 - 前一阶段验收未通过时不得进入下一阶段。
 
-## 阶段验收索引
+## 计划维护
 
-```text
-docs/acceptance/phase-0.md ... phase-6.md   历史基线
-docs/acceptance/phase-6.1.md                Open-source Capability Plane
-docs/acceptance/lean-L0.md                  Lean L0 complexity/behavior freeze
-docs/acceptance/lean-l0-audit.json         Lean L0 machine-readable audit
-docs/acceptance/lean-L1.md                  Lean L1 canonical entry acceptance
-本文件“阶段交付与验收”                        L0–L11 当前权威状态与验收标准
-docs/architecture/lean-transparent-refactor.md  架构背景与参考映射
-```
+本文件“阶段交付与验收”是 L0-L12 状态与验收标准的唯一文档来源。历史执行证据由
+Git 提交、测试与确定性 fixtures 保留，不再复制为阶段验收 Markdown 或审计 JSON。

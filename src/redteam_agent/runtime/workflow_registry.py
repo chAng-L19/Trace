@@ -211,8 +211,6 @@ class WorkflowRegistry:
             if not root.is_dir():
                 continue
             for path in sorted(root.glob("*.toml")):
-                if self._builtin and path.name == "generic-adaptive.toml":
-                    continue
                 payload = tomllib.loads(path.read_text(encoding="utf-8-sig"))
                 if "profile_schema_version" in payload:
                     profile_documents.append((path, payload))

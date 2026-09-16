@@ -3,8 +3,6 @@ from __future__ import annotations
 import importlib
 from pathlib import Path
 
-from redteam_agent.runtime.workflow_registry import WorkflowRegistry
-
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -56,6 +54,7 @@ def test_removed_files_are_not_reintroduced() -> None:
         "src/redteam_agent/runtime/model_common.py",
         "src/redteam_agent/runtime/model_records.py",
         "src/redteam_agent/runtime/models.py",
+        "src/redteam_agent/runtime/operation_result.py",
         "src/redteam_agent/runtime/review.py",
         "src/redteam_agent/runtime/scheduler.py",
         "src/redteam_agent/runtime/service_store.py",
@@ -63,20 +62,6 @@ def test_removed_files_are_not_reintroduced() -> None:
         "src/redteam_agent/runtime/store_schema.py",
         "src/redteam_agent/workers/codex_handoff.py",
         "src/redteam_agent/workers/docker.py",
+        "src/redteam_agent/workflows/generic-adaptive.toml",
     )
     assert all(not (ROOT / path).exists() for path in removed)
-
-
-def test_default_workflow_does_not_read_the_legacy_action_export(monkeypatch) -> None:
-    original_read_text = Path.read_text
-
-    def guarded_read_text(path: Path, *args, **kwargs):
-        if path.name == "generic-adaptive.toml":
-            raise AssertionError("legacy generic workflow export was read")
-        return original_read_text(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "read_text", guarded_read_text)
-    workflows = WorkflowRegistry().load()
-
-    assert [workflow.workflow_id for workflow in workflows] == ["generic-adaptive"]
-    assert workflows[0].version == 2
