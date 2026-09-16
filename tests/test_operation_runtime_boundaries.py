@@ -41,7 +41,6 @@ def test_operation_runtime_modules_remain_bounded() -> None:
     runtime_root = Path(operation_runtime_module.__file__).resolve().parent
     names = (
         "operation_runtime.py",
-        "operation_result.py",
         "operation_contract.py",
         "operation_lifecycle.py",
         "operation_execution.py",

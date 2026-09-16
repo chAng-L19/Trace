@@ -200,10 +200,7 @@ def test_workflow_profiles_are_data_only_and_preserve_control_semantics() -> Non
             ),
         )
 
-    assert {path.name for path in (WORKFLOWS_ROOT).glob("*.toml")} == {
-        "generic-adaptive.toml",
-        "profiles.toml",
-    }
+    assert {path.name for path in (WORKFLOWS_ROOT).glob("*.toml")} == {"profiles.toml"}
     assert profile_document["profile_schema_version"] == 2
     assert all(set(profile) <= allowed for profile in profile_document["profiles"])
     for profile_id in registry.profile_ids:
