@@ -1,16 +1,24 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Mapping
+from dataclasses import dataclass, replace
+from contextlib import contextmanager
+import threading
+from typing import Any, Callable, Iterator, Mapping
+from uuid import uuid4
 
 from ..core import WorkerResult, WorkerTask, contract_hash
 from .model_common import utc_now
-from .store_common import ImmutableRecordError, StoreConflictError, _dump, _load
+from .model_state import LeaseToken
+from .store_common import ImmutableRecordError, LeaseLostError, StoreConflictError, _dump, _load
 
 
 WORKER_TERMINAL_STATUSES = frozenset({"completed", "failed", "timed_out", "cancelled", "unavailable"})
 WORKER_STATUSES = WORKER_TERMINAL_STATUSES | frozenset(
     {"prepared", "running", "unknown", "waiting_worker"}
+)
+WORKER_LEASE_SECONDS = 30.0
+WORKER_BLOCKED_RUN_STATUSES = frozenset(
+    {"paused_budget", "completed", "failed", "failed_integrity", "cancelling", "cancelled"}
 )
 
 
@@ -29,6 +37,43 @@ class WorkerTaskRecord:
 class WorkerStore:
     def __init__(self, store: Any) -> None:
         self.store = store
+        self._execution = threading.local()
+
+    @contextmanager
+    def execution(
+        self, task: WorkerTask, *, on_lease_lost: Callable[[], Any] | None = None,
+    ) -> Iterator[LeaseToken]:
+        """Fence recovery and commits while another process owns this task."""
+        token = self.store.acquire_lease(
+            task.run_id, f"__worker__:{task.task_id}", f"worker:{uuid4().hex}",
+            ttl_seconds=WORKER_LEASE_SECONDS,
+        )
+        if token is None:
+            raise RuntimeError(f"worker_task_already_active:{task.task_id}:running")
+        stopped = threading.Event()
+
+        def renew() -> None:
+            while not stopped.wait(WORKER_LEASE_SECONDS / 3):
+                try:
+                    if self.store.renew_lease(token, ttl_seconds=WORKER_LEASE_SECONDS) is not None:
+                        continue
+                except Exception:
+                    pass
+                if on_lease_lost is not None:
+                    on_lease_lost()
+                return
+
+        heartbeat = threading.Thread(target=renew, name="worker-lease", daemon=True)
+        previous = getattr(self._execution, "token", None)
+        self._execution.token = token
+        try:
+            heartbeat.start()
+            yield token
+        finally:
+            self._execution.token = previous
+            stopped.set()
+            heartbeat.join(timeout=5)
+            self.store.release_lease(token)
 
     @staticmethod
     def input_hash(task: WorkerTask) -> str:
@@ -55,6 +100,8 @@ class WorkerStore:
                     raise ImmutableRecordError(
                         f"worker_idempotency_conflict:{task.run_id}:{worker_kind}:{task.idempotency_key}"
                     )
+                if task_record.result is None:
+                    self._assert_run_executable(connection, task.run_id)
                 return task_record
             row = connection.execute(
                 "SELECT * FROM worker_tasks WHERE run_id=? AND worker_kind=? AND idempotency_key=?",
@@ -67,6 +114,7 @@ class WorkerStore:
                         f"worker_idempotency_conflict:{task.run_id}:{worker_kind}:{task.idempotency_key}"
                     )
                 return record
+            self._assert_run_executable(connection, task.run_id)
             connection.execute(
                 "INSERT INTO worker_tasks(task_id, run_id, worker_kind, capability, idempotency_key, "
                 "input_hash, status, task_json, result_json, owner, created_at, updated_at) "
@@ -86,6 +134,14 @@ class WorkerStore:
             )
         return WorkerTaskRecord(task, worker_kind, input_hash, "prepared", None, owner, now, now)
 
+    @staticmethod
+    def _assert_run_executable(connection, run_id: str) -> None:
+        run = connection.execute("SELECT status FROM operations WHERE run_id=?", (run_id,)).fetchone()
+        if run is None:
+            raise KeyError(f"operation_not_found:{run_id}")
+        if str(run["status"]) in WORKER_BLOCKED_RUN_STATUSES:
+            raise ValueError(f"worker_run_not_executable:{run_id}:{run['status']}")
+
     def transition(
         self,
         task_id: str,
@@ -104,10 +160,22 @@ class WorkerStore:
             if row is None:
                 raise KeyError(f"worker_task_not_found:{task_id}")
             current = self._from_row(row)
+            token = getattr(self._execution, "token", None)
+            if token is not None and (
+                token.run_id != current.task.run_id
+                or token.action_id != f"__worker__:{task_id}"
+                or not self.store._assert_lease(connection, token)
+            ):
+                raise LeaseLostError(f"worker_lease_lost:{task_id}")
+            if status == "running" and current.status == "prepared":
+                self._assert_run_executable(connection, current.task.run_id)
             if current.status not in statuses:
                 raise StoreConflictError(
                     f"worker_transition_conflict:{task_id}:{current.status}:{','.join(statuses)}"
                 )
+            if result is not None and status in WORKER_TERMINAL_STATUSES and self._cancel_requested(connection, current):
+                status = "cancelled"
+                result = replace(result, status=status, error="worker_cancelled", retryable=False)
             cursor = connection.execute(
                 "UPDATE worker_tasks SET status=?, result_json=?, owner=?, updated_at=? "
                 "WHERE task_id=? AND status=?",
@@ -125,6 +193,50 @@ class WorkerStore:
             updated = connection.execute("SELECT * FROM worker_tasks WHERE task_id=?", (task_id,)).fetchone()
         assert updated is not None
         return self._from_row(updated)
+
+    @staticmethod
+    def _cancel_requested(connection, record: WorkerTaskRecord) -> bool:
+        rows = connection.execute(
+            "SELECT payload_json FROM operation_events WHERE run_id=? AND event_type='worker_cancel_requested'",
+            (record.task.run_id,),
+        ).fetchall()
+        return any(_load(row["payload_json"], {}).get("task_id") == record.task.task_id for row in rows)
+
+    def request_cancel(self, task_id: str) -> bool:
+        with self.store.transaction(immediate=True) as connection:
+            row = connection.execute("SELECT * FROM worker_tasks WHERE task_id=?", (task_id,)).fetchone()
+            if row is None:
+                return False
+            record = self._from_row(row)
+            if record.status not in {"prepared", "running", "waiting_worker"}:
+                return False
+            if not self._cancel_requested(connection, record):
+                self.store._insert_event(connection, record.task.run_id, "worker_cancel_requested", {"task_id": task_id})
+            return True
+
+    def cancel_requested(self, task_id: str) -> bool:
+        with self.store.connection() as connection:
+            row = connection.execute("SELECT * FROM worker_tasks WHERE task_id=?", (task_id,)).fetchone()
+            return row is not None and self._cancel_requested(connection, self._from_row(row))
+
+    def record_observation(self, run_id: str, payload: Mapping[str, Any]) -> bool:
+        """Deduplicate each task status, including observations from older versions."""
+        identity = str(payload["task_id"]), str(payload["result"]["status"])
+        with self.store.transaction(immediate=True) as connection:
+            rows = connection.execute(
+                "SELECT payload_json FROM operation_events WHERE run_id=? AND event_type='worker_observation_recorded'",
+                (run_id,),
+            ).fetchall()
+            for row in rows:
+                previous = _load(row["payload_json"], {})
+                previous_result = previous.get("result") or {}
+                if (str(previous.get("task_id")), str(previous_result.get("status"))) != identity:
+                    continue
+                if previous.get("observation_hash") != payload["observation_hash"]:
+                    raise ImmutableRecordError(f"worker_observation_conflict:{identity[0]}:{identity[1]}")
+                return False
+            self.store._insert_event(connection, run_id, "worker_observation_recorded", payload)
+        return True
 
     def get(self, task_id: str) -> WorkerTaskRecord | None:
         with self.store.connection() as connection:

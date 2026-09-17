@@ -375,6 +375,7 @@ def test_provider_claimed_response_hash_is_not_trusted(tmp_path: Path) -> None:
                 request_id="placeholder",
                 status="completed",
                 text="tampered",
+                usage={"input_tokens": 7, "output_tokens": 3, "total_tokens": 10},
                 response_hash="0" * 64,
             )
         ]
@@ -389,6 +390,7 @@ def test_provider_claimed_response_hash_is_not_trusted(tmp_path: Path) -> None:
     assert record.status == "integrity_error"
     assert record.claimed_response_hash == "0" * 64
     assert record.response_hash != record.claimed_response_hash
+    assert service.runtime.store.load_operation(run_id).budget.tokens_used == 10
 
 
 def test_tool_claimed_hashes_are_not_trusted(tmp_path: Path) -> None:

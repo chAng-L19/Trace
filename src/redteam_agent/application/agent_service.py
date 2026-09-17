@@ -14,7 +14,7 @@ from ..adapters.runtime import (
 from ..adapters.runtime import RuntimeToolAdapter
 from ..core import Event, ModelPort, ToolPort, WorkerPort, WorkerResult, WorkerTask, contract_hash
 from ..runtime.durable_store import StateVersionConflict, StoreConflictError
-from ..runtime.worker_store import WorkerStore
+from ..runtime.worker_store import WORKER_BLOCKED_RUN_STATUSES, WorkerStore
 from ..runtime.terminal_judge import OperationResult
 from ..runtime.operation_runtime import OperationRuntime
 from ..runtime.exploration import ExplorationLedger
@@ -622,8 +622,13 @@ class AgentService:
 
     def execute_worker(self, task: WorkerTask | Mapping[str, Any]) -> WorkerResult:
         resolved = task if isinstance(task, WorkerTask) else WorkerTask.from_dict(task)
-        if self.runtime.store.load_operation(resolved.run_id) is None:
+        state = self.runtime.store.load_operation(resolved.run_id)
+        if state is None:
             raise KeyError(f"operation_not_found:{resolved.run_id}")
+        if state.status in WORKER_BLOCKED_RUN_STATUSES:
+            existing = self.worker_records.get_for_run(resolved.task_id, resolved.run_id)
+            if existing is None or existing.result is None:
+                raise ValueError(f"worker_run_not_executable:{resolved.run_id}:{state.status}")
         for artifact_id in resolved.required_artifacts:
             try:
                 self.runtime.artifacts.verify(artifact_id, run_id=resolved.run_id)
@@ -658,12 +663,10 @@ class AgentService:
             "result": result_projection,
         }
         observation_hash = contract_hash(payload)
-        self.runtime.store.append_event_once(
+        observation_id = contract_hash({"task_id": task.task_id, "status": result.status})
+        self.worker_records.record_observation(
             task.run_id,
-            "worker_observation_recorded",
-            {**payload, "observation_hash": observation_hash},
-            identity_field="task_id",
-            fingerprint_field="observation_hash",
+            {**payload, "observation_hash": observation_hash, "observation_id": observation_id},
         )
 
     def worker_observations(self, run_id: str) -> tuple[Mapping[str, Any], ...]:

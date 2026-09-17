@@ -217,7 +217,12 @@ def test_provider_rejects_unrecognized_tool_call_name() -> None:
 
 @pytest.mark.parametrize(
     ("finish_reason", "status"),
-    [("length", "interrupted"), ("max_tokens", "interrupted"), ("content_filter", "failed")],
+    [
+        ("length", "interrupted"),
+        ("max_tokens", "interrupted"),
+        ("content_filter", "failed"),
+        ("blocked", "failed"),
+    ],
 )
 def test_provider_does_not_execute_nonterminal_finish_reasons(
     finish_reason: str, status: str

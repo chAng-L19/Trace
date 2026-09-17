@@ -30,6 +30,13 @@ def run_model_turn(loop: Any, view: Any) -> tuple[Any, Any]:
     while True:
         if loop._is_cancelled(view.run.run_id):
             raise loop._interrupted_error("model_loop_cancelled")
+        if loop._is_interrupted(view.run.run_id):
+            raise loop._interrupted_error("model_loop_interrupted")
+        current = loop.service._enforce_runtime_budget(view.run.run_id)
+        if current.run.status == "paused_budget":
+            raise loop._interrupted_error("model_loop_budget_paused")
+        if current.terminal.terminal:
+            raise loop._interrupted_error("model_loop_terminal")
         request = loop._request(
             view,
             attempt=attempt,
@@ -42,7 +49,8 @@ def run_model_turn(loop: Any, view: Any) -> tuple[Any, Any]:
             response = loop._invoke(request)
             validated = loop._validate_response(request, response)
             return validated, request
-        except loop._integrity_error:
+        except loop._integrity_error as exc:
+            loop._save_failure_response(request, exc)
             raise
         except BaseException as exc:
             last_error = exc

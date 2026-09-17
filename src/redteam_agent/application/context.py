@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from ..core import ToolResult, contract_hash
@@ -14,72 +13,10 @@ from ..runtime.conversation_records import (
 )
 from ..runtime.model_common import utc_now
 from .contracts import AgentRunView, StartRequest
+from .context_contracts import ContextBudget, ContextSelection
 from .bounded_output import BoundedOutput
 from .resources import resource_context_metadata, resource_context_projection
 from .tool_projection import ToolObservationProjector
-@dataclass(frozen=True, slots=True)
-class ContextBudget:
-    """The single context-window budget used by selection and compaction."""
-
-    window_tokens: int = 0
-    reserved_output_tokens: int = 0
-    keep_recent_messages: int = 32
-    fallback_bytes_per_token: int = 3
-    max_compaction_retries: int = 1
-
-    @classmethod
-    def from_values(
-        cls,
-        *,
-        window_tokens: int = 0,
-        reserved_output_tokens: int | None = None,
-        keep_recent_messages: int = 32,
-        fallback_bytes_per_token: int = 3,
-        max_compaction_retries: int = 1,
-    ) -> "ContextBudget":
-        window = max(0, int(window_tokens))
-        reserve = (
-            max(0, int(reserved_output_tokens))
-            if reserved_output_tokens is not None
-            else (max(1024, min(32768, window // 8)) if window else 0)
-        )
-        return cls(
-            window_tokens=window,
-            reserved_output_tokens=reserve,
-            keep_recent_messages=max(0, int(keep_recent_messages)),
-            fallback_bytes_per_token=max(1, int(fallback_bytes_per_token)),
-            max_compaction_retries=max(0, int(max_compaction_retries)),
-        )
-
-    @property
-    def available_tokens(self) -> int:
-        return max(0, self.window_tokens - self.reserved_output_tokens)
-
-@dataclass(frozen=True, slots=True)
-class ContextSelection:
-    run_id: str
-    messages: tuple[Mapping[str, Any], ...]
-    protected_context: Mapping[str, Any]
-    source_message_ids: tuple[str, ...]
-    summary_ids: tuple[str, ...]
-    source_hash: str
-    protected_hash: str
-    context_hash: str
-    estimated_context_tokens: int = 0
-    provider_context_tokens: int | None = None
-    selected_tokens: int = 0
-    reserved_output_tokens: int = 0
-    projection_bytes: int = 0
-    cache_read_tokens: int | None = None
-    cache_write_tokens: int | None = None
-    context_overflow_tokens: int = 0
-    compaction_ids: tuple[str, ...] = ()
-    overflow_retry: int = 0
-    resource_index_hash: str = ""
-    resource_selection_hash: str = ""
-    resource_ids: tuple[str, ...] = ()
-    resource_tokens: int = 0
-
 class ConversationLedger:
     def __init__(
         self,
@@ -526,8 +463,12 @@ class ContextSelector:
             for summary in summaries_before
             for message_id in summary.source_message_ids
         }
-        compaction_candidates = tuple(
-            item for item in excluded if item.message_id not in summarized_ids
+        # Only the latest summary is projected. When extending it, carry all
+        # excluded source messages forward so earlier summaries are not lost.
+        compaction_candidates = (
+            excluded
+            if any(item.message_id not in summarized_ids for item in excluded)
+            else ()
         )
         should_compact = turn_boundary and bool(compaction_candidates) and (
             force_compaction
@@ -605,7 +546,7 @@ class ContextSelector:
         context = {
             "messages": projected,
             "source_message_ids": [item.message_id for item in source_messages],
-            "summary_ids": [item.summary_id for item in summaries[-1:]],
+            "summary_ids": [item.summary_id for item in chosen_summaries],
             "source_hash": source_hash,
             "protected_hash": protected_hash,
             "token_projection": {

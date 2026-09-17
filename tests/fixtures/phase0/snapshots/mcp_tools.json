@@ -14,6 +14,9 @@
           "budget_delta": {
             "additionalProperties": false,
             "properties": {
+              "acknowledge_missing_usage": {
+                "type": "boolean"
+              },
               "actions": {
                 "minimum": 0,
                 "type": "integer"

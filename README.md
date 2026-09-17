@@ -40,8 +40,7 @@ redteam-agent mcp-doctor --config .\config.toml
 python -m pytest -q
 ```
 
-当前架构决策与后续演进见 `INDEPENDENT_AGENT_EVOLUTION_PLAN.md`。历史阶段证据由
-Git 提交与确定性回归 fixtures 保留，不在仓库中维护重复验收报告。
+架构演进证据由 Git 提交与确定性回归 fixtures 保留，不在仓库中维护重复验收报告。
 
 重构明确参考 Pi coding-agent 的 session tree、selected tools、增量输出截断和
 compaction boundary，但保留本项目的 SQLite/CAS、Lease、EvidenceGate 和 TerminalJudge

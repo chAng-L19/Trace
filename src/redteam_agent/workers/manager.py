@@ -18,6 +18,10 @@ class CodexHandoffWorker:
         return ("codex.handoff",)
 
     def execute(self, task: WorkerTask) -> WorkerResult:
+        with self.records.execution(task):
+            return self._execute(task)
+
+    def _execute(self, task: WorkerTask) -> WorkerResult:
         prepared = self.records.prepare(task, worker_kind=self.kind, owner="codex-host")
         if prepared.result is not None:
             return prepared.result
@@ -46,6 +50,10 @@ class DockerWorkerAdapter:
         return ()
 
     def execute(self, task: WorkerTask) -> WorkerResult:
+        with self.records.execution(task):
+            return self._execute(task)
+
+    def _execute(self, task: WorkerTask) -> WorkerResult:
         prepared = self.records.prepare(task, worker_kind=self.kind, owner="docker-adapter")
         if prepared.result is not None and prepared.status in WORKER_TERMINAL_STATUSES:
             return prepared.result
