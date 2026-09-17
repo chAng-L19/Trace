@@ -19,6 +19,10 @@ class McpWorker:
         return tuple(f"mcp.{item.name}" for item in self.tools.discover())
 
     def execute(self, task: WorkerTask) -> WorkerResult:
+        with self.records.execution(task, on_lease_lost=lambda: self.cancel(task.task_id)):
+            return self._execute(task)
+
+    def _execute(self, task: WorkerTask) -> WorkerResult:
         prepared = self.records.prepare(task, worker_kind=self.kind, owner="mcp-worker")
         if prepared.result is not None and prepared.status in WORKER_TERMINAL_STATUSES:
             return prepared.result
@@ -112,19 +116,23 @@ class McpWorker:
                         retryable=tool_result.retryable,
                         metadata={"worker_kind": self.kind, "tool_name": tool_name},
                     )
-        self.records.transition(
+        saved = self.records.transition(
             task.task_id,
             expected_statuses=("running",),
             status=result.status,
             result=result,
         )
-        return result
+        assert saved.result is not None
+        return saved.result
 
     def reconcile(self, idempotency_key: str) -> WorkerResult | None:
         return self.records.reconcile_kind(self.kind, idempotency_key)
 
     def cancel(self, task_id: str) -> bool:
-        return self.tools.cancel(task_id)
+        if not self.records.request_cancel(task_id):
+            return False
+        self.tools.cancel(task_id)
+        return True
 
     def close(self) -> None:
         close = getattr(self.tools, "close", None)

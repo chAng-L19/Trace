@@ -49,6 +49,16 @@ class LocalWorker:
         return ("local.command", "local.process")
 
     def execute(self, task: WorkerTask) -> WorkerResult:
+        with self.records.execution(task, on_lease_lost=lambda: self.cancel(task.task_id)):
+            try:
+                return self._execute(task)
+            finally:
+                with self._lock:
+                    self._active.pop(task.task_id, None)
+                    self._cancel_requested.discard(task.task_id)
+                    self._cancel_events.pop(task.task_id, None)
+
+    def _execute(self, task: WorkerTask) -> WorkerResult:
         prepared = self.records.prepare(task, worker_kind=self.kind, owner=self.owner)
         if prepared.result is not None and prepared.status in WORKER_TERMINAL_STATUSES:
             return prepared.result
@@ -124,6 +134,10 @@ class LocalWorker:
         timeout = task.timeout_seconds
         process: subprocess.Popen[bytes] | None = None
         timed_out = False
+        if self.records.cancel_requested(task.task_id):
+            return self._finish(
+                task, "cancelled", WorkerResult(task_id=task.task_id, status="cancelled", error="worker_cancelled")
+            )
         try:
             with stdout_path.open("wb") as stdout_stream, stderr_path.open("wb") as stderr_stream:
                 options: dict[str, Any] = {
@@ -150,7 +164,7 @@ class LocalWorker:
                     return_code = process.poll()
                     if return_code is not None:
                         break
-                    if cancel_event.wait(0.05):
+                    if cancel_event.wait(0.05) or self.records.cancel_requested(task.task_id):
                         self._terminate_tree(process)
                         return_code = process.wait(timeout=5)
                         break
@@ -176,8 +190,6 @@ class LocalWorker:
             with self._lock:
                 self._active.pop(task.task_id, None)
                 cancelled = task.task_id in self._cancel_requested
-                self._cancel_requested.discard(task.task_id)
-                self._cancel_events.pop(task.task_id, None)
 
         try:
             stdout_ref = self.artifacts.put_file(
@@ -235,16 +247,20 @@ class LocalWorker:
         return self.records.reconcile_kind(self.kind, idempotency_key)
 
     def cancel(self, task_id: str) -> bool:
+        if not self.records.request_cancel(task_id):
+            return False
         with self._lock:
             process = self._active.get(task_id)
             event = self._cancel_events.get(task_id)
             if process is None:
                 record = self.records.get(task_id)
-                if record is None or record.status not in {"prepared", "running"}:
-                    return False
-                self._cancel_requested.add(task_id)
-                if event is not None:
-                    event.set()
+                if record is not None and record.status in {"prepared", "running"}:
+                    self._cancel_requested.add(task_id)
+                    if event is not None:
+                        event.set()
+                # The execution thread may observe the durable request and
+                # commit `cancelled` between request_cancel() and this lock.
+                # The accepted cancellation still succeeded in that race.
                 return True
             self._cancel_requested.add(task_id)
             if event is not None:
@@ -260,14 +276,15 @@ class LocalWorker:
             self.cancel(task_id)
 
     def _finish(self, task: WorkerTask, status: str, result: WorkerResult) -> WorkerResult:
-        self.records.transition(
+        saved = self.records.transition(
             task.task_id,
             expected_statuses=("running",),
             status=status,
             result=result,
             owner=self.owner,
         )
-        return result
+        assert saved.result is not None
+        return saved.result
 
     @staticmethod
     def _terminate_tree(process: subprocess.Popen[bytes]) -> None:

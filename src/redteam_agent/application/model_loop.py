@@ -1,6 +1,4 @@
 from __future__ import annotations
-import json
-import hashlib
 import threading
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -12,7 +10,6 @@ from ..core import (
     ModelPort,
     ModelRequest,
     ModelResponse,
-    ModelStreamEvent,
     ToolCall,
     ToolPort,
     ToolResult,
@@ -34,8 +31,8 @@ from .agent_loop_support import (
 )
 from .bounded_output import BoundedOutput
 from .model_turn import run_model_turn
+from .model_stream import MAX_INLINE_MODEL_STREAM_BYTES, invoke_model_stream
 MAX_INLINE_MODEL_OBSERVATION_BYTES = 64 * 1024
-MAX_INLINE_MODEL_STREAM_BYTES = 64 * 1024
 class ModelLoopError(RuntimeError):
     pass
 class ModelIntegrityError(ModelLoopError):
@@ -350,89 +347,7 @@ class AgentLoop(ModelIntegrityMixin):
             return self._invoke_stream(request)
         return self.model.complete(request)
     def _invoke_stream(self, request: ModelRequest) -> ModelResponse:
-        accumulator = BoundedOutput()
-        tool_calls: list[Mapping[str, Any]] = []
-        usage: Mapping[str, Any] = {}
-        structured: Mapping[str, Any] = {}
-        finish_reason = ""
-        expected_sequence = 0
-        completed = False
-        try:
-            for event in self.model.stream(request):
-                if event.request_id != request.request_id:
-                    raise ModelIntegrityError("model_stream_request_mismatch")
-                if event.sequence != expected_sequence:
-                    raise ModelIntegrityError(
-                        f"model_stream_sequence_mismatch:{event.sequence}:{expected_sequence}"
-                    )
-                expected_sequence += 1
-                payload = dict(event.payload)
-                if event.event_type in {"text", "text_delta"}:
-                    text_delta = str(payload.get("delta") or payload.get("text") or "")
-                    accumulator.append(text_delta)
-                    raw_delta = text_delta.encode("utf-8", errors="replace")
-                    event = replace(
-                        event,
-                        payload={
-                            "projected": True,
-                            "byte_count": len(raw_delta),
-                            "content_hash": hashlib.sha256(raw_delta).hexdigest(),
-                            "preview": raw_delta[:1024].decode("utf-8", errors="replace"),
-                        },
-                    )
-                self.service.runtime.store.save_model_stream_event(event)
-                if event.event_type == "tool_call":
-                    tool_calls.append(payload)
-                elif event.event_type == "usage":
-                    usage = json_mapping(payload, field="model_stream.usage")
-                elif event.event_type == "completed":
-                    completed = True
-                    if isinstance(payload.get("tool_calls"), Sequence):
-                        tool_calls.extend(
-                            dict(item) for item in payload["tool_calls"] if isinstance(item, Mapping)
-                        )
-                    if isinstance(payload.get("usage"), Mapping):
-                        usage = dict(payload["usage"])
-                    if isinstance(payload.get("structured_output"), Mapping):
-                        structured = dict(payload["structured_output"])
-                    finish_reason = str(payload.get("finish_reason") or "stop")
-            if not completed:
-                raise ModelInterruptedError("model_stream_incomplete")
-        except BaseException:
-            accumulator.close()
-            if accumulator.byte_count:
-                setattr(threading.current_thread(), "model_partial_stream", accumulator)
-            else:
-                accumulator.discard()
-            raise
-        metadata: dict[str, Any] = {}
-        if accumulator.byte_count <= MAX_INLINE_MODEL_STREAM_BYTES:
-            text = accumulator.inline_text()
-            accumulator.discard()
-        else:
-            accumulator.close()
-            artifact = self.service.runtime.artifacts.put_file(
-                accumulator.path,
-                run_id=request.run_id,
-                artifact_type="model_stream_text",
-                media_type="text/plain; charset=utf-8",
-                preview=accumulator.preview(),
-                metadata={"request_id": request.request_id, "complete": True},
-            )
-            accumulator.discard()
-            projection = self.service.runtime.artifacts.project(artifact)
-            text = json.dumps({"complete_text_artifact": projection}, ensure_ascii=False, sort_keys=True)
-            metadata["complete_text_artifact"] = artifact.artifact_id
-        return ModelResponse(
-            request_id=request.request_id,
-            status="completed",
-            text=text,
-            structured_output=structured,
-            tool_calls=tuple(tool_calls),
-            usage=usage,
-            finish_reason=finish_reason,
-            metadata=metadata,
-        )
+        return invoke_model_stream(self, request)
     def _validate_response(self, request: ModelRequest, response: ModelResponse) -> ModelResponse:
         if response.request_id != request.request_id:
             raise ModelIntegrityError("model_response_request_mismatch")
@@ -456,12 +371,19 @@ class AgentLoop(ModelIntegrityMixin):
             created_at=utc_now(),
         )
         self.service.runtime.store.save_model_response(record)
+        # Provider work has already consumed budget even when its claimed hash
+        # is invalid. Account usage before surfacing the integrity failure.
+        self._account_response_usage(request, usage)
         if status == "integrity_error":
             raise ModelIntegrityError("model_response_hash_mismatch")
         if normalized.status not in {"completed", "success"}:
             raise ModelLoopError(f"model_response_failed:{normalized.status}:{normalized.error}")
         self.service.conversation.record_model_response(request.run_id, normalized)
         return replace(normalized, response_hash=authoritative_hash)
+    def _account_response_usage(self, request: ModelRequest, usage: Mapping[str, Any]) -> None:
+        current = self.service.status(request.run_id)
+        if not current.terminal.terminal:
+            self.service._record_model_usage(request.run_id, request.request_id, usage)
     def _save_failure_response(self, request: ModelRequest, error: BaseException) -> None:
         if any(
             item.request_id == request.request_id
@@ -469,6 +391,12 @@ class AgentLoop(ModelIntegrityMixin):
         ):
             return
         accumulator = getattr(threading.current_thread(), "model_partial_stream", None)
+        partial_usage = getattr(threading.current_thread(), "model_partial_usage", None)
+        usage = (
+            dict(partial_usage[1])
+            if isinstance(partial_usage, tuple) and partial_usage[0] == request.request_id
+            else {}
+        )
         partial_text = ""
         partial_artifact: Mapping[str, Any] = {}
         if isinstance(accumulator, BoundedOutput):
@@ -517,6 +445,7 @@ class AgentLoop(ModelIntegrityMixin):
             model=request.model,
             text="",
             error=safe_error,
+            usage=usage,
             metadata={"diagnostic_artifact_id": diagnostic_id} if diagnostic_id else {},
         )
         projection = response.to_dict()
@@ -530,13 +459,17 @@ class AgentLoop(ModelIntegrityMixin):
                 model=response.model,
                 response_hash=contract_hash(projection),
                 claimed_response_hash="",
-                usage={},
+                usage=usage,
                 response=response.to_dict(),
                 created_at=utc_now(),
             )
         )
         if hasattr(threading.current_thread(), "model_partial_stream"):
             delattr(threading.current_thread(), "model_partial_stream")
+        if hasattr(threading.current_thread(), "model_partial_usage"):
+            delattr(threading.current_thread(), "model_partial_usage")
+        if usage:
+            self._account_response_usage(request, usage)
     def _execute_tool_calls(
         self,
         view: AgentRunView,

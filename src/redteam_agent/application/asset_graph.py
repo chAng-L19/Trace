@@ -4,6 +4,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from ..core import Asset, AttackPath, Finding
+from ..runtime.evidence_gate import EvidenceGate
 
 
 def project_asset_attack_graph(
@@ -20,13 +21,14 @@ def project_asset_attack_graph(
     start = max(0, int(offset))
     all_nodes = service.runtime.evidence_graph.list(run_id)
     nodes = all_nodes[start : start + bounded]
-    trusted_ids = {node.evidence_id for node in all_nodes}
+    trusted = {node.evidence_id: node for node in all_nodes}
     assets: dict[str, Asset] = {}
     findings: dict[str, Finding] = {}
     paths: dict[str, AttackPath] = {}
     source_ids: list[str] = []
 
-    def typed_items(payload: Any, key: str, factory: Any) -> list[Any]:
+    def typed_items(source: Any, key: str, factory: Any) -> list[Any]:
+        payload = source.payload
         if isinstance(payload, Mapping) and payload.get("kind") == factory.KIND:
             candidates = [payload]
         elif isinstance(payload, Mapping):
@@ -57,19 +59,34 @@ def project_asset_attack_graph(
                 )
             else:
                 references = value.evidence_ids
-            if value.run_id == run_id and references and set(references).issubset(trusted_ids):
-                result.append(value)
+            if value.run_id != run_id or not references or not source.provenance:
+                continue
+            target = str(getattr(value, "target", "") or source.target)
+            if target != source.target or not all(
+                reference in trusted and EvidenceGate.same_scope(
+                    trusted[reference], run_id=run_id, branch_id=source.provenance.branch_id,
+                    target=target, max_plan_revision=source.provenance.plan_revision,
+                )
+                for reference in references
+            ):
+                continue
+            if factory is Finding and not EvidenceGate.validate_finding(
+                value, trusted, run_id=run_id, branch_id=source.provenance.branch_id,
+                target=target, max_plan_revision=source.provenance.plan_revision,
+            ).passed:
+                continue
+            result.append(value)
         return result
 
     for node in nodes:
         typed = False
-        for value in typed_items(node.payload, "assets", Asset):
+        for value in typed_items(node, "assets", Asset):
             assets[value.asset_id] = value
             typed = True
-        for value in typed_items(node.payload, "findings", Finding):
+        for value in typed_items(node, "findings", Finding):
             findings[value.finding_id] = value
             typed = True
-        for value in typed_items(node.payload, "attack_paths", AttackPath):
+        for value in typed_items(node, "attack_paths", AttackPath):
             paths[value.path_id] = value
             typed = True
         if typed:

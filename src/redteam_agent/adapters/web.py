@@ -211,7 +211,7 @@ class WebApi(ControlRoutesMixin):
             return self._safe_control(method, domain, tail, body)
         if not command_id:
             command_id = self._implicit_command_id(["control", domain, *tail], command_body, run_id=run_id)
-        request_hash = contract_hash({"route": [domain, *tail], "body": command_body})
+        request_hash = contract_hash({"method": method, "route": [domain, *tail], "body": command_body})
         owner = f"{self.owner}:{uuid4().hex}"
         try:
             receipt = self.service.runtime.store.claim_web_command(

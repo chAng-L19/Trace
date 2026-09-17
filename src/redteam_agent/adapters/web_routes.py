@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 import platform
 from typing import Any, Mapping
+from uuid import uuid4
 
 from ..application.contracts import CANONICAL_RUN_STATUSES
-from ..core import contract_hash
 from ..providers import OpenAICompatibleProvider
 
 
@@ -19,17 +19,12 @@ class ControlRoutesMixin:
         *,
         run_id: str = "",
     ) -> str:
-        """Give legacy clients durable retry semantics without changing payloads."""
+        """Assign a receipt identity; retries must echo the returned command ID.
 
-        state_version = ""
-        if run_id:
-            try:
-                state_version = str(self.service.status(run_id).run.state_version)
-            except KeyError:
-                state_version = ""
-        return "compat-" + contract_hash(
-            {"route": list(route), "body": dict(body), "run_id": run_id, "state_version": state_version}
-        )
+        Identical bodies can be distinct operator commands (e.g. A→B→A), so
+        request contents or the run state version cannot identify intent.
+        """
+        return "compat-" + uuid4().hex
 
     def _load_active_provider(self) -> None:
         if self.service.model_loop is not None:

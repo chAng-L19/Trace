@@ -482,7 +482,7 @@ class OpenAICompatibleProvider:
         error = ""
         if finish_reason in {"length", "max_tokens"}:
             status, error = "interrupted", f"finish_reason:{finish_reason}"
-        elif finish_reason in {"content_filter", "error"}:
+        elif finish_reason not in {"", "stop", "tool_calls", "function_call"}:
             status, error = "failed", f"finish_reason:{finish_reason}"
         calls = () if status != "completed" else cls._tool_calls(message.get("tool_calls"), name_map)
         usage = cls._usage(document.get("usage"))

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+from uuid import uuid4
 
 from .durable_store import DurableStore
 from .evidence_gate import EvidenceGate
@@ -116,7 +118,7 @@ class EvidenceGraph:
     def _write_artifact(self, node: EvidenceNode) -> Path:
         path = self._artifact_path(node)
         secure_directory(path.parent)
-        temporary = path.with_suffix(".json.tmp")
+        temporary = path.with_suffix(f".json.{uuid4().hex}.tmp")
         temporary.write_text(json.dumps(node.to_dict(), ensure_ascii=False, indent=2, default=str), encoding="utf-8")
         secure_file(temporary)
         temporary.replace(path)
@@ -124,6 +126,13 @@ class EvidenceGraph:
         return path
 
     def _artifact_path(self, node: EvidenceNode) -> Path:
+        previous = self._previous_artifact_path(node)
+        # Equal payloads from distinct attempts/branches are distinct immutable
+        # evidence records. Their artifact files must not overwrite each other.
+        identity = hashlib.sha256(node.evidence_id.encode("utf-8")).hexdigest()
+        return previous.with_name(f"{identity}.json")
+
+    def _previous_artifact_path(self, node: EvidenceNode) -> Path:
         safe_run = "".join(character if character.isalnum() or character in "._-" else "_" for character in node.run_id)
         safe_action = "".join(character if character.isalnum() or character in "._-" else "_" for character in node.action_id)
         safe_type = "".join(character if character.isalnum() or character in "._-" else "_" for character in node.artifact_type)
@@ -136,6 +145,7 @@ class EvidenceGraph:
         if state is None:
             return ()
         attempts = {item.attempt_id: item for item in self.store.task_attempts(run_id)}
+        evidence_by_id = {item.evidence_id: item for item in nodes}
         integrity_valid: list[EvidenceNode] = []
         for node in nodes:
             if (
@@ -147,16 +157,17 @@ class EvidenceGraph:
             path = self._artifact_path(node)
             source_path = path
             if not source_path.is_file():
-                legacy_path = self._legacy_artifact_path(node)
-                if legacy_path.is_file():
-                    source_path = legacy_path
+                for legacy_path in (self._previous_artifact_path(node), self._legacy_artifact_path(node)):
+                    if legacy_path.is_file():
+                        source_path = legacy_path
+                        break
             try:
                 persisted = json.loads(source_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+                if not isinstance(persisted, dict):
+                    continue
+                persisted_node = EvidenceNode.from_dict(persisted)
+            except (OSError, UnicodeError, TypeError, ValueError, OverflowError):
                 continue
-            if not isinstance(persisted, dict):
-                continue
-            persisted_node = EvidenceNode.from_dict(persisted)
             if persisted_node.to_dict() != node.to_dict():
                 continue
             if source_path != path:
@@ -170,14 +181,14 @@ class EvidenceGraph:
                 target=node.target,
                 tool=node.tool,
                 attempt=attempt,
-                evidence_by_id={item.evidence_id: item for item in nodes},
+                evidence_by_id=evidence_by_id,
                 normalize_output=SemanticVerifier().normalize_output,
             )
             if node.target not in state.goal.targets or not promotion.passed:
                 continue
             integrity_valid.append(node)
         by_id = {node.evidence_id: node for node in integrity_valid}
-        valid: list[EvidenceNode] = []
+        candidates: dict[str, EvidenceNode] = {}
         for node in integrity_valid:
             parent_result = EvidenceGate.validate_parent_ids(
                 node.parent_ids,
@@ -189,9 +200,26 @@ class EvidenceGraph:
             )
             if not parent_result.passed:
                 continue
-            valid.append(node)
+            candidates[node.evidence_id] = node
+        # Admit roots, then descendants whose entire ancestor closure survived
+        # integrity checks. Missing ancestors and cycles never enter this queue.
+        pending_parents = {key: len(node.parent_ids) for key, node in candidates.items()}
+        children: dict[str, list[str]] = defaultdict(list)
+        for key, node in candidates.items():
+            for parent_id in node.parent_ids:
+                children[parent_id].append(key)
+        ready = deque(key for key, count in pending_parents.items() if count == 0)
+        accepted: set[str] = set()
+        while ready:
+            key = ready.popleft()
+            accepted.add(key)
+            for child_id in children[key]:
+                pending_parents[child_id] -= 1
+                if pending_parents[child_id] == 0:
+                    ready.append(child_id)
         return tuple(
-            node for node in valid if include_unverified or EvidenceGate.trusted(node)
+            node for node in integrity_valid
+            if node.evidence_id in accepted and (include_unverified or EvidenceGate.trusted(node))
         )
 
     def find_by_content(

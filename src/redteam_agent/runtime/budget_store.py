@@ -56,7 +56,7 @@ class BudgetStoreMixin:
                 required=True,
             )
             reason = state.budget.exhaustion_reason()
-            if reason:
+            if reason and state.status != "cancelling":
                 state.status = "paused_budget"
                 state.budget.pause(reason)
             current_version = int(operation["version"])
@@ -138,7 +138,7 @@ class BudgetStoreMixin:
             reason = state.budget.exhaustion_reason()
             if (
                 not reason
-                or state.status in {"completed", "failed", "failed_integrity", "cancelled"}
+                or state.status in {"completed", "failed", "failed_integrity", "cancelling", "cancelled"}
                 or (state.status == "paused_budget" and state.budget.pause_reason == reason)
             ):
                 return state
