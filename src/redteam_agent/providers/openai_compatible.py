@@ -11,10 +11,13 @@ import threading
 import time
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
+from contextlib import contextmanager
 from typing import Any
 from urllib.parse import urlsplit
 
 from ..core import ModelCapabilities, ModelRequest, ModelResponse, ModelStreamEvent
+from .opaque import chat_continuation
+from .openai_protocol import request_payload, responses_response, stream_events
 
 
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
@@ -131,9 +134,10 @@ class OpenAICompatibleProvider:
         self._host = parsed.hostname
         self._port = parsed.port
         base_path = parsed.path.rstrip("/")
+        self._responses_api = base_path.endswith("/responses")
         self._path = (
             base_path
-            if base_path.endswith("/chat/completions")
+            if self._responses_api or base_path.endswith("/chat/completions")
             else f"{base_path}/chat/completions"
         ) or "/chat/completions"
         self.model = str(model).strip()
@@ -144,10 +148,14 @@ class OpenAICompatibleProvider:
             native_tool_calls=True,
             parallel_tool_calls=True,
             structured_output=True,
-            streaming=False,
+            streaming=True,
             usage_reporting=True,
             max_context_tokens=int(max_context_tokens),
-            metadata={"provider": "openai-compatible", "model": self.model},
+            metadata={"provider": "openai-compatible", "model": self.model,
+                      "opaque_continuation": True,
+                      "continuation_scope": hashlib.sha256(
+                          (str(base_url).rstrip("/") + "\0" + self._api_key).encode()
+                      ).hexdigest()},
         )
         self._active: dict[str, _ActiveRequest] = {}
         self._lock = threading.RLock()
@@ -156,26 +164,27 @@ class OpenAICompatibleProvider:
         return self._capabilities
 
     def complete(self, request: ModelRequest) -> ModelResponse:
-        name_map: dict[str, str] = {}
-        tools = [self._tool(item, name_map) for item in request.tools]
-        encoded_names = {original: encoded for encoded, original in name_map.items()}
-        payload: dict[str, Any] = {
-            "model": request.model or self.model,
-            "messages": [self._message(item, encoded_names) for item in request.messages],
-        }
-        if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = "auto"
-            payload["parallel_tool_calls"] = bool(request.allow_parallel_tools)
-        if request.response_schema:
-            payload["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "trace_response",
-                    "strict": False,
-                    "schema": dict(request.response_schema),
-                },
-            }
+        payload, name_map = request_payload(self, request)
+        with self._exchange(request, payload) as response:
+            raw = response.read(MAX_RESPONSE_BYTES + 1)
+            if len(raw) > MAX_RESPONSE_BYTES:
+                raise RuntimeError("provider_response_too_large")
+            document = self._document(raw)
+            return (responses_response(self, request, document, name_map) if self._responses_api
+                    else self._response(request, document, name_map))
+
+    def stream(self, request: ModelRequest) -> Iterator[ModelStreamEvent]:
+        payload, name_map = request_payload(self, request)
+        payload["stream"] = True
+        if not self._responses_api:
+            payload["stream_options"] = {"include_usage": True}
+        with self._exchange(request, payload) as response:
+            if "text/event-stream" not in response.getheader("Content-Type", "").lower():
+                raise RuntimeError("provider_stream_content_type_invalid")
+            yield from stream_events(self, request, response, name_map, byte_limit=MAX_RESPONSE_BYTES)
+
+    @contextmanager
+    def _exchange(self, request: ModelRequest, payload: Mapping[str, Any]):
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         connection = self._connection()
         active = _ActiveRequest(connection)
@@ -186,7 +195,7 @@ class OpenAICompatibleProvider:
                 raise ValueError("provider_request_already_active")
             self._active[request.request_id] = active
         try:
-            headers = {"Content-Type": "application/json", "Accept": "application/json"}
+            headers = {"Content-Type": "application/json", "Accept": "text/event-stream" if payload.get("stream") else "application/json"}
             if self._api_key:
                 headers["Authorization"] = f"Bearer {self._api_key}"
             if active.cancelled.is_set():
@@ -197,21 +206,19 @@ class OpenAICompatibleProvider:
             )
             connection.request("POST", self._path, body=body, headers=headers)
             response = connection.getresponse()
-            limit = MAX_RESPONSE_BYTES if 200 <= response.status < 300 else MAX_ERROR_BYTES
-            raw = response.read(limit + 1)
-            if active.cancelled.is_set():
-                raise RuntimeError("provider_request_cancelled")
-            if len(raw) > limit:
-                raise RuntimeError("provider_response_too_large")
             if not 200 <= response.status < 300:
+                raw = response.read(MAX_ERROR_BYTES + 1)
+                if len(raw) > MAX_ERROR_BYTES:
+                    raise RuntimeError("provider_response_too_large")
                 try:
                     error_document = self._document(raw)
                 except RuntimeError:
                     error_document = {}
                 code, message = self._error(error_document, raw)
                 raise ProviderHTTPError(response.status, code, message)
-            document = self._document(raw)
-            return self._response(request, document, name_map)
+            yield response
+            if active.cancelled.is_set():
+                raise RuntimeError("provider_request_cancelled")
         except Exception:
             if active.cancelled.is_set():
                 raise RuntimeError("provider_request_cancelled") from None
@@ -223,10 +230,6 @@ class OpenAICompatibleProvider:
             with self._lock:
                 if self._active.get(request.request_id) is active:
                     self._active.pop(request.request_id, None)
-
-    def stream(self, request: ModelRequest) -> Iterator[ModelStreamEvent]:
-        raise RuntimeError("provider_streaming_not_supported")
-        yield  # pragma: no cover
 
     def cancel(self, request_id: str) -> bool:
         with self._lock:
@@ -498,6 +501,10 @@ class OpenAICompatibleProvider:
             finish_reason=finish_reason,
             error=error,
             metadata={"provider_response_id": str(document.get("id") or "")},
+            response_id=str(document.get("id") or ""),
+            continuation={"assistant": opaque, "assistant_text_hash": hashlib.sha256(text.encode()).hexdigest(),
+                          "assistant_call_ids": [str(call.get("id") or "") for call in message.get("tool_calls") or ()]}
+                         if (opaque := chat_continuation(message)) else {},
         )
 
     @staticmethod

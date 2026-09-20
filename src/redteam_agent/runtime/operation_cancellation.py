@@ -39,6 +39,17 @@ class OperationCancellationMixin:
         else:
             raise StoreConflictError(f"cancel_cas_exhausted:{run_id}")
 
+        model_lease = self.store.acquire_lease(
+            run_id,
+            "__model_loop__",
+            f"{self.owner}:cancel-probe:{uuid4().hex}",
+            ttl_seconds=30.0,
+        )
+        if model_lease is None:
+            current = self.store.load_operation(run_id) or state
+            return self._result(current, self._workflow_for(current))
+        self.store.release_lease(model_lease)
+
         lease = self.store.acquire_lease(
             run_id,
             "__operation__",
@@ -339,7 +350,7 @@ class OperationCancellationMixin:
                     resolved_missing = schedule.missing_capabilities
             if action is not None:
                 resolved_action = action.action_id
-                if not resolved_missing and self.broker.select(
+                if not state.model_led and not resolved_missing and self.broker.select(
                     action.required_capabilities,
                     exclude=self.scheduler.tool_exclusions(state, action.action_id),
                 ) is None:

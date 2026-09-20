@@ -3,6 +3,7 @@ template = "generic-adaptive"
 
 # Profiles are planning data only. They never add stages, dependencies,
 # verifiers, risk gates, fixed tools, required artifacts, or terminal rules.
+# The template defines lifecycle evidence gates, not the model's tactical sequence.
 
 [[profiles]]
 id = "model-security-assessment"

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+from uuid import uuid4
 
 from ..adapters.runtime import (
     LEGACY_TO_CORE_STATUS,
@@ -10,8 +13,8 @@ from ..adapters.runtime import (
     goal_from_runtime,
     run_from_runtime,
     terminal_from_runtime,
+    RuntimeToolAdapter,
 )
-from ..adapters.runtime import RuntimeToolAdapter
 from ..core import Event, ModelPort, ToolPort, WorkerPort, WorkerResult, WorkerTask, contract_hash
 from ..runtime.durable_store import StateVersionConflict, StoreConflictError
 from ..runtime.worker_store import WORKER_BLOCKED_RUN_STATUSES, WorkerStore
@@ -37,13 +40,12 @@ from .contracts import (
     validate_run_transition,
 )
 from .bounded_output import BoundedOutput
+from .agent_tools import AgentToolAdapter
 from .asset_graph import project_asset_attack_graph
-from .model_loop import AgentLoop
+from .model_loop import AgentLoop, ModelInterruptedError
 from .context import ContextSelection, ContextSelector, ConversationLedger, TraceableCompactor
 from .resources import ResourceIndex, ResourceResolver, ResourceSelection
 from .transparency import TransparencyProjector
-
-
 class AgentService:
     """The canonical application entry point for durable agent operations."""
 
@@ -116,6 +118,10 @@ class AgentService:
                 capabilities={"codex_handoff": ("codex.handoff",)},
                 records=self.worker_records,
             )
+        self._model_lock = threading.RLock()
+        self._model_condition = threading.Condition(self._model_lock)
+        self._active_model_loops: dict[str, dict[AgentLoop, int]] = {}
+        resolved_tool_port.delegate = AgentToolAdapter(self, resolved_tool_port.delegate)
         self.agent_loop = (
             AgentLoop(
                 service=self,
@@ -132,7 +138,8 @@ class AgentService:
 
     @property
     def model_loop(self) -> AgentLoop | None:
-        return self.agent_loop
+        with self._model_lock:
+            return self.agent_loop
 
     def configure_model(
         self,
@@ -140,21 +147,35 @@ class AgentService:
         *,
         model_name: str = "",
         streaming: bool = False,
+        max_retries: int | None = None,
+        max_turns: int | None = None,
     ) -> None:
         """Replace the provider used by future turns through the canonical service."""
-        self.agent_loop = (
-            AgentLoop(
-                service=self,
-                model=model_port,
-                tools=self.tools,
-                model_name=model_name,
-                streaming=streaming,
-                max_retries=2,
-                max_turns=8,
+        with self._model_lock:
+            previous = self.agent_loop
+            resolved_retries = previous.max_retries if max_retries is None and previous is not None else (2 if max_retries is None else max_retries)
+            resolved_turns = previous.max_turns if max_turns is None and previous is not None else (8 if max_turns is None else max_turns)
+            self.agent_loop = (
+                AgentLoop(
+                    service=self,
+                    model=model_port,
+                    tools=self.tools,
+                    model_name=model_name,
+                    streaming=streaming,
+                    max_retries=resolved_retries,
+                    max_turns=resolved_turns,
+                )
+                if model_port is not None
+                else None
             )
-            if model_port is not None
-            else None
-        )
+
+    def _interrupt_model_loops(self, run_id: str, *, cancel: bool = False) -> None:
+        with self._model_lock:
+            loops = set(self._active_model_loops.get(run_id, ()))
+            if self.agent_loop is not None:
+                loops.add(self.agent_loop)
+        for loop in loops:
+            (loop.cancel if cancel else loop.interrupt)(run_id)
 
     def control_write(self, operation: Any, *args: Any, **kwargs: Any) -> Any:
         """Single application boundary for adapter-owned durable settings."""
@@ -205,7 +226,7 @@ class AgentService:
 
     def start(self, request: StartRequest | Mapping[str, Any]) -> AgentStartResult:
         resolved = StartRequest.from_value(request)
-        states = self.runtime.start_batch(**resolved.runtime_arguments())
+        states = self.runtime.start_batch(**resolved.runtime_arguments(), model_led=self.agent_loop is not None)
         views = tuple(
             self._validate_result("created", self._view(self.runtime.status(state.run_id)))
             for state in states
@@ -248,14 +269,83 @@ class AgentService:
                 )
             else:
                 self.runtime.apply_budget_delta(run_id, **arguments)
-        if self.model_loop is not None:
-            return self.model_loop.run(run_id, max_actions=max_actions)
-        return self._resume_runtime(run_id, max_actions=max_actions)
+        with self._model_lock:
+            loop = self.agent_loop
+            if loop is not None:
+                active = self._active_model_loops.setdefault(run_id, {})
+                active[loop] = active.get(loop, 0) + 1
+        if loop is None:
+            return self._resume_runtime(run_id, max_actions=max_actions)
+        try:
+            return self._run_model_loop(loop, run_id, max_actions=max_actions)
+        finally:
+            with self._model_condition:
+                active = self._active_model_loops[run_id]
+                active[loop] -= 1
+                if not active[loop]:
+                    del active[loop]
+                if not active:
+                    del self._active_model_loops[run_id]
+                self._model_condition.notify_all()
 
-    def _resume_runtime(self, run_id: str, *, max_actions: int | None = None) -> AgentRunView:
+    def _run_model_loop(
+        self,
+        loop: AgentLoop,
+        run_id: str,
+        *,
+        max_actions: int | None,
+    ) -> AgentRunView:
+        ttl = 30.0
+        token = self.runtime.store.acquire_lease(
+            run_id,
+            "__model_loop__",
+            f"agent-service:model-loop:{uuid4().hex}",
+            ttl_seconds=ttl,
+        )
+        if token is None:
+            return self.status(run_id)
+        stopped = threading.Event()
+
+        def renew() -> None:
+            while not stopped.wait(ttl / 3):
+                try:
+                    if self.runtime.store.renew_lease(token, ttl_seconds=ttl) is not None:
+                        continue
+                except Exception:
+                    pass
+                loop.interrupt(run_id)
+                return
+
+        heartbeat = threading.Thread(target=renew, name="model-loop-lease", daemon=True)
+        try:
+            heartbeat.start()
+            try:
+                result = loop.run(run_id, max_actions=max_actions)
+            except ModelInterruptedError:
+                result = self.status(run_id)
+                if result.run.status not in {"paused_budget", "cancelling", "cancelled"}:
+                    raise
+        finally:
+            stopped.set()
+            heartbeat.join(timeout=5)
+            self.runtime.store.release_lease(token)
+        state = self.runtime.store.load_operation(run_id)
+        if state is not None and state.status == "cancelling":
+            return self._view(
+                self.runtime.cancel(run_id, reason=state.cancel_reason or "cancel_requested")
+            )
+        return result
+
+    def _resume_runtime(
+        self,
+        run_id: str,
+        *,
+        max_actions: int | None = None,
+        model_led: bool = False,
+    ) -> AgentRunView:
         before = self.status(run_id)
         try:
-            view = self._view(self.runtime.resume(run_id, max_actions=max_actions))
+            view = self._view(self.runtime.resume(run_id, max_actions=max_actions, model_led=model_led))
         except (StateVersionConflict, StoreConflictError) as exc:
             view = self._settle_control_conflict(run_id, exc)
         return self._validate_result(before.run.status, view)
@@ -384,19 +474,31 @@ class AgentService:
 
     def cancel(self, run_id: str, reason: str = "user_requested") -> AgentRunView:
         before = self.status(run_id)
-        if self.model_loop is not None:
-            self.model_loop.cancel(run_id)
         try:
             view = self._view(self.runtime.cancel(run_id, reason=reason))
         except (StateVersionConflict, StoreConflictError) as exc:
             view = self._settle_control_conflict(run_id, exc)
+        self._interrupt_model_loops(run_id, cancel=True)
+        if view.run.status == "cancelling":
+            with self._model_condition:
+                self._model_condition.wait_for(
+                    lambda: run_id not in self._active_model_loops,
+                    timeout=5,
+                )
+            state = self.runtime.store.load_operation(run_id)
+            if state is not None and state.status == "cancelling":
+                view = self._view(
+                    self.runtime.cancel(run_id, reason=state.cancel_reason or reason)
+                )
+            else:
+                view = self.status(run_id)
         return self._validate_result(before.run.status, view)
 
     def pause(self, run_id: str, reason: str = "user_requested") -> AgentRunView:
         before = self.status(run_id)
-        if self.model_loop is not None and before.run.status != "paused_budget":
-            self.model_loop.interrupt(run_id)
         view = self._view(self.runtime.pause_run(run_id, reason=reason))
+        if before.run.status != "paused_budget":
+            self._interrupt_model_loops(run_id)
         return self._validate_result(before.run.status, view)
 
     def resume(
@@ -428,8 +530,9 @@ class AgentService:
             else:
                 self.runtime.apply_budget_delta(run_id, **arguments)
         self.runtime.resume_control(run_id)
-        if self.model_loop is not None:
-            self.model_loop.resume(run_id)
+        loop = self.model_loop
+        if loop is not None:
+            loop.resume(run_id)
         if execute:
             return self.run(run_id, max_actions=max_actions)
         view = self.status(run_id)
@@ -468,6 +571,11 @@ class AgentService:
         if self.runtime.store.load_operation(run_id) is None:
             raise KeyError(f"operation_not_found:{run_id}")
         return self.tools.catalog(run_id, capabilities=capabilities, profile=profile)
+
+    def tool_catalog_snapshot(self, run_id: str):
+        if self.runtime.store.load_operation(run_id) is None:
+            raise KeyError(f"operation_not_found:{run_id}")
+        return self.tools.snapshot(run_id)
 
     def expand_tools(self, run_id: str, selectors: tuple[str, ...] = ()):
         if self.runtime.store.load_operation(run_id) is None:
@@ -561,7 +669,7 @@ class AgentService:
         roots = view.goal.constraints.get("resource_roots", ())
         if isinstance(roots, (str, bytes)) or not isinstance(roots, Sequence):
             roots = ()
-        return self.resources.index(roots)
+        return self.resources.index(roots or (self.runtime.root,))
 
     def resource_selection(
         self,
@@ -573,11 +681,11 @@ class AgentService:
         constraints = view.goal.constraints
         requested = constraints.get("resources", ())
         disabled = constraints.get("disabled_resources", ())
-        requested_values = () if isinstance(requested, (str, bytes)) else requested
-        disabled_values = () if isinstance(disabled, (str, bytes)) else disabled
-        if not isinstance(requested_values, Sequence):
+        requested_values = (requested,) if isinstance(requested, str) else requested
+        disabled_values = (disabled,) if isinstance(disabled, str) else disabled
+        if isinstance(requested_values, bytes) or not isinstance(requested_values, Sequence):
             requested_values = ()
-        if not isinstance(disabled_values, Sequence):
+        if isinstance(disabled_values, bytes) or not isinstance(disabled_values, Sequence):
             disabled_values = ()
         configured_requested: list[str] = []
         configured_disabled: list[str] = []
@@ -590,6 +698,7 @@ class AgentService:
                     if not bool(row["enabled"]):
                         configured_disabled.append(skill_id)
                         continue
+                    configured_requested.append(skill_id)
                     try:
                         config = json.loads(str(row["config_json"] or "{}"))
                     except (TypeError, ValueError, json.JSONDecodeError):
@@ -710,22 +819,22 @@ class AgentService:
 
     def artifact(self, run_id: str, artifact_id: str):
         ref = self.runtime.artifacts.get_ref(artifact_id, run_id=run_id)
-        if ref is None:
+        if ref is None or ref.metadata.get("provider_private"):
             raise KeyError(f"artifact_not_found:{artifact_id}")
         return ref
 
-    def read_artifact(self, run_id: str, artifact_id: str) -> bytes:
-        return self.runtime.artifacts.read(artifact_id, run_id=run_id)
+    def read_artifact(self, run_id: str, artifact_id: str, *, offset: int = 0, limit: int | None = None) -> bytes:
+        return self.runtime.artifacts.read(self.artifact(run_id, artifact_id).artifact_id, run_id=run_id, offset=offset, limit=limit)
 
     def artifacts(self, run_id: str):
         if self.runtime.store.load_operation(run_id) is None:
             raise KeyError(f"operation_not_found:{run_id}")
-        return self.runtime.artifacts.refs(run_id)
+        return tuple(ref for ref in self.runtime.artifacts.refs(run_id) if not ref.metadata.get("provider_private"))
 
     def search_artifacts(self, run_id: str, query: str, *, limit: int = 20):
         if self.runtime.store.load_operation(run_id) is None:
             raise KeyError(f"operation_not_found:{run_id}")
-        return self.runtime.artifacts.search(run_id, query, limit=limit)
+        return tuple(ref for ref in self.runtime.artifacts.search(run_id, query, limit=limit) if not ref.metadata.get("provider_private"))
 
     def record_exploration(self, run_id: str, record: Mapping[str, Any]):
         if self.runtime.store.load_operation(run_id) is None:

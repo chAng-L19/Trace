@@ -256,6 +256,8 @@ class ActionExecutor(ExecutorActionsMixin, ExecutorTrustMixin):
             "required_actions": [item.action_id for item in workflow.actions if not item.optional],
             "required_artifacts": list(workflow.required_artifacts),
             "goal_criteria": [criterion.__dict__ for criterion in state.goal.success_criteria],
+            **({"success_predicates": [predicate.__dict__ for predicate in state.goal.success_predicates]}
+               if state.goal.success_predicates else {}),
             "intent_envelope": dict(state.goal.intent_envelope),
             "clause_ids": list(state.goal.intent_envelope.get("clause_ids", ())),
             "clause_contract": self._clause_contracts(state),
@@ -497,7 +499,7 @@ class ActionExecutor(ExecutorActionsMixin, ExecutorTrustMixin):
 
         plan: PlanRevision | None = None
         added_ids: tuple[str, ...] = ()
-        if action.expected_artifact == "hypothesis_queue":
+        if action.expected_artifact == "hypothesis_queue" and not state.model_led:
             hypotheses = decision.payload.get("hypotheses")
             if isinstance(hypotheses, list):
                 current = self.current_plan(state, workflow)
@@ -557,6 +559,11 @@ class ActionExecutor(ExecutorActionsMixin, ExecutorTrustMixin):
         tried = state.action_tools_tried.setdefault(action.action_id, [])
         if descriptor.qualified_name not in tried:
             tried.append(descriptor.qualified_name)
+        if state.model_led:
+            state.action_status[action.action_id] = "pending"
+            state.status = "cancelling" if cancellation_pending else "waiting_host"
+            state.current_action_id = action.action_id
+            return "action_host_handoff_required"
         attempts = state.action_attempts.get(action.action_id, 0)
         exclusions = tuple(dict.fromkeys((*tried, *state.action_tools_succeeded.get(action.action_id, ()))))
         alternative = self.broker.select(action.required_capabilities, exclude=exclusions)

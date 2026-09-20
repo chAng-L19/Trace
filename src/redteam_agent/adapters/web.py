@@ -133,7 +133,15 @@ class WebApi(ControlRoutesMixin):
         self.control = ControlPlane(service.runtime.store, service.runtime.root)
         self.force_auth = False
         self.tls_enabled = False
-        self.service.runtime.broker.set_secret_bindings(self.control.mcp_secret_bindings())
+        self._mcp_restore_error = ""
+        try:
+            # Rebuild from the database before discovery; an exported TOML may
+            # be absent or stale after a crash between COMMIT and refresh.
+            self._reload_control_plane()
+        except Exception:
+            # MCP transport timeouts/failures must not prevent serving the UI.
+            # _reload_control_plane records an observable, redacted failure.
+            pass
         self._load_active_provider()
     def dispatch(
         self,
@@ -718,7 +726,7 @@ def serve(
     model_context_tokens: int | None = None,
 ) -> None:
     # Import lazily so ``python -m redteam_agent.adapters.web`` and the
-    # installed ``redteam-agent-web`` entry point do not create a cycle:
+    # installed ``trace-web`` entry point do not create a cycle:
     # web_server depends on WebApi while the server is only needed at startup.
     from .web_server import TraceHTTPServer
 
@@ -732,7 +740,8 @@ def serve(
         tls_context.load_cert_chain(tls_cert, tls_key)
     provider = model_port or model_provider_from_environment(model=model_name, base_url=api_base_url, api_key_env=api_key_env, timeout_seconds=api_timeout_seconds, max_context_tokens=model_context_tokens)
     resolved_model = model_name or str(provider.capabilities().metadata.get("model") if provider is not None else "")
-    service = AgentService(root=root, model_port=provider, model_name=resolved_model)
+    service = AgentService(root=root, model_port=provider, model_name=resolved_model,
+                           model_streaming=provider.capabilities().streaming if provider is not None else False)
     try:
         is_loopback = ipaddress.ip_address(host).is_loopback
     except ValueError:
@@ -756,7 +765,7 @@ def serve(
         service.close()
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="redteam-agent-web")
+    parser = argparse.ArgumentParser(prog="trace-web")
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)

@@ -66,3 +66,7 @@ class ContextSelection:
     resource_selection_hash: str = ""
     resource_ids: tuple[str, ...] = ()
     resource_tokens: int = 0
+    message_tokens: int = 0
+    tool_schema_tokens: int = 0
+    response_schema_tokens: int = 0
+    context_status: str = "ready"

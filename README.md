@@ -24,23 +24,23 @@ Trace 是证据驱动、可持久恢复、面向强模型战术能力的专业�
 ## 本地运行
 
 ```powershell
-python -m redteam_agent self-test
-python -m redteam_agent.runtime.mcp_transport --root .\state
-redteam-agent mcp-doctor --config .\config.toml
+python -m pip install .
+trace self-test
+trace-mcp --root .\state
+trace mcp-doctor --config .\config.toml
+trace-web --root .\state
 ```
+
+发行包名与主命令统一为 `trace-agent` / `trace`。Python 导入路径 `redteam_agent`
+以及原有 `redteam-agent*` 命令继续作为兼容接口保留。
 
 默认 `OperationRuntime` 直接注册上述工具，不依赖 `config.toml`。Playwright、Capstone
 和 ASC 风格 APK/DEX 查询通过 Python API 调用；radare2/Rizin、Frida 和云 CLI 在本机存在时
 由内置 Adapter 使用，缺少 radare2/Rizin 时自动回退到原生惰性二进制查询。
 `config.toml.example` 仅保留通用 MCP 扩展示例。
 
-开发测试：
-
-```powershell
-python -m pytest -q
-```
-
-架构演进证据由 Git 提交与确定性回归 fixtures 保留，不在仓库中维护重复验收报告。
+发布门禁直接验证源码编译、前端 JavaScript、依赖一致性、自检、wheel 内容、
+隔离安装、六个命令入口和 MCP 五工具协议。
 
 重构明确参考 Pi coding-agent 的 session tree、selected tools、增量输出截断和
 compaction boundary，但保留本项目的 SQLite/CAS、Lease、EvidenceGate 和 TerminalJudge

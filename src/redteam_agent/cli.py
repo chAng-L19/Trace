@@ -108,7 +108,7 @@ def _session_command(arguments: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="redteam-agent")
+    parser = argparse.ArgumentParser(prog="trace")
     subcommands = parser.add_subparsers(dest="command", required=True)
 
     self_test = subcommands.add_parser("self-test", help="Run an isolated runtime self-test")

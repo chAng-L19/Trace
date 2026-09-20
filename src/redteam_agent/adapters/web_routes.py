@@ -32,13 +32,11 @@ class ControlRoutesMixin:
         active = next((item for item in self.control.providers() if item["active"]), None)
         if active is None:
             return
-        self.service.configure_model(
-            OpenAICompatibleProvider(
-                active["base_url"], active["model"], self.control.provider_secret(active["provider_id"]),
-                timeout_seconds=active["timeout_seconds"], max_context_tokens=active["max_context_tokens"],
-            ),
-            model_name=active["model"],
+        provider = OpenAICompatibleProvider(
+            active["base_url"], active["model"], self.control.provider_secret(active["provider_id"]),
+            timeout_seconds=active["timeout_seconds"], max_context_tokens=active["max_context_tokens"],
         )
+        self.service.configure_model(provider, model_name=active["model"], streaming=provider.capabilities().streaming)
 
     def _safe_control(self, method: str, domain: str, tail: list[str], body: Mapping[str, Any]):
         try:
@@ -88,18 +86,16 @@ class ControlRoutesMixin:
                 # one control-plane operation.  Otherwise editing an active
                 # key/model silently leaves future turns on the old instance.
                 if saved["active"]:
-                    self.service.configure_model(
-                        OpenAICompatibleProvider(
-                            saved["base_url"], saved["model"], self.control.provider_secret(saved["provider_id"]),
-                            timeout_seconds=saved["timeout_seconds"], max_context_tokens=saved["max_context_tokens"],
-                        ),
-                        model_name=saved["model"],
+                    provider = OpenAICompatibleProvider(
+                        saved["base_url"], saved["model"], self.control.provider_secret(saved["provider_id"]),
+                        timeout_seconds=saved["timeout_seconds"], max_context_tokens=saved["max_context_tokens"],
                     )
+                    self.service.configure_model(provider, model_name=saved["model"], streaming=provider.capabilities().streaming)
                 return self._ok({"provider": saved}, status=201)
             if method == "POST" and identifier == "active":
                 saved = self.service.control_write(self.control.activate_provider, str(body.get("provider_id") or ""))
                 provider = OpenAICompatibleProvider(saved["base_url"], saved["model"], self.control.provider_secret(saved["provider_id"]), timeout_seconds=saved["timeout_seconds"], max_context_tokens=saved["max_context_tokens"])
-                self.service.configure_model(provider, model_name=saved["model"])
+                self.service.configure_model(provider, model_name=saved["model"], streaming=provider.capabilities().streaming)
                 return self._ok({"provider": saved})
             if identifier and method == "DELETE":
                 was_active = self.control.provider(identifier)["active"]
@@ -120,7 +116,14 @@ class ControlRoutesMixin:
                 statuses = self.service.runtime.broker.server_statuses()
                 items = self.control.mcp_servers()
                 for item in items:
-                    item["status"] = statuses.get(item["server_id"], item["status"])
+                    status = dict(statuses.get(item["server_id"], item["status"]))
+                    if self._mcp_restore_error:
+                        status = {"status": "failed", "error": self._mcp_restore_error}
+                    discovered = status.get("status") in {"connected", "catalogued"}
+                    item["status"] = {
+                        **status, "configured": True, "discovered": discovered,
+                        "callable": bool(item["enabled"] and discovered and status.get("tool_count", 0)),
+                    }
                 return self._ok({"servers": items, "tools": len(self.service.runtime.broker.descriptors())})
             if method == "POST" and not identifier:
                 saved = self.service.control_write(self.control.save_mcp, body)
@@ -204,10 +207,15 @@ class ControlRoutesMixin:
         return self._error(404, "resource_not_found")
 
     def _reload_control_plane(self) -> dict[str, Any]:
-        path = self.service.control_write(self.control.write_mcp_config)
-        self.service.runtime.broker.set_secret_bindings(self.control.mcp_secret_bindings())
-        self.service.runtime.broker.register_config_paths((path,))
-        self.service.runtime.broker.refresh(force=True)
+        try:
+            path = self.service.control_write(self.control.write_mcp_config)
+            self.service.runtime.broker.set_secret_bindings(self.control.mcp_secret_bindings())
+            self.service.runtime.broker.register_config_paths((path,))
+            self.service.runtime.broker.refresh(force=True)
+        except Exception as exc:
+            self._mcp_restore_error = f"mcp_restore_failed:{type(exc).__name__}"
+            raise
+        self._mcp_restore_error = ""
         return {"mcp": self.service.runtime.broker.server_statuses(), "tool_count": len(self.service.runtime.broker.descriptors())}
 
     def system_info(self) -> dict[str, Any]:

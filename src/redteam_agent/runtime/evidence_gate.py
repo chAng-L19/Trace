@@ -235,7 +235,7 @@ class EvidenceGate:
         parents = tuple(str(item) for item in parent_ids)
         if len(set(parents)) != len(parents):
             return EvidenceGateDecision(False, "evidence_parent_duplicate")
-        missing = set(parents) - set(evidence_by_id)
+        missing = {parent for parent in parents if parent not in evidence_by_id}
         if missing:
             return EvidenceGateDecision(False, f"evidence_parent_missing:{sorted(missing)}")
         for parent in (evidence_by_id[item] for item in parents):
@@ -409,6 +409,66 @@ class EvidenceGate:
                 supported.add(current.artifact_type)
             stack.extend(current.parent_ids)
         return supported
+
+    @classmethod
+    def file_replacement_satisfied(cls, predicate: Any, evidence: Sequence[EvidenceNode]) -> bool:
+        """Compare runtime file reads, never a report's claim of completion.
+
+        Callers supply scope-filtered nodes in durable append order. Only the
+        latest impact/cleanup reads count, so a later negative read supersedes
+        an earlier success. The expected hash comes from a pre-action read.
+        """
+        nodes = [node for node in evidence if cls.trusted(node) and node.target == predicate.subject]
+        by_id = {node.evidence_id: node for node in nodes}
+
+        def ancestors(node: EvidenceNode) -> set[str]:
+            seen: set[str] = set()
+            pending = list(node.parent_ids)
+            while pending:
+                parent_id = pending.pop()
+                if parent_id in seen or parent_id not in by_id:
+                    continue
+                seen.add(parent_id)
+                pending.extend(by_id[parent_id].parent_ids)
+            return seen
+
+        def rows(node: EvidenceNode) -> list[Mapping[str, Any]]:
+            raw = node.payload.get("file_outcomes", ()) if isinstance(node.payload, Mapping) else ()
+            if not isinstance(raw, (list, tuple)):
+                return []
+            return [item for item in raw if isinstance(item, Mapping) and item.get("target") == predicate.subject]
+
+        reads: list[EvidenceNode] = []
+        for artifact, tool in (("impact_proof", "builtin:evidence-impact-builder"),
+                               ("cleanup_proof", "builtin:evidence-cleanup-builder")):
+            current = next((node for node in reversed(nodes) if node.artifact_type == artifact), None)
+            if current is None or current.tool != tool:
+                return False
+            reads.append(current)
+        impact, cleanup = reads
+        if impact.evidence_id not in ancestors(cleanup):
+            return False
+        baseline_ids = ancestors(impact)
+        for baseline in nodes:
+            if (baseline.evidence_id not in baseline_ids or baseline.artifact_type != "surface_map"
+                    or baseline.tool != "builtin:local-target-inspector"):
+                continue
+            for expected in rows(baseline):
+                digest = expected.get("expected_sha256")
+                count = expected.get("substitutions")
+                if (expected.get("replacement") != predicate.value or expected.get("error")
+                        or not isinstance(count, int) or isinstance(count, bool) or count <= 0
+                        or not isinstance(digest, str) or len(digest) != 64
+                        or digest == expected.get("actual_sha256") or not expected.get("resolved_path")):
+                    continue
+                if all(
+                    len(rows(node)) == 1 and not rows(node)[0].get("error")
+                    and rows(node)[0].get("resolved_path") == expected["resolved_path"]
+                    and rows(node)[0].get("actual_sha256") == digest
+                    for node in reads
+                ):
+                    return True
+        return False
 
     @classmethod
     def validate_finding(

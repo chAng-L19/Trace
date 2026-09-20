@@ -84,6 +84,7 @@ class McpBrokerMixin:
                     "codex-redteam-orchestrator",
                     "codex-redteam-runtime",
                     "redteam-agent-runtime",
+                    "trace-agent-runtime",
                 }:
                     continue
                 if not spec.enabled:
@@ -123,11 +124,15 @@ class McpBrokerMixin:
     def refresh(self, *, force: bool = False) -> tuple[ToolDescriptor, ...]:
         with self._lifecycle_lock:
             now = time.monotonic()
-            if self._active_calls or (not force and now - self._last_refresh < 10.0):
+            if self._active_calls:
+                self._refresh_pending = True
                 return self.descriptors()
+            if not force and now - self._last_refresh < 10.0:
+                return self.descriptors()
+            self._refresh_pending = False
             self._last_refresh = now
             for run_id in sorted({run_id for _server_name, run_id in self._run_clients}):
-                self.close_run(run_id)
+                McpBrokerMixin.close_run(self, run_id)
             for client in self._clients.values():
                 client.close()
             self._clients.clear()

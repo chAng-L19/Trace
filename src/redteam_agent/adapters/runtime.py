@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
-from ..core import Budget, Event, Evidence, EvidenceProvenance, Goal, GoalCriterion, Run, TerminalDecision
+from ..core import Budget, Event, Evidence, EvidenceProvenance, Goal, GoalCriterion, Run, TerminalDecision, contract_hash
+from ..core.contracts import json_value
 from ..core.ports import (
     EventPort,
     StoreConflictError,
@@ -305,18 +307,35 @@ class RuntimeToolAdapter(ToolPort):
 
     @staticmethod
     def _result(call: ToolCall, result: Any) -> ToolResult:
-        return ToolResult(
-            call_id=result.call_id or call.call_id,
+        projected = ToolResult(
+            call_id=call.call_id,
             status=result.status,
             tool_name=result.tool or call.tool_name,
             output=result.output,
             error=result.error,
             retryable=result.retryable,
-            input_hash=result.input_hash,
-            output_hash=result.output_hash,
             started_at=result.started_at,
             finished_at=result.finished_at,
-            metadata={"tool_version": result.tool_version},
+            metadata={
+                "tool_version": result.tool_version,
+                "runtime_call_id": result.call_id,
+                "runtime_input_hash": result.input_hash,
+                "runtime_output_hash": result.output_hash,
+            },
+        )
+        return replace(
+            projected,
+            input_hash=contract_hash(call.to_dict()),
+            output_hash=contract_hash(
+                {
+                    "call_id": projected.call_id,
+                    "status": projected.status,
+                    "tool_name": projected.tool_name,
+                    "output": json_value(projected.output, field="tool_result.output"),
+                    "error": projected.error,
+                    "retryable": projected.retryable,
+                }
+            ),
         )
 
     def discover(self) -> tuple[ToolDefinition, ...]:
@@ -329,7 +348,7 @@ class RuntimeToolAdapter(ToolPort):
             dict(call.arguments),
             timeout=call.timeout_seconds or 60.0,
             run_id=call.run_id,
-            external_call_id=call.call_id,
+            external_call_id=str(call.metadata.get("cancellation_id") or call.call_id),
         )
         return self._result(call, result)
 

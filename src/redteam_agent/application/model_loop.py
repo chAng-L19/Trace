@@ -39,6 +39,8 @@ class ModelIntegrityError(ModelLoopError):
     pass
 class ModelInterruptedError(ModelLoopError):
     pass
+class ModelContextBudgetError(ModelInterruptedError):
+    pass
 class AgentLoop(ModelIntegrityMixin):
     """Single model-led loop from context selection through verified observation."""
     _integrity_error = ModelIntegrityError
@@ -68,12 +70,16 @@ class AgentLoop(ModelIntegrityMixin):
         self._active_calls: dict[str, set[str]] = {}
         self._lock = threading.RLock()
     def run(self, run_id: str, *, max_actions: int | None = None) -> AgentRunView:
-        view = self.service._resume_runtime(run_id, max_actions=max_actions)
+        view = self.service._resume_runtime(
+            run_id,
+            max_actions=max_actions,
+            model_led=True,
+        )
         for _ in range(self.max_turns):
             if view.terminal.terminal or view.run.status in {"completed", "failed", "cancelled"}:
                 return view
             if self._is_cancelled(run_id):
-                return self.service.cancel(run_id, reason="model_loop_cancelled")
+                return self.service.status(run_id)
             if self._is_interrupted(run_id):
                 return self.service.status(run_id)
             if view.run.status == "paused_budget":
@@ -85,7 +91,10 @@ class AgentLoop(ModelIntegrityMixin):
                 return view
             recovered = self._recover_pending_turn(view)
             if recovered is None:
-                response, request = self._model_turn(view)
+                try:
+                    response, request = self._model_turn(view)
+                except ModelContextBudgetError:
+                    return self.service.status(run_id)
                 existing: Mapping[str, ToolResult] = {}
                 reconcile = False
             else:
@@ -93,7 +102,7 @@ class AgentLoop(ModelIntegrityMixin):
                 reconcile = True
                 self.service.conversation.record_model_response(run_id, response)
             if self._is_cancelled(run_id):
-                return self.service.cancel(run_id, reason="model_loop_cancelled")
+                return self.service.status(run_id)
             if self._is_interrupted(run_id):
                 return self.service.status(run_id)
             current = self.service.status(run_id)
@@ -107,10 +116,13 @@ class AgentLoop(ModelIntegrityMixin):
             )
             if budget_view.run.status == "paused_budget":
                 return budget_view
-            if handle_tool_expand(self, run_id, response):
-                view = self.service.status(run_id)
+            expanded_tools = handle_tool_expand(self, run_id, response)
+            if expanded_tools and not response.tool_calls:
+                self._mark_turn_consumed(view, request, "tool_catalog_expanded")
+                view = self.service._resume_runtime(run_id, max_actions=max_actions, model_led=True)
                 continue
             if not response.tool_calls:
+                self._mark_turn_consumed(view, request, "model_response_no_tools")
                 return budget_view
             try:
                 results = self._execute_tool_calls(
@@ -144,16 +156,32 @@ class AgentLoop(ModelIntegrityMixin):
             )
             successful = tuple(item for item in results if item.status == "success")
             if not successful:
-                return view
-            if tactical_update is not None and not bool(
-                response.structured_output.get("commit_lifecycle_gate", False)
-            ):
-                view = self.service.status(run_id)
+                # A failed tool result is still a completed protocol turn.  It
+                # must be visible to the model so it can change arguments,
+                # choose another tool, or suspend the hypothesis.  Recovery
+                # uses the durable observation/attempt records to avoid
+                # repeating the failed side effect.
+                self._mark_turn_consumed(view, request, "tool_calls_failed")
+                view = self.service._resume_runtime(
+                    run_id,
+                    max_actions=max_actions,
+                    model_led=True,
+                )
+                continue
+            if (view.next_action != "provide_target" and
+                    response.structured_output.get("commit_lifecycle_gate") is not True):
+                self._mark_turn_consumed(view, request, "lifecycle_gate_not_committed")
+                view = self.service._resume_runtime(run_id, max_actions=max_actions, model_led=True)
                 continue
             if view.next_action == "provide_target":
                 target = self._target_from_results(successful)
                 self.service.runtime.provide_target(run_id, targets=(target,))
-                view = self.service._resume_runtime(run_id, max_actions=max_actions)
+                self._mark_turn_consumed(view, request, "target_provided")
+                view = self.service._resume_runtime(
+                    run_id,
+                    max_actions=max_actions,
+                    model_led=True,
+                )
                 continue
             output: Any
             if len(successful) == 1:
@@ -161,27 +189,40 @@ class AgentLoop(ModelIntegrityMixin):
             else:
                 output = {"tool_results": [item.to_dict() for item in successful]}
             receipt = dict(view.handoff)
-            observation = Observation(
-                action_id=view.next_action,
-                output=output,
-                tool="model-loop:" + ",".join(item.tool_name for item in successful),
-                usage={"_accounted_request_id": request.request_id},
-                idempotency_key=contract_hash(
-                    {
-                        "run_id": run_id,
-                        "request_id": request.request_id,
-                        "action_id": view.next_action,
-                        "calls": [item.call_id for item in successful],
-                    }
-                ),
-                continue_run=False,
-                handoff_id=str(receipt.get("handoff_id") or ""),
-                handoff_token=str(receipt.get("handoff_token") or ""),
-                attempt_id=str(receipt.get("attempt_id") or ""),
-                contract_hash=str(receipt.get("contract_hash") or ""),
+            if receipt:
+                self.service.runtime.submit_model_observation(
+                    run_id=run_id,
+                    request_id=request.request_id,
+                    call_ids=tuple(item.call_id for item in successful),
+                    handoff_id=str(receipt.get("handoff_id") or ""),
+                    handoff_token=str(receipt.get("handoff_token") or ""),
+                    attempt_id=str(receipt.get("attempt_id") or ""),
+                    contract_hash=str(receipt.get("contract_hash") or ""),
+                    continue_run=False,
+                )
+            else:
+                observation = Observation(
+                    action_id=view.next_action,
+                    output=output,
+                    tool="model-loop:" + ",".join(item.tool_name for item in successful),
+                    usage={"_accounted_request_id": request.request_id},
+                    idempotency_key=contract_hash(
+                        {
+                            "run_id": run_id,
+                            "request_id": request.request_id,
+                            "action_id": view.next_action,
+                            "calls": [item.call_id for item in successful],
+                        }
+                    ),
+                    continue_run=False,
+                )
+                self.service._submit_runtime_observation(run_id, observation)
+            self._mark_turn_consumed(view, request, "lifecycle_observation_submitted")
+            view = self.service._resume_runtime(
+                run_id,
+                max_actions=max_actions,
+                model_led=True,
             )
-            self.service._submit_runtime_observation(run_id, observation)
-            view = self.service._resume_runtime(run_id, max_actions=max_actions)
         return view
     def interrupt(self, run_id: str) -> None:
         with self._lock:
@@ -201,7 +242,8 @@ class AgentLoop(ModelIntegrityMixin):
             self._cancelled_runs.add(run_id)
         self.interrupt(run_id)
     def _is_interrupted(self, run_id: str) -> bool:
-        return run_id in self._interrupted_runs
+        with self._lock:
+            return run_id in self._interrupted_runs
     def _record_tactical_update(
         self,
         view: AgentRunView,
@@ -240,12 +282,6 @@ class AgentLoop(ModelIntegrityMixin):
     ) -> ModelRequest:
         capabilities = self.model.capabilities()
         model_name = self.model_name or str(capabilities.metadata.get("model") or "")
-        selection = self.service.context_selector.prepare_model_context(
-            view,
-            max_context_tokens=capabilities.max_context_tokens,
-            force_compaction=force_compaction,
-            overflow_retry=overflow_retry,
-        )
         catalog = None
         definitions = ()
         if self.tools is not None:
@@ -270,12 +306,7 @@ class AgentLoop(ModelIntegrityMixin):
                 for item in definitions
             )
         )
-        return ModelRequest(
-            request_id=f"model-request-{uuid4().hex}",
-            run_id=view.run.run_id,
-            messages=selection.messages,
-            tools=tools,
-            response_schema={
+        response_schema = {
                 "type": "object",
                 "properties": {
                     "decision": {"type": "string"},
@@ -296,14 +327,38 @@ class AgentLoop(ModelIntegrityMixin):
                     },
                 },
                 "additionalProperties": True,
-            },
+            }
+        selection = self.service.context_selector.prepare_model_context(
+            view,
+            max_context_tokens=capabilities.max_context_tokens,
+            force_compaction=force_compaction,
+            overflow_retry=overflow_retry,
+            tools=tools,
+            response_schema=response_schema,
+        )
+        if selection.context_overflow_tokens:
+            self.service.runtime.pause_run(view.run.run_id, reason=selection.context_status)
+            raise ModelContextBudgetError(f"{selection.context_status}:{selection.context_hash}")
+        return ModelRequest(
+            request_id=f"model-request-{uuid4().hex}",
+            run_id=view.run.run_id,
+            messages=selection.messages,
+            tools=tools,
+            response_schema=response_schema,
             model=model_name,
             allow_parallel_tools=capabilities.parallel_tool_calls,
             metadata={
                 "action_id": view.next_action,
+                "branch_id": view.run.branch_id,
+                "plan_revision": int(view.run.metadata.get("plan_revision") or 1),
+                "handoff_id": str(view.handoff.get("handoff_id") or ""),
                 "attempt": attempt,
                 "context_hash": selection.context_hash,
                 "estimated_context_tokens": selection.estimated_context_tokens,
+                "message_tokens": selection.message_tokens,
+                "tool_schema_tokens": selection.tool_schema_tokens,
+                "response_schema_tokens": selection.response_schema_tokens,
+                "context_status": selection.context_status,
                 "provider_context_tokens": selection.provider_context_tokens,
                 "selected_tokens": selection.selected_tokens,
                 "reserved_output_tokens": selection.reserved_output_tokens,
@@ -356,7 +411,14 @@ class AgentLoop(ModelIntegrityMixin):
         claimed_hash = normalized.response_hash
         authoritative_hash = contract_hash(self._response_projection(normalized))
         status = normalized.status
+        call_ids = [
+            str(item.get("call_id") or item.get("id") or f"call-{index}").strip()
+            for index, item in enumerate(normalized.tool_calls)
+        ]
+        duplicate_call_id = len(call_ids) != len(set(call_ids))
         if claimed_hash and claimed_hash != authoritative_hash:
+            status = "integrity_error"
+        if duplicate_call_id:
             status = "integrity_error"
         record = ModelResponseRecord(
             request_id=request.request_id,
@@ -375,6 +437,8 @@ class AgentLoop(ModelIntegrityMixin):
         # is invalid. Account usage before surfacing the integrity failure.
         self._account_response_usage(request, usage)
         if status == "integrity_error":
+            if duplicate_call_id:
+                raise ModelIntegrityError("model_tool_call_id_duplicate")
             raise ModelIntegrityError("model_response_hash_mismatch")
         if normalized.status not in {"completed", "success"}:
             raise ModelLoopError(f"model_response_failed:{normalized.status}:{normalized.error}")
@@ -483,6 +547,8 @@ class AgentLoop(ModelIntegrityMixin):
             raise ModelLoopError("model_tool_port_required")
         self._ensure_executable(view.run.run_id)
         calls = tuple(self._tool_call(view, request, item, index) for index, item in enumerate(response.tool_calls))
+        if len(calls) != len({call.call_id for call in calls}):
+            raise ModelIntegrityError("model_tool_call_id_duplicate")
         cached = dict(existing or {})
         pending = tuple(call for call in calls if call.call_id not in cached)
         parallel = (
@@ -513,9 +579,11 @@ class AgentLoop(ModelIntegrityMixin):
     def _ensure_executable(self, run_id: str) -> None:
         if self._is_cancelled(run_id):
             raise ModelInterruptedError("model_loop_cancelled")
+        if self._is_interrupted(run_id):
+            raise ModelInterruptedError("model_loop_interrupted")
         status = self.service.status(run_id).run.status
-        if status == "paused_budget":
-            raise ModelInterruptedError("model_loop_paused")
+        if status != "waiting_worker":
+            raise ModelInterruptedError(f"model_loop_not_executable:{status}")
     def _tool_call(
         self,
         view: AgentRunView,
@@ -528,6 +596,9 @@ class AgentLoop(ModelIntegrityMixin):
         if not call_id or not tool_name:
             raise ModelIntegrityError("model_tool_call_identity_required")
         arguments = json_mapping(payload.get("arguments"), field="model_tool_call.arguments")
+        cancellation_id = "tool-exec-" + contract_hash(
+            {"run_id": view.run.run_id, "request_id": request.request_id, "call_id": call_id}
+        )[:32]
         return ToolCall(
             call_id=call_id,
             run_id=view.run.run_id,
@@ -542,7 +613,11 @@ class AgentLoop(ModelIntegrityMixin):
                     "arguments": arguments,
                 }
             ),
-            metadata={"action_id": view.next_action, "request_id": request.request_id},
+            metadata={
+                "action_id": view.next_action,
+                "request_id": request.request_id,
+                "cancellation_id": cancellation_id,
+            },
         )
     def _invoke_tool(
         self,
@@ -554,13 +629,17 @@ class AgentLoop(ModelIntegrityMixin):
     ) -> ToolResult:
         assert self.tools is not None
         self._ensure_executable(view.run.run_id)
-        self._track(self._active_calls, view.run.run_id, call.call_id, add=True)
+        cancellation_id = str(call.metadata.get("cancellation_id") or call.call_id)
+        with self._lock:
+            if view.run.run_id in self._cancelled_runs or view.run.run_id in self._interrupted_runs:
+                raise ModelInterruptedError("model_loop_interrupted")
+            self._active_calls.setdefault(view.run.run_id, set()).add(cancellation_id)
         try:
             result = self.tools.reconcile(call) if reconcile else None
             if result is None:
                 result = self.tools.invoke(call)
         finally:
-            self._track(self._active_calls, view.run.run_id, call.call_id, add=False)
+            self._track(self._active_calls, view.run.run_id, cancellation_id, add=False)
         if result.call_id != call.call_id or result.tool_name != call.tool_name:
             raise ModelIntegrityError("tool_result_identity_mismatch")
         input_hash = contract_hash(call.to_dict())
@@ -628,12 +707,15 @@ class AgentLoop(ModelIntegrityMixin):
         view: AgentRunView,
     ) -> tuple[ModelResponse, ModelRequest, Mapping[str, ToolResult]] | None:
         store = self.service.runtime.store
-        requests = {item.request_id: item for item in store.model_requests(view.run.run_id)}
-        observations = store.model_observations(view.run.run_id)
+        journal = self.service.journal
+        requests = {item.request_id: item for item in journal.model_requests(view.run.run_id)}
+        observations = journal.model_observations(view.run.run_id)
         by_request: dict[str, dict[str, ToolResult]] = {}
         for record in observations:
-            if record.action_id != view.next_action or record.status != "success":
+            if record.action_id != view.next_action:
                 continue
+            if record.status == "integrity_error":
+                raise ModelIntegrityError("model_observation_integrity_error")
             raw = record.observation.get("tool_result")
             if not isinstance(raw, Mapping):
                 artifact = record.observation.get("tool_result_artifact")
@@ -659,7 +741,12 @@ class AgentLoop(ModelIntegrityMixin):
             ):
                 raise ModelIntegrityError("model_observation_integrity_mismatch")
             by_request.setdefault(record.request_id, {})[record.call_id] = result
-        for response_record in reversed(store.model_responses(view.run.run_id)):
+        consumed_requests = {
+            str(item["payload"].get("request_id") or "")
+            for item in journal.operation_events(view.run.run_id)
+            if item["event_type"] == "model_turn_consumed"
+        }
+        for response_record in reversed(journal.model_responses(view.run.run_id)):
             if response_record.status not in {"completed", "success"}:
                 continue
             request_record = requests.get(response_record.request_id)
@@ -675,25 +762,27 @@ class AgentLoop(ModelIntegrityMixin):
                 raise ModelIntegrityError("model_response_record_hash_mismatch")
             if not response.tool_calls:
                 continue
-            tactical_update = response.structured_output.get("tactical_update")
-            if (
-                isinstance(tactical_update, Mapping)
-                and not bool(response.structured_output.get("commit_lifecycle_gate", False))
-            ):
-                call_ids = {
-                    str(item.get("call_id") or item.get("id") or f"call-{index}")
-                    for index, item in enumerate(response.tool_calls)
-                    if isinstance(item, Mapping)
-                }
-                completed_ids = {
-                    item.call_id
-                    for item in store.tactical_attempts(view.run.run_id)
-                    if item.request_id == request.request_id
-                }
-                if call_ids and call_ids.issubset(completed_ids):
-                    continue
+            if request.request_id in consumed_requests:
+                continue
             return response, request, by_request.get(request.request_id, {})
         return None
+
+    def _mark_turn_consumed(
+        self,
+        view: AgentRunView,
+        request: ModelRequest,
+        reason: str,
+    ) -> None:
+        self.service.runtime.store.append_event(
+            view.run.run_id,
+            "model_turn_consumed",
+            {
+                "request_id": request.request_id,
+                "action_id": view.next_action,
+                "branch_id": view.run.branch_id,
+                "reason": reason,
+            },
+        )
     @staticmethod
     def _target_from_results(results: Sequence[ToolResult]) -> str:
         for result in results:

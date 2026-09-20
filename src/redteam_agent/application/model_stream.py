@@ -7,7 +7,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from typing import Any
 
-from ..core import ModelRequest, ModelResponse
+from ..core import ModelRequest, ModelResponse, contract_hash
+from ..providers.opaque import opaque_only
 from .bounded_output import BoundedOutput
 
 
@@ -20,6 +21,8 @@ def invoke_model_stream(loop: Any, request: ModelRequest) -> ModelResponse:
     usage: Mapping[str, Any] = {}
     structured: Mapping[str, Any] = {}
     finish_reason = ""
+    continuation: Mapping[str, Any] = {}
+    response_id = provider = model = ""
     expected_sequence = 0
     completed = False
     try:
@@ -49,13 +52,30 @@ def invoke_model_stream(loop: Any, request: ModelRequest) -> ModelResponse:
                         "preview": raw_delta[:1024].decode("utf-8", errors="replace"),
                     },
                 )
+            elif event.event_type == "status":
+                event = replace(event, payload={"status": str(payload.get("status") or "")[:128]})
+            elif event.event_type == "usage":
+                event = replace(event, payload=loop._normalize_usage(payload))
+            else:
+                event = replace(event, payload={"projected": True, "content_hash": contract_hash(opaque_only(payload))})
             loop.service.runtime.store.save_model_stream_event(event)
+            loop.service.runtime.store.append_event(request.run_id, "model_stream", {
+                "request_id": request.request_id, "sequence": event.sequence,
+                "event_type": event.event_type, "delta": dict(event.payload),
+                "provisional": True,
+            })
             if event.event_type == "tool_call":
                 tool_calls.append(payload)
             elif event.event_type == "usage":
                 usage = loop._normalize_usage(payload)
             elif event.event_type == "completed":
                 completed = True
+                final_text = payload.get("text")
+                if isinstance(final_text, str):
+                    if not accumulator.byte_count:
+                        accumulator.append(final_text)
+                    elif hashlib.sha256(final_text.encode("utf-8")).hexdigest() != accumulator.preview()["content_hash"]:
+                        raise loop._integrity_error("model_stream_text_mismatch")
                 if isinstance(payload.get("tool_calls"), Sequence):
                     tool_calls.extend(
                         dict(item) for item in payload["tool_calls"] if isinstance(item, Mapping)
@@ -65,8 +85,15 @@ def invoke_model_stream(loop: Any, request: ModelRequest) -> ModelResponse:
                 if isinstance(payload.get("structured_output"), Mapping):
                     structured = dict(payload["structured_output"])
                 finish_reason = str(payload.get("finish_reason") or "stop")
+                continuation = opaque_only(payload.get("continuation") or {})
+                response_id = str(payload.get("response_id") or "")
+                provider, model = str(payload.get("provider") or ""), str(payload.get("model") or "")
         if not completed:
             raise loop._interrupted_error("model_stream_incomplete")
+        if finish_reason in {"length", "max_tokens"}:
+            raise loop._interrupted_error(f"finish_reason:{finish_reason}")
+        if finish_reason not in {"", "stop", "tool_calls", "function_call", "end_turn", "stop_sequence"}:
+            raise loop._loop_error(f"finish_reason:{finish_reason}")
     except BaseException:
         setattr(threading.current_thread(), "model_partial_usage", (request.request_id, usage))
         accumulator.close()
@@ -76,10 +103,6 @@ def invoke_model_stream(loop: Any, request: ModelRequest) -> ModelResponse:
             accumulator.discard()
         raise
     status, error = "completed", ""
-    if finish_reason in {"length", "max_tokens"}:
-        status, error = "interrupted", f"finish_reason:{finish_reason}"
-    elif finish_reason not in {"", "stop", "tool_calls", "function_call", "end_turn", "stop_sequence"}:
-        status, error = "failed", f"finish_reason:{finish_reason}"
     metadata: dict[str, Any] = {}
     if accumulator.byte_count <= MAX_INLINE_MODEL_STREAM_BYTES:
         text = accumulator.inline_text()
@@ -101,6 +124,8 @@ def invoke_model_stream(loop: Any, request: ModelRequest) -> ModelResponse:
     return ModelResponse(
         request_id=request.request_id,
         status=status,
+        provider=provider,
+        model=model,
         text=text,
         structured_output=structured,
         tool_calls=tuple(tool_calls) if status == "completed" else (),
@@ -108,4 +133,6 @@ def invoke_model_stream(loop: Any, request: ModelRequest) -> ModelResponse:
         finish_reason=finish_reason,
         error=error,
         metadata=metadata,
+        response_id=response_id,
+        continuation=continuation,
     )

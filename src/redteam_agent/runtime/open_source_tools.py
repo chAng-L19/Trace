@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from .android_asc import apk_asc
+from .browser_sessions import BrowserAdapter
 
 if TYPE_CHECKING:
     from .tool_broker import ToolBroker
@@ -154,83 +155,12 @@ def port_probe(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
         return {"host": host, "port": port, "open": False, "error": type(exc).__name__}
 
 
-def _chrome_path() -> str:
-    candidates = (
-        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-        "/usr/bin/google-chrome",
-        "/usr/bin/chromium",
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    )
-    return next((item for item in candidates if Path(item).is_file()), "")
-
-
 def _browser(arguments: Mapping[str, Any], operation: str) -> Mapping[str, Any]:
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError as exc:
-        raise RuntimeError("playwright_python_package_missing") from exc
-    url = _required_text(arguments, "url")
-    executable = str(arguments.get("executable_path") or _chrome_path()).strip()
-    try:
-        timeout = max(1_000, min(300_000, int(float(arguments.get("timeout", 30.0)) * 1000)))
-    except (TypeError, ValueError, OverflowError):
-        timeout = 30_000
-    headless = bool(arguments.get("headless", True))
-    launch_options: dict[str, Any] = {"headless": headless}
-    if executable:
-        launch_options["executable_path"] = executable
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(**launch_options)
-        try:
-            context = browser.new_context(ignore_https_errors=bool(arguments.get("ignore_https_errors", False)))
-            page = context.new_page()
-            response = page.goto(url, wait_until=str(arguments.get("wait_until") or "domcontentloaded"), timeout=timeout)
-            selector = str(arguments.get("selector") or "").strip()
-            if operation == "click":
-                if not selector:
-                    raise ValueError("selector_required")
-                page.locator(selector).first.click(timeout=timeout)
-            elif operation == "fill":
-                if not selector:
-                    raise ValueError("selector_required")
-                page.locator(selector).first.fill(str(arguments.get("value") or ""), timeout=timeout)
-            output_path: Path | None = None
-            if operation == "screenshot":
-                output_path = Path(str(arguments.get("output_path") or "browser-screenshot.png")).expanduser().resolve()
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                page.screenshot(path=str(output_path), full_page=bool(arguments.get("full_page", False)))
-            try:
-                title = page.title()
-            except Exception:
-                title = ""
-            try:
-                text = page.locator("body").inner_text(timeout=timeout)
-            except Exception:
-                text = ""
-            bounded_text, text_truncated = _bounded(text)
-            links: list[Mapping[str, str]] = []
-            try:
-                links = list(page.locator("a").evaluate_all(
-                    "els => els.slice(0, 100).map(e => ({text: (e.innerText || '').trim(), href: e.href}))"
-                ))
-            except Exception:
-                links = []
-            result: dict[str, Any] = {
-                "operation": operation,
-                "requested_url": url,
-                "url": page.url,
-                "title": title,
-                "status_code": int(response.status) if response is not None else 0,
-                "text": bounded_text,
-                "text_truncated": text_truncated,
-                "links": links,
-            }
-            if output_path is not None:
-                result["screenshot_path"] = str(output_path)
-            return result
-        finally:
-            browser.close()
+    return BrowserAdapter(operation)(arguments)
+
+
+def browser_create(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    return _browser(arguments, "create")
 
 
 def browser_navigate(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -247,6 +177,10 @@ def browser_click(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
 
 def browser_fill(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
     return _browser(arguments, "fill")
+
+
+def browser_evaluate(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    return _browser(arguments, "evaluate")
 
 
 def browser_screenshot(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -561,19 +495,21 @@ def register_open_source_tools(broker: ToolBroker) -> None:
         description="Direct bounded TCP connect probe without a shell or third-party scanner.", priority=620,
         input_schema=_schema(("host", "port"), {"host": text, "port": {"type": "integer", "minimum": 1, "maximum": 65535}, "timeout": {"type": "number"}}),
     )
-    browser_props = {"url": text, "selector": text, "value": text, "timeout": {"type": "number"}, "headless": {"type": "boolean"}, "ignore_https_errors": {"type": "boolean"}, "wait_until": text, "executable_path": text, "output_path": text, "full_page": {"type": "boolean"}}
-    for name, operation, adapter, required in (
-        ("browser-navigate", "navigate", browser_navigate, ("url",)),
-        ("browser-snapshot", "snapshot", browser_snapshot, ("url",)),
-        ("browser-click", "click", browser_click, ("url", "selector")),
-        ("browser-fill", "fill", browser_fill, ("url", "selector", "value")),
-        ("browser-screenshot", "screenshot", browser_screenshot, ("url",)),
+    browser_props = {"url": text, "selector": text, "value": text, "timeout": {"type": "number"}, "headless": {"type": "boolean"}, "ignore_https_errors": {"type": "boolean"}, "wait_until": text, "executable_path": text, "output_path": text, "full_page": {"type": "boolean"}, "session_id": text, "page_id": text, "expression": text, "arg": {}}
+    for name, operation, required in (
+        ("browser-create", "create", ()),
+        ("browser-navigate", "navigate", ("url",)),
+        ("browser-snapshot", "snapshot", ()),
+        ("browser-click", "click", ("selector",)),
+        ("browser-fill", "fill", ("selector", "value")),
+        ("browser-evaluate", "evaluate", ("expression",)),
+        ("browser-screenshot", "screenshot", ()),
     ):
         broker.register_adapter(
-            name=name, capabilities=("browser_automation", "page_fetch", "dom_snapshot"), adapter=adapter,
-            description=f"Direct Microsoft Playwright browser {operation} adapter; no MCP configuration required.", priority=620,
+            name=name, capabilities=("browser_automation", "page_fetch", "dom_snapshot"), adapter=BrowserAdapter(operation),
+            description=f"Microsoft Playwright {operation}; reuses this run's context and page. URL is optional after navigation. browser-create explicitly recreates a lost session; old session/page IDs are rejected.", priority=620,
             input_schema=_schema(required, browser_props),
-            side_effecting=operation in {"click", "fill"},
+            side_effecting=operation in {"create", "click", "fill", "evaluate"},
         )
     broker.register_adapter(
         name="binary-info", capabilities=("binary_reverse", "binary_inventory"), adapter=binary_info,
@@ -634,6 +570,8 @@ __all__ = [
     "binary_radare2",
     "binary_strings",
     "browser_click",
+    "browser_create",
+    "browser_evaluate",
     "browser_fill",
     "browser_navigate",
     "browser_screenshot",

@@ -360,20 +360,40 @@ class ExecutorActionsMixin:
         contract_hash: str,
         usage: Mapping[str, Any] | None = None,
         timeout: float = 120.0,
+        trusted_model_observation: Mapping[str, Any] | None = None,
     ) -> ExecutionOutcome:
+        trusted = dict(trusted_model_observation or {})
         descriptor = ToolDescriptor(
-            server="host",
-            name="agent-observation",
-            description="Host Agent observation accepted through a one-time Runtime receipt.",
+            server="model-loop" if trusted else "host",
+            name="verified-tool-observation" if trusted else "agent-observation",
+            description=(
+                "Runtime-validated result from a model-selected ToolPort call."
+                if trusted
+                else "Host Agent observation accepted through a one-time Runtime receipt."
+            ),
             input_schema={"type": "object"},
             capabilities=tuple(action.required_capabilities),
-            source="host-receipt",
+            source="model-tool-observation" if trusted else "host-receipt",
             healthy=True,
             priority=0,
-            version="host-receipt-v1",
+            version=(
+                str(trusted.get("tool_version") or "model-tool-v1")
+                if trusted
+                else "host-receipt-v1"
+            ),
             schema_hash=contract_hash,
-            side_effecting=True,
+            side_effecting=bool(trusted.get("side_effecting", True)),
             supports_reconcile=False,
+            metadata=(
+                {
+                    "request_id": str(trusted.get("request_id") or ""),
+                    "call_ids": list(trusted.get("call_ids") or ()),
+                    "observation_ids": list(trusted.get("observation_ids") or ()),
+                    "tool_names": list(trusted.get("tool_names") or ()),
+                }
+                if trusted
+                else {}
+            ),
         )
         lease_token = self.store.acquire_lease(
             state.run_id,
@@ -402,7 +422,7 @@ class ExecutorActionsMixin:
                 "consumed",
             ):
                 return ExecutionOutcome(False, "host_placeholder_invalid", "host_observation_rejected")
-            if placeholder.tool == "host:handoff":
+            if placeholder.tool == "host:handoff" and not trusted:
                 descriptor = replace(descriptor, name="handoff")
             attempt = self.store.claim_task_attempt(
                 placeholder,
@@ -447,6 +467,26 @@ class ExecutorActionsMixin:
                     action.action_id,
                     attempt.idempotency_key,
                     result,
+                    lease_token=lease_token,
+                )
+            if trusted:
+                result = replace(
+                    result,
+                    tool=descriptor.qualified_name,
+                    call_id=str(trusted.get("request_id") or result.call_id),
+                    input_hash=str(trusted.get("input_hash") or result.input_hash),
+                    output_hash=str(trusted.get("output_hash") or result.output_hash),
+                    tool_version=descriptor.version,
+                )
+                attempt = replace(
+                    attempt,
+                    tool=descriptor.qualified_name,
+                    tool_version=descriptor.version,
+                    input_hash=result.input_hash,
+                )
+                self.store.rebind_task_attempt_execution_identity(
+                    attempt,
+                    expected_status="running",
                     lease_token=lease_token,
                 )
             persisted_usage = (

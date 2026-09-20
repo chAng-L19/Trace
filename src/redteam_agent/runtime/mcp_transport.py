@@ -34,7 +34,7 @@ def _settings_warning(path: Path, key: str, value: Any, reason: str) -> None:
     if len(rendered) > 120:
         rendered = f"{rendered[:117]}..."
     sys.stderr.write(
-        f"redteam-agent-runtime: ignored automation.{key} from {path}: "
+        f"trace-agent-runtime: ignored automation.{key} from {path}: "
         f"{reason} (value={rendered})\n"
     )
 
@@ -120,7 +120,7 @@ def _runtime_settings(paths: list[Path]) -> dict[str, Any]:
         try:
             payload = tomllib.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, tomllib.TOMLDecodeError) as exc:
-            sys.stderr.write(f"redteam-agent-runtime: skipped invalid config {path}: {exc}\n")
+            sys.stderr.write(f"trace-agent-runtime: skipped invalid config {path}: {exc}\n")
             continue
         automation = payload.get("automation") if isinstance(payload.get("automation"), Mapping) else {}
         raw_priority = automation.get("tool_priority")
@@ -259,9 +259,9 @@ def main(argv: list[str] | None = None) -> int:
     # ``__main__`` and leaves both modules partially initialized.
     from .mcp_server import RuntimeMcpServer
 
-    parser = argparse.ArgumentParser(description="Host-independent durable red-team Agent MCP runtime")
+    parser = argparse.ArgumentParser(prog="trace-mcp", description="Trace durable Agent MCP runtime")
     parser.add_argument("--root", default="", help="Durable state root")
-    parser.add_argument("--config", action="append", default=[], help="Codex config.toml path")
+    parser.add_argument("--config", action="append", default=[], help="MCP config.toml path")
     arguments = parser.parse_args(argv)
     agent_home = Path(os.environ.get("REDTEAM_AGENT_HOME") or (Path.home() / ".redteam-agent")).expanduser().resolve(strict=False)
     root = Path(arguments.root).expanduser().resolve(strict=False) if arguments.root else agent_home / "operations"

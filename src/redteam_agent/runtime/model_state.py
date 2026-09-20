@@ -645,6 +645,7 @@ class OperationState:
     cleanup_status: str = "not_started"
     credential_refs: list[str] = field(default_factory=list)
     dependencies: dict[str, dict[str, Any]] = field(default_factory=dict)
+    model_led: bool = False
     created_at: str = field(default_factory=utc_now)
     updated_at: str = field(default_factory=utc_now)
 
@@ -730,6 +731,7 @@ class OperationState:
                 for key, value in _mapping(payload.get("dependencies")).items()
                 if isinstance(value, Mapping)
             },
+            model_led=payload.get("model_led") is True,
             created_at=created_at,
             updated_at=str(payload.get("updated_at") or utc_now()),
         )

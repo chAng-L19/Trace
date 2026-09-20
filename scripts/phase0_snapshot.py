@@ -105,12 +105,12 @@ def _snapshot_broker() -> ToolBroker:
 
 def _runtime_identity() -> dict[str, Any]:
     return {
-        "package": "codex-redteam-agent",
+        "package": "trace-agent",
         "package_version": "0.1.0",
         "python_baseline": "3.12",
         "requires_python": ">=3.11",
         "sqlite_schema_version": BASELINE_SCHEMA_VERSION,
-        "mcp_server": "redteam-agent-runtime",
+        "mcp_server": "trace-agent-runtime",
         "mcp_protocol": "2025-06-18",
         "public_tool_count": len(PUBLIC_TOOL_NAMES),
     }

@@ -520,7 +520,7 @@ class RuntimeMcpServer(RuntimeMcpToolDispatchMixin):
                 result: Any = {
                     "protocolVersion": "2025-06-18",
                     "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "redteam-agent-runtime", "version": "1"},
+                    "serverInfo": {"name": "trace-agent-runtime", "version": "1"},
                 }
             elif method == "ping":
                 result = {}

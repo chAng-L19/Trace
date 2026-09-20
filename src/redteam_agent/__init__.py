@@ -1,4 +1,4 @@
-"""Host-independent red-team agent runtime."""
+"""Trace evidence-driven durable agent runtime."""
 
 from . import core
 from .runtime import *  # noqa: F401,F403
