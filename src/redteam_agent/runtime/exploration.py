@@ -4,7 +4,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Mapping, Sequence
 
 from ..core import ExplorationRecord, contract_hash
-from ..core.contracts import json_mapping, required_text, unique_strings
+from ..core.contracts import bounded_int, json_mapping, required_text, unique_strings
 from .store_common import ImmutableRecordError, _dump, _load
 from .model_common import utc_now
 
@@ -294,14 +294,37 @@ class ExplorationLedger:
                 continue
             payload.setdefault("created_at", utc_now())
             metadata = json_mapping(payload.get("metadata"), field="exploration.metadata")
+            for key in ("priority", "intent_id", "parent_intent_id"):
+                if key in payload:
+                    metadata[key] = payload[key]
+            if "priority" in metadata:
+                metadata["priority"] = bounded_int(
+                    metadata["priority"], default=50, minimum=0, maximum=100, field="search_priority"
+                )
             payload["metadata"] = {**metadata, "source": "model_structured_output", "request_id": request_id}
             saved.append(self.record(ExplorationRecord.from_dict(payload)))
         return tuple(saved)
 
     def current(self, run_id: str) -> tuple[ExplorationRecord, ...]:
+        # Attempts, leads and contradictions are append-only activity around a
+        # hypothesis; they are not replacements for the hypothesis entity.
+        # Only lifecycle records are allowed to change its projected state. A
+        # standalone lead is still useful navigation state until a lifecycle
+        # record for the same hypothesis exists.
+        records = self._records(run_id)
+        lifecycle_kinds = {"hypothesis", "reopen", "observed_miss", "verified_negative"}
+        lifecycle_ids = {
+            record.hypothesis_id
+            for record in records
+            if record.kind in lifecycle_kinds
+        }
         latest: dict[str, ExplorationRecord] = {}
         order: list[str] = []
-        for record in self._records(run_id):
+        for record in records:
+            if record.kind not in lifecycle_kinds and not (
+                record.kind == "lead" and record.hypothesis_id not in lifecycle_ids
+            ):
+                continue
             if record.hypothesis_id not in latest:
                 order.append(record.hypothesis_id)
             latest[record.hypothesis_id] = record
@@ -313,13 +336,23 @@ class ExplorationLedger:
         attempts = self._attempts(run_id)
         repeated = self.repeated_actions(run_id)
         selected = current[-max(1, int(limit)) :]
+        recent_records = records[-max(1, int(limit)) :]
         return {
             "authority": "navigation_only_not_evidence",
             "record_count": len(records),
+            "priority_queue": [
+                self._project_record(item)
+                for item in sorted(
+                    (item for item in current if item.status in {"active", "reopened", "proposed"}),
+                    key=lambda item: -bounded_int(item.metadata.get("priority", 50), default=50, minimum=0, maximum=100, field="search_priority"),
+                )[:max(1, int(limit))]
+            ],
             "active": [self._project_record(item) for item in selected if item.status in {"active", "reopened", "proposed"}],
             "suspended": [self._project_record(item) for item in selected if item.status == "suspended"],
             "unresolved_contradictions": [
-                self._project_record(item) for item in selected if item.kind == "contradiction" and item.status != "closed"
+                self._project_record(item)
+                for item in recent_records
+                if item.kind == "contradiction" and item.status != "closed"
             ],
             "recent_attempts": [
                 {
@@ -340,6 +373,9 @@ class ExplorationLedger:
         return {
             "record_id": record.record_id,
             "hypothesis_id": record.hypothesis_id,
+            "priority": record.metadata.get("priority", 50),
+            "intent_id": str(record.metadata.get("intent_id") or ""),
+            "parent_intent_id": str(record.metadata.get("parent_intent_id") or ""),
             "kind": record.kind,
             "status": record.status,
             "statement": record.statement,
@@ -415,7 +451,7 @@ class ExplorationLedger:
                 artifact_refs=source.artifact_refs,
                 capabilities=source.capabilities,
                 reopen_triggers=current.reopen_triggers,
-                metadata={"matched_triggers": matched, "automatic": True},
+                metadata={**current.metadata, "matched_triggers": matched, "automatic": True},
                 created_at=source.created_at,
             )
             reopened.append(self.store.save_exploration_record(reopen))
@@ -475,7 +511,7 @@ class ExplorationLedger:
             ],
             "unresolved_contradictions": [
                 self._project_record(item)
-                for item in current
+                for item in records
                 if item.kind == "contradiction" and item.status != "closed"
             ],
             "reopen_triggers": {

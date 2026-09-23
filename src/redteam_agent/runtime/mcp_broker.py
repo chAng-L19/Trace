@@ -80,10 +80,15 @@ class McpBrokerMixin:
             signatures = {item.signature for item in self._server_configs.values()}
             for spec in parse_mcp_server_specs(path, config):
                 server_name = spec.name
+                # Paths are ordered by precedence; a persisted disabled server
+                # must not be re-enabled by a lower-priority TOML definition.
+                if server_name in self._server_status:
+                    continue
                 if server_name.casefold() in {
                     "codex-redteam-orchestrator",
                     "codex-redteam-runtime",
                     "redteam-agent-runtime",
+                    "trace-agent-runtime",
                 }:
                     continue
                 if not spec.enabled:
@@ -123,11 +128,15 @@ class McpBrokerMixin:
     def refresh(self, *, force: bool = False) -> tuple[ToolDescriptor, ...]:
         with self._lifecycle_lock:
             now = time.monotonic()
-            if self._active_calls or (not force and now - self._last_refresh < 10.0):
+            if self._active_calls:
+                self._refresh_pending = True
                 return self.descriptors()
+            if not force and now - self._last_refresh < 10.0:
+                return self.descriptors()
+            self._refresh_pending = False
             self._last_refresh = now
             for run_id in sorted({run_id for _server_name, run_id in self._run_clients}):
-                self.close_run(run_id)
+                McpBrokerMixin.close_run(self, run_id)
             for client in self._clients.values():
                 client.close()
             self._clients.clear()
@@ -341,6 +350,7 @@ class McpBrokerMixin:
 
     def close_run(self, run_id: str) -> tuple[Mapping[str, Any], ...]:
         reports: list[Mapping[str, Any]] = []
+        errors = []
         with self._lifecycle_lock:
             detached = [
                 (
@@ -351,7 +361,11 @@ class McpBrokerMixin:
                 for key in [key for key in self._run_clients if key[1] == run_id]
             ]
         for server_name, client, spec in detached:
-            client.close()
+            try:
+                client.close()
+            except Exception as exc:
+                errors.append(exc)
+                continue
             reports.append(
                 {
                     "server": server_name,
@@ -362,18 +376,29 @@ class McpBrokerMixin:
                     "status": "closed",
                 }
             )
+        if errors:
+            raise ExceptionGroup("mcp_run_cleanup_failed", errors)
         return tuple(reports)
 
     def close(self) -> None:
+        errors = []
         with self._lifecycle_lock:
             run_ids = sorted({run_id for _server_name, run_id in self._run_clients})
         for run_id in run_ids:
-            self.close_run(run_id)
+            try:
+                self.close_run(run_id)
+            except Exception as exc:
+                errors.append(exc)
         with self._lifecycle_lock:
             shared = tuple(self._clients.values())
             self._clients.clear()
             leftovers = tuple(self._run_clients.values())
             self._run_clients.clear()
         for client in (*shared, *leftovers):
-            client.close()
+            try:
+                client.close()
+            except Exception as exc:
+                errors.append(exc)
+        if errors:
+            raise ExceptionGroup("mcp_cleanup_failed", errors)
 

@@ -31,6 +31,7 @@ class OperationLifecycleMixin:
         token_limit: int | None = None,
         time_limit_seconds: float | None = None,
         deadline: str = "",
+        model_led: bool = False,
     ) -> OperationState:
         predicate_payloads = self._predicate_payloads(success_predicates)
         self._capture_credentials(
@@ -81,6 +82,7 @@ class OperationLifecycleMixin:
         digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
         goal = replace(goal, goal_id=f"goal-{digest[:32]}")
         state = OperationState.create(session_id=str(durable_session_id), goal=goal, workflow=base_workflow)
+        state.model_led = model_led
         state.run_id = f"run-{digest[:32]}"
         state.credential_refs = list(
             find_secret_references({"session_id": durable_session_id, "goal": goal.to_dict()})

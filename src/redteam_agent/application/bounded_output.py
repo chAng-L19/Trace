@@ -153,10 +153,14 @@ class BoundedOutput:
     def close(self) -> None:
         if self._closed:
             return
-        self._decoder.decode(b"", final=True)
-        self._handle.flush()
-        self._handle.close()
-        self._closed = True
+        try:
+            self._decoder.decode(b"", final=True)
+            self._handle.flush()
+        finally:
+            try:
+                self._handle.close()
+            finally:
+                self._closed = True
 
     def inline_text(self) -> str:
         self.close()
@@ -184,9 +188,11 @@ class BoundedOutput:
         }
 
     def discard(self) -> None:
-        self.close()
-        if self._owned_path:
-            self.path.unlink(missing_ok=True)
+        try:
+            self.close()
+        finally:
+            if self._owned_path:
+                self.path.unlink(missing_ok=True)
 
 
 __all__ = ["BoundedOutput"]

@@ -34,15 +34,26 @@ def _int(value: Any, default: int = 0) -> int:
 
 def _usage_totals(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     totals = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    missing_fields = dict.fromkeys(totals, 0)
     missing = 0
     for record in records:
         for key in totals:
             value = record.get(key)
-            if value is not None:
-                totals[key] += _int(value)
-        if bool(record.get("usage_missing")):
+            parsed = _int(value, default=-1)
+            if value is None or parsed < 0:
+                missing_fields[key] += 1
+            else:
+                totals[key] += parsed
+        if bool(record.get("usage_missing")) or record.get("total_tokens") is None:
             missing += 1
-    return {**totals, "requests": len(records), "missing_requests": missing}
+    return {
+        **{key: None if missing_fields[key] else value for key, value in totals.items()},
+        "known_totals": totals,
+        "missing_fields": missing_fields,
+        "usage_complete": not any(missing_fields.values()),
+        "requests": len(records),
+        "missing_requests": missing,
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,8 +77,8 @@ class TransparencyProjector:
         snapshots = tuple(store.context_snapshots(run_id))
         summaries = tuple(store.context_summaries(run_id))
         artifacts = tuple(self.service.artifacts(run_id))
-        evidence = tuple(self.service.runtime.evidence_graph.list(run_id, include_unverified=True))
-        catalog = self.service.tool_catalog(run_id)
+        evidence = view.evidence
+        catalog = self.service.tool_catalog_snapshot(run_id)
 
         actions = []
         for request in requests:
@@ -117,12 +128,18 @@ class TransparencyProjector:
             }
             for item in summaries
         ]
-        lineage = {
-            node.evidence_id: self.service.runtime.evidence_graph.lineage(
-                run_id, node.evidence_id, direction="both", include_payload=False
+        evidence_nodes = []
+        for node in evidence:
+            item = node.to_dict()
+            if not include_raw:
+                item.pop("payload", None)
+            evidence_nodes.append(item)
+        evidence_edges = [
+            {"from": parent_id, "to": evidence_id, "kind": "parent"}
+            for parent_id, evidence_id in dict.fromkeys(
+                (parent_id, node.evidence_id) for node in evidence for parent_id in node.parent_ids
             )
-            for node in evidence
-        }
+        ]
         event_items = [
             {
                 "sequence": item.sequence,
@@ -189,22 +206,8 @@ class TransparencyProjector:
             },
             "artifacts": [self.service.runtime.artifacts.project(item) for item in artifacts],
             "evidence": {
-                "nodes": [
-                    item.to_dict() if include_raw else {
-                        "evidence_id": item.evidence_id,
-                        "run_id": item.run_id,
-                        "action_id": item.action_id,
-                        "artifact_type": item.artifact_type,
-                        "target": item.target,
-                        "tool": item.tool,
-                        "content_hash": item.content_hash,
-                        "parent_ids": list(item.parent_ids),
-                        "verified": item.verified,
-                        "trust": item.trust,
-                    }
-                    for item in evidence
-                ],
-                "lineage": lineage,
+                "nodes": evidence_nodes,
+                "edges": evidence_edges,
             },
             "terminal": view.terminal.to_dict(),
         }

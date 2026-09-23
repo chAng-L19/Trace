@@ -136,8 +136,8 @@ class ToolRegistry(ToolPort):
         self.store = store
         self.policy = policy or ToolVisibilityPolicy()
         self._last_revision: dict[str, str] = {}
-        self._expanded: dict[str, tuple[str, ...]] = {}
         self._selected: dict[str, dict[str, Mapping[str, Any]]] = {}
+        self._catalogs: dict[str, ToolCatalog] = {}
 
     def capabilities(self) -> tuple[str, ...]:
         return tuple(getattr(self.delegate, "capabilities", lambda: ())())
@@ -161,11 +161,65 @@ class ToolRegistry(ToolPort):
         capabilities: Sequence[str] = (),
         profile: str = "",
     ) -> ToolCatalog:
+        """Select and persist the catalog used to authorize subsequent calls."""
+        catalog = self._project_catalog(run_id, capabilities=capabilities, profile=profile)
+        selected_records = {
+            item.qualified_name: self._tool_signature(item) for item in catalog.tools
+        }
+        if run_id:
+            self._selected[run_id] = selected_records
+            self._catalogs[run_id] = catalog
+        previous_revision = self._last_revision.get(run_id)
+        if run_id and self.store is not None and previous_revision is None:
+            previous_revision = (self._selection_payload(run_id) or {}).get("revision")
+        if run_id and self.store is not None and previous_revision != catalog.revision:
+            self.store.append_event(
+                run_id,
+                "tool_catalog_selected",
+                {
+                    "revision": catalog.revision,
+                    "expanded": catalog.expanded,
+                    "required_capabilities": list(dict.fromkeys(
+                        (*capabilities, *self.policy.profile_capabilities(profile))
+                    )),
+                    "selected_tools": list(selected_records.values()),
+                    "visibility": [item.to_dict() for item in catalog.visibility],
+                    "estimated_prompt_bytes": catalog.estimated_prompt_bytes,
+                },
+            )
+        if run_id:
+            self._last_revision[run_id] = catalog.revision
+        return catalog
+
+    def snapshot(self, run_id: str = "") -> ToolCatalog:
+        """Read the latest selection without changing visibility or journal state."""
+        if run_id in self._catalogs:
+            return self._catalogs[run_id]
+        payload = self._selection_payload(run_id)
+        if payload is None:
+            return self._project_catalog(run_id)
+        names = {str(item.get("name") or "") for item in payload.get("selected_tools", ())}
+        return ToolCatalog(
+            revision=str(payload["revision"]),
+            tools=tuple(item for item in self.delegate.discover() if item.qualified_name in names),
+            visibility=tuple(
+                ToolVisibility(str(item["tool"]), bool(item["visible"]), str(item["reason"]), bool(item.get("expanded")))
+                for item in payload.get("visibility", ())
+            ),
+            expanded=bool(payload.get("expanded")),
+            estimated_prompt_bytes=int(payload.get("estimated_prompt_bytes") or 0),
+        )
+
+    def _project_catalog(
+        self,
+        run_id: str = "",
+        *,
+        capabilities: Sequence[str] = (),
+        profile: str = "",
+    ) -> ToolCatalog:
         tools = tuple(self.delegate.discover())
         persisted_patterns = self._expansion(run_id) if run_id else None
-        if run_id and persisted_patterns is not None:
-            self._expanded.setdefault(run_id, persisted_patterns)
-        expanded = bool(run_id and (run_id in self._expanded or persisted_patterns is not None))
+        expanded = persisted_patterns is not None
         effective_capabilities = tuple(
             dict.fromkeys((*capabilities, *self.policy.profile_capabilities(profile)))
         )
@@ -174,7 +228,7 @@ class ToolRegistry(ToolPort):
             capabilities=effective_capabilities,
             expanded=expanded,
         )
-        patterns = self._expanded.get(run_id, ()) if run_id else ()
+        patterns = persisted_patterns or ()
         if expanded and patterns:
             matched = {
                 item.qualified_name
@@ -193,26 +247,6 @@ class ToolRegistry(ToolPort):
             )
         revision = self._revision(tools, selected, visibility, expanded)
         estimated = len(json.dumps([ToolCatalog._tool_dict(item) for item in selected], ensure_ascii=False))
-        selected_records = {
-            item.qualified_name: self._tool_signature(item)
-            for item in selected
-        }
-        if run_id:
-            self._selected[run_id] = selected_records
-        if run_id and self.store is not None and self._last_revision.get(run_id) != revision:
-            self._last_revision[run_id] = revision
-            self.store.append_event(
-                run_id,
-                "tool_catalog_selected",
-                {
-                    "revision": revision,
-                    "expanded": expanded,
-                    "required_capabilities": list(effective_capabilities),
-                    "selected_tools": list(selected_records.values()),
-                    "visibility": [item.to_dict() for item in visibility],
-                    "estimated_prompt_bytes": estimated,
-                },
-            )
         return ToolCatalog(revision, selected, visibility, expanded, estimated)
 
     @staticmethod
@@ -235,18 +269,20 @@ class ToolRegistry(ToolPort):
         if self.store is None:
             raise ValueError("tool_registry_store_required")
         values = (selectors,) if isinstance(selectors, str) else selectors
-        patterns = tuple(str(item).strip() for item in values if str(item).strip())
-        self._expanded[run_id] = patterns
-        self.store.append_event(
-            run_id,
-            "tool_catalog_expanded",
-            {"selectors": list(patterns), "mode": "all" if not patterns else "patterns"},
-        )
+        patterns = tuple(dict.fromkeys(str(item).strip() for item in values if str(item).strip()))
+        previous = self._expansion(run_id)
+        patterns = tuple(dict.fromkeys((*(previous or ()), *patterns))) if patterns and previous != () else ()
+        if patterns != previous:
+            self.store.append_event(
+                run_id,
+                "tool_catalog_expanded",
+                {"selectors": list(patterns), "mode": "all" if not patterns else "patterns"},
+            )
         return self.catalog(run_id)
 
     def explain(self, run_id: str, *, tool_name: str = "") -> dict[str, Any]:
         """Explain why tools are visible or deferred for one operation."""
-        catalog = self.catalog(run_id)
+        catalog = self.snapshot(run_id)
         requested = str(tool_name).strip()
         visibility = tuple(
             item for item in catalog.visibility
@@ -284,6 +320,7 @@ class ToolRegistry(ToolPort):
         if restarted:
             self._last_revision.pop(run_id, None)
             self._selected.pop(run_id, None)
+            self._catalogs.pop(run_id, None)
         return restarted
 
     def close(self) -> None:
@@ -327,7 +364,11 @@ class ToolRegistry(ToolPort):
         for payload in payloads:
             if isinstance(payload, Mapping):
                 raw = payload.get("selectors", [])
-                expansion = tuple(str(value) for value in raw if str(value).strip())
+                patterns = tuple(str(value).strip() for value in raw if str(value).strip())
+                if expansion == () or payload.get("mode") == "all" or not patterns:
+                    expansion = ()
+                else:
+                    expansion = tuple(dict.fromkeys((*(expansion or ()), *patterns)))
         return expansion
 
     def _rejected_call(self, call: ToolCall) -> ToolResult | None:
@@ -357,6 +398,21 @@ class ToolRegistry(ToolPort):
         return None
 
     def _persisted_selection(self, run_id: str) -> dict[str, Mapping[str, Any]] | None:
+        payload = self._selection_payload(run_id)
+        if payload is None:
+            return None
+        records = payload.get("selected_tools")
+        if not isinstance(records, Sequence) or isinstance(records, (str, bytes)):
+            return None
+        selected = {
+            str(item.get("name") or ""): dict(item)
+            for item in records
+            if isinstance(item, Mapping) and str(item.get("name") or "")
+        }
+        self._selected[run_id] = selected
+        return selected
+
+    def _selection_payload(self, run_id: str) -> Mapping[str, Any] | None:
         if self.store is None or not run_id:
             return None
         payload = None
@@ -376,18 +432,7 @@ class ToolRegistry(ToolPort):
                 if item["event_type"] == "tool_catalog_selected"
             )
             payload = events[-1]["payload"] if events else None
-        if not isinstance(payload, Mapping):
-            return None
-        records = payload.get("selected_tools")
-        if not isinstance(records, Sequence) or isinstance(records, (str, bytes)):
-            return None
-        selected = {
-            str(item.get("name") or ""): dict(item)
-            for item in records
-            if isinstance(item, Mapping) and str(item.get("name") or "")
-        }
-        self._selected[run_id] = selected
-        return selected
+        return payload if isinstance(payload, Mapping) else None
 
     @staticmethod
     def _tool_signature(tool: Any) -> dict[str, Any]:

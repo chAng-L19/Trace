@@ -28,16 +28,11 @@ PROFILE_FIELDS = frozenset(
 
 
 def _builtin_workflow() -> WorkflowSpec:
-    """Return the canonical lifecycle without reading a fixed action file.
-
-    The TOML file remains a historical export for old installations. Runtime
-    behavior is sourced from this typed value, so deleting or editing that
-    export cannot silently replace the control contract.
-    """
+    """Return lifecycle evidence gates with executable no-model compatibility defaults."""
     actions = (
         {
             "id": "map-surface",
-            "name": "Map the initial surface",
+            "name": "Target Intake",
             "capabilities": ["target_intake", "page_fetch", "code_analysis", "binary_reverse"],
             "expected_artifact": "surface_map",
             "verifier": "surface_map",
@@ -49,7 +44,7 @@ def _builtin_workflow() -> WorkflowSpec:
         },
         {
             "id": "build-hypotheses",
-            "name": "Build evidence-linked hypotheses",
+            "name": "Hypothesis Evidence",
             "capabilities": ["reasoning", "code_generation"],
             "expected_artifact": "hypothesis_queue",
             "verifier": "hypothesis_queue",
@@ -59,7 +54,7 @@ def _builtin_workflow() -> WorkflowSpec:
         },
         {
             "id": "validate-path",
-            "name": "Validate the highest-value path",
+            "name": "Validation Evidence",
             "capabilities": ["controlled_validation", "browser_automation", "code_generation"],
             "expected_artifact": "reproduction_artifact",
             "verifier": "reproduction_artifact",
@@ -69,7 +64,7 @@ def _builtin_workflow() -> WorkflowSpec:
         },
         {
             "id": "prove-impact",
-            "name": "Prove goal-relevant impact",
+            "name": "Impact Evidence",
             "capabilities": ["impact_analysis", "reasoning"],
             "expected_artifact": "impact_proof",
             "verifier": "impact_proof",
@@ -78,7 +73,7 @@ def _builtin_workflow() -> WorkflowSpec:
         },
         {
             "id": "review-coverage",
-            "name": "Review coverage and false positives",
+            "name": "Coverage Review",
             "capabilities": ["coverage_analysis", "reasoning"],
             "expected_artifact": "coverage_report",
             "verifier": "coverage_report",
@@ -87,7 +82,7 @@ def _builtin_workflow() -> WorkflowSpec:
         },
         {
             "id": "cleanup",
-            "name": "Execute and verify rollback",
+            "name": "Cleanup Evidence",
             "capabilities": ["cleanup", "rollback"],
             "expected_artifact": "cleanup_proof",
             "verifier": "cleanup_proof",
@@ -96,7 +91,7 @@ def _builtin_workflow() -> WorkflowSpec:
         },
         {
             "id": "report",
-            "name": "Build the final evidence report",
+            "name": "Reporting",
             "capabilities": ["report_generation", "reasoning"],
             "expected_artifact": "final_report",
             "verifier": "final_report",
@@ -109,7 +104,7 @@ def _builtin_workflow() -> WorkflowSpec:
             "id": "generic-adaptive",
             "version": 2,
             "name": "Generic adaptive assessment",
-            "description": "The single evidence-driven execution DAG for every operation; lightweight Profiles add planning context without changing control flow.",
+            "description": "Lifecycle quality gates and required evidence types. The model creates and revises tactical branches; action defaults execute only on the no-model compatibility path. Profiles add planning context.",
             "match_tags": ["assessment", "test", "analyze", "评估", "测试", "分析"],
             "actions": actions,
             "required_artifacts": ["surface_map", "hypothesis_queue", "reproduction_artifact", "impact_proof", "coverage_report", "cleanup_proof", "final_report"],
@@ -332,7 +327,7 @@ class WorkflowRegistry:
 
     @staticmethod
     def _apply_prompt_contract(workflow: WorkflowSpec, goal: GoalContract) -> WorkflowSpec:
-        """Project the single DAG to the user's lossless execution contract."""
+        """Project required lifecycle evidence to the user's lossless goal contract."""
 
         envelope = goal.intent_envelope if isinstance(goal.intent_envelope, Mapping) else {}
         if envelope.get("action_kind") != "plan" or envelope.get("execution_required") is not False:

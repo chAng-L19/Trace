@@ -9,6 +9,7 @@ from .workflow_registry import WorkflowRegistry
 
 
 class AdaptivePlanner:
+    """Lifecycle contract selection and deterministic no-model compatibility expansion."""
     def __init__(self, *, max_domains: int = 7, max_hypothesis_branches: int = 4) -> None:
         del max_domains
         self.max_hypothesis_branches = max(1, min(8, int(max_hypothesis_branches)))

@@ -20,6 +20,12 @@ WORKER_LEASE_SECONDS = 30.0
 WORKER_BLOCKED_RUN_STATUSES = frozenset(
     {"paused_budget", "completed", "failed", "failed_integrity", "cancelling", "cancelled"}
 )
+WORKER_TRANSITIONS = {
+    "prepared": frozenset({"running", "waiting_worker", "cancelled", "unavailable"}),
+    "running": WORKER_TERMINAL_STATUSES | {"unknown"},
+    "unknown": frozenset({"completed", "failed", "cancelled"}),
+    "waiting_worker": WORKER_TERMINAL_STATUSES,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +179,12 @@ class WorkerStore:
                 raise StoreConflictError(
                     f"worker_transition_conflict:{task_id}:{current.status}:{','.join(statuses)}"
                 )
+            if status not in WORKER_TRANSITIONS.get(current.status, ()):
+                raise StoreConflictError(f"worker_transition_invalid:{current.status}:{status}")
+            if (result is not None and (result.task_id != task_id or result.status != status)) or (
+                result is None and status not in {"prepared", "running"}
+            ):
+                raise ValueError("worker_transition_result_mismatch")
             if result is not None and status in WORKER_TERMINAL_STATUSES and self._cancel_requested(connection, current):
                 status = "cancelled"
                 result = replace(result, status=status, error="worker_cancelled", retryable=False)
@@ -195,7 +207,11 @@ class WorkerStore:
         return self._from_row(updated)
 
     @staticmethod
-    def _cancel_requested(connection, record: WorkerTaskRecord) -> bool:
+    def _cancel_requested(connection, record: WorkerTaskRecord, *, include_run: bool = True) -> bool:
+        if include_run:
+            run = connection.execute("SELECT status FROM operations WHERE run_id=?", (record.task.run_id,)).fetchone()
+            if run is not None and run["status"] in {"cancelling", "cancelled"}:
+                return True
         rows = connection.execute(
             "SELECT payload_json FROM operation_events WHERE run_id=? AND event_type='worker_cancel_requested'",
             (record.task.run_id,),
@@ -210,9 +226,23 @@ class WorkerStore:
             record = self._from_row(row)
             if record.status not in {"prepared", "running", "waiting_worker"}:
                 return False
-            if not self._cancel_requested(connection, record):
+            if not self._cancel_requested(connection, record, include_run=False):
                 self.store._insert_event(connection, record.task.run_id, "worker_cancel_requested", {"task_id": task_id})
             return True
+
+    def request_cancel_run(self, run_id: str, *, statuses: tuple[str, ...]) -> tuple[str, ...]:
+        """Atomically fence all active tasks before cancelling adapter processes."""
+        with self.store.transaction(immediate=True) as connection:
+            rows = connection.execute("SELECT * FROM worker_tasks WHERE run_id=?", (run_id,)).fetchall()
+            tasks = []
+            for row in rows:
+                record = self._from_row(row)
+                if record.status not in statuses:
+                    continue
+                tasks.append(record.task.task_id)
+                if not self._cancel_requested(connection, record, include_run=False):
+                    self.store._insert_event(connection, run_id, "worker_cancel_requested", {"task_id": record.task.task_id})
+            return tuple(tasks)
 
     def cancel_requested(self, task_id: str) -> bool:
         with self.store.connection() as connection:
@@ -221,22 +251,95 @@ class WorkerStore:
 
     def record_observation(self, run_id: str, payload: Mapping[str, Any]) -> bool:
         """Deduplicate each task status, including observations from older versions."""
-        identity = str(payload["task_id"]), str(payload["result"]["status"])
         with self.store.transaction(immediate=True) as connection:
-            rows = connection.execute(
-                "SELECT payload_json FROM operation_events WHERE run_id=? AND event_type='worker_observation_recorded'",
-                (run_id,),
-            ).fetchall()
-            for row in rows:
-                previous = _load(row["payload_json"], {})
-                previous_result = previous.get("result") or {}
-                if (str(previous.get("task_id")), str(previous_result.get("status"))) != identity:
-                    continue
-                if previous.get("observation_hash") != payload["observation_hash"]:
-                    raise ImmutableRecordError(f"worker_observation_conflict:{identity[0]}:{identity[1]}")
-                return False
-            self.store._insert_event(connection, run_id, "worker_observation_recorded", payload)
+            return self._record_observation(connection, run_id, payload)
+
+    def _record_observation(self, connection, run_id: str, payload: Mapping[str, Any]) -> bool:
+        identity = str(payload["task_id"]), str(payload["result"]["status"])
+        rows = connection.execute(
+            "SELECT payload_json FROM operation_events WHERE run_id=? AND event_type='worker_observation_recorded'",
+            (run_id,),
+        ).fetchall()
+        for row in rows:
+            previous = _load(row["payload_json"], {})
+            previous_result = previous.get("result") or {}
+            if (str(previous.get("task_id")), str(previous_result.get("status"))) != identity:
+                continue
+            if previous.get("observation_hash") != payload["observation_hash"]:
+                raise ImmutableRecordError(f"worker_observation_conflict:{identity[0]}:{identity[1]}")
+            return False
+        self.store._insert_event(connection, run_id, "worker_observation_recorded", payload)
         return True
+
+    def settle_result(
+        self, task: WorkerTask, *, worker_kind: str, input_hash: str,
+        result: WorkerResult, expected_status: str, reason: str,
+        handoff_id: str, output_hash: str, artifact_hashes: Mapping[str, str],
+        observation: Callable[[WorkerTask, WorkerResult], Mapping[str, Any]],
+    ) -> WorkerResult:
+        """Commit a verified external result, its receipt and observation atomically."""
+        submission_hash = contract_hash({
+            "run_id": task.run_id, "task_id": task.task_id, "worker_kind": worker_kind,
+            "idempotency_key": task.idempotency_key, "input_hash": input_hash,
+            "result": result.to_dict(), "expected_status": expected_status,
+            "reason": reason, "handoff_id": handoff_id, "output_hash": output_hash,
+            "artifact_hashes": dict(artifact_hashes),
+        })
+        with self.store.transaction(immediate=True) as connection:
+            row = connection.execute("SELECT * FROM worker_tasks WHERE task_id=? AND run_id=?", (task.task_id, task.run_id)).fetchone()
+            if row is None:
+                raise KeyError(f"worker_task_not_found:{task.run_id}:{task.task_id}")
+            current = self._from_row(row)
+            if (current.worker_kind != worker_kind or current.input_hash != input_hash
+                    or current.task.idempotency_key != task.idempotency_key
+                    or self.input_hash(task) != input_hash or result.task_id != task.task_id):
+                raise ImmutableRecordError("worker_result_identity_conflict")
+            receipts = connection.execute(
+                "SELECT payload_json FROM operation_events WHERE run_id=? AND event_type='worker_result_settled'",
+                (task.run_id,),
+            ).fetchall()
+            for row in receipts:
+                receipt = _load(row["payload_json"], {})
+                if receipt.get("task_id") != task.task_id:
+                    continue
+                if receipt.get("submission_hash") != submission_hash:
+                    raise ImmutableRecordError(f"worker_result_submission_conflict:{task.task_id}")
+                assert current.result is not None
+                return current.result
+            if expected_status not in {"unknown", "waiting_worker"} or current.status != expected_status:
+                raise StoreConflictError(f"worker_result_state_conflict:{task.task_id}:{current.status}")
+            allowed = {"completed", "failed", "cancelled"}
+            if expected_status == "waiting_worker":
+                allowed.add("timed_out")
+                # Legacy waiting records bind by the hash of the exact persisted result.
+                expected_handoff = (current.result.metadata.get("handoff_id") or contract_hash(current.result.to_dict())) if current.result is not None else ""
+                if worker_kind != "codex_handoff" or not handoff_id or expected_handoff != handoff_id:
+                    raise ValueError("worker_handoff_receipt_mismatch")
+            if result.status not in allowed or not reason.strip():
+                raise ValueError("worker_settlement_status_or_reason_invalid")
+            run = connection.execute("SELECT status FROM operations WHERE run_id=?", (task.run_id,)).fetchone()
+            if run is None:
+                raise KeyError(f"operation_not_found:{task.run_id}")
+            if run["status"] in {"completed", "failed", "failed_integrity"}:
+                raise ValueError(f"worker_run_terminal:{run['status']}")
+            if run["status"] in {"cancelling", "cancelled"} or self._cancel_requested(connection, current):
+                result = replace(result, status="cancelled", error="worker_cancelled", retryable=False)
+            result = WorkerResult.from_dict(_load(_dump(result.to_dict()), {}))
+            cursor = connection.execute(
+                "UPDATE worker_tasks SET status=?, result_json=?, updated_at=? WHERE task_id=? AND run_id=? AND status=?",
+                (result.status, _dump(result.to_dict()), utc_now(), task.task_id, task.run_id, expected_status),
+            )
+            if cursor.rowcount != 1:
+                raise StoreConflictError(f"worker_result_race:{task.task_id}")
+            self.store._insert_event(connection, task.run_id, "worker_result_settled", {
+                "task_id": task.task_id, "worker_kind": worker_kind, "input_hash": input_hash,
+                "idempotency_key": task.idempotency_key, "previous_status": expected_status,
+                "status": result.status, "submission_hash": submission_hash, "reason": reason,
+                "handoff_id": handoff_id, "output_hash": output_hash,
+                "artifact_hashes": dict(artifact_hashes),
+            })
+            self._record_observation(connection, task.run_id, observation(task, result))
+        return result
 
     def get(self, task_id: str) -> WorkerTaskRecord | None:
         with self.store.connection() as connection:

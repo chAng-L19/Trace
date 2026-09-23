@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "python_packages": {
+    "capstone": "5.0.9",
+    "frida": "17.17.0",
+    "playwright": "1.62.0"
+  },
+  "tools": {
+    "chromium": {
+      "version": "151.0.7922.34",
+      "revision": "1234",
+      "commands": ["chromium", "chromium-browser", "google-chrome", "chrome"],
+      "capabilities": ["browser_automation", "dom_snapshot", "screenshot"],
+      "source": "Playwright 1.62.0 browsers.json; publisher object metadata over HTTPS (2026-09-21). Upstream publishes MD5, not SHA-256. Trace records and rechecks SHA-256 for cached and installed content.",
+      "platforms": {
+        "windows-x86_64": {
+          "url": "https://cdn.playwright.dev/builds/cft/151.0.7922.34/win64/chrome-win64.zip",
+          "publisher_md5": "86265f7e27eee2a22a7df404ed695201",
+          "size": 201068834,
+          "format": "zip",
+          "executable": "chrome-win64/chrome.exe"
+        },
+        "linux-x86_64": {
+          "url": "https://cdn.playwright.dev/builds/cft/151.0.7922.34/linux64/chrome-linux64.zip",
+          "publisher_md5": "d0396d5ed8a9977fc1d359c279734fc7",
+          "size": 193282658,
+          "format": "zip",
+          "executable": "chrome-linux64/chrome"
+        }
+      }
+    },
+    "rizin": {
+      "version": "0.9.1",
+      "commands": ["rizin", "r2", "radare2"],
+      "capabilities": ["binary_reverse", "graph_analysis"],
+      "source": "https://api.github.com/repos/rizinorg/rizin/releases/tags/v0.9.1",
+      "platforms": {
+        "windows-x86_64": {
+          "url": "https://github.com/rizinorg/rizin/releases/download/v0.9.1/rizin-windows-shared64-v0.9.1.zip",
+          "sha256": "45ffa004e26653eaee8d262b8e6eeae09402a7d319c1f20a2ba794bd6af1cc28",
+          "size": 11731171,
+          "format": "zip",
+          "executable": "rizin-win-installer-clang_cl-64/bin/rizin.exe"
+        },
+        "linux-x86_64": {
+          "url": "https://github.com/rizinorg/rizin/releases/download/v0.9.1/rizin-v0.9.1-static-x86_64.tar.xz",
+          "sha256": "9102249a9f0b6319c5334a2e5cf8d9cc3f2035e1d3def027c41f6a90f647e8cf",
+          "size": 137626404,
+          "format": "tar.xz",
+          "executable": "bin/rizin"
+        }
+      }
+    }
+  }
+}

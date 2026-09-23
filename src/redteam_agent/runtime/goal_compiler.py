@@ -23,7 +23,7 @@ SUPPORTED_SUCCESS_PREDICATE_OPERATORS = frozenset(
     {"exists", "eq", "ne", "gte", "gt", "lte", "lt", "contains"}
 )
 SUPPORTED_SUCCESS_PREDICATE_KINDS = frozenset(
-    {"workflow_actions_complete", "artifact_verified", "artifact_count", "artifact_field"}
+    {"workflow_actions_complete", "artifact_verified", "artifact_count", "artifact_field", "file_replacement"}
 )
 RUNTIME_ARTIFACT_TYPES = frozenset(
     {
@@ -39,6 +39,13 @@ RUNTIME_ARTIFACT_TYPES = frozenset(
 PLAN_ONLY_ARTIFACT_TYPES = frozenset({"surface_map", "hypothesis_queue", "final_report"})
 CLAUSE_SPLIT_RE = re.compile(r"\s+(?:and|then|plus)\s+|[;；。]|(?:以及|并且|然后|和)", re.IGNORECASE)
 TARGET_TRAILING_PUNCTUATION = ".,;:!?)]}，。；：！？）】"
+NON_TARGET_PREFIX_RE = re.compile(
+    r"(?:do\s+not\s+(?:test|scan|assess)|exclude|except|ignore|"
+    r"write|save|export|output)(?:\s+(?:to|as))?\s*$|"
+    r"(?:不要|不得|不需|无需)(?:测试|扫描|评估)?\s*$|"
+    r"(?:排除|忽略|除外|写入|保存|导出|输出)(?:为|到)?\s*$",
+    re.IGNORECASE,
+)
 
 
 def _trim_target(value: str) -> str:
@@ -90,6 +97,29 @@ WORKFLOW_MARKERS: tuple[tuple[str, frozenset[str]], ...] = (
 
 class GoalCompiler:
     @staticmethod
+    def _file_replacement_predicates(objective: str, targets: Sequence[str]) -> list[SuccessPredicate]:
+        # ponytail: infer only explicit literal replacements; broader edits need
+        # an explicit result contract, not a guessed natural-language outcome.
+        literal = r'''(?:"[^"\r\n]*"|'[^'\r\n]*'|`[^`\r\n]*`|“[^”\r\n]*”|‘[^’\r\n]*’|[A-Za-z0-9_/+:-]+)'''
+        predicates: list[SuccessPredicate] = []
+        for target in targets:
+            if "://" in target:
+                continue
+            path = rf'''["'`“‘]?{re.escape(target)}["'`”’]?'''
+            patterns = (
+                rf"(?:^|[；;。\n])\s*(?:请)?(?:把|将)\s*(?:文件\s*)?{path}\s*(?:中|内)(?:的)?\s*(?P<old>{literal})\s*(?:修改为|替换为|改为)\s*(?P<new>{literal})(?=\s*(?:$|[，,；;。.!\n]))",
+                rf"(?:^|[;\n])\s*(?:please\s+)?replace\s+(?P<old>{literal})\s+with\s+(?P<new>{literal})\s+in\s+{path}(?=\s*(?:$|[;.!\n]))",
+            )
+            for pattern in patterns:
+                for match in re.finditer(pattern, objective, flags=re.IGNORECASE):
+                    values = {key: value[1:-1] if value[:1] in '\"\'`“‘' else value for key, value in match.groupdict().items()}
+                    if values["old"] and values["old"] != values["new"]:
+                        predicate = SuccessPredicate(kind="file_replacement", subject=target, operator="eq", value=values)
+                        if predicate not in predicates:
+                            predicates.append(predicate)
+        return predicates
+
+    @staticmethod
     def _validate_success_predicate(predicate: SuccessPredicate) -> None:
         """Reject terminal contracts that the Runtime cannot evaluate."""
 
@@ -106,6 +136,15 @@ class GoalCompiler:
             raise ValueError("success_predicate_subject_invalid:workflow_actions_complete")
         if predicate.kind != "workflow_actions_complete" and not predicate.subject.strip():
             raise ValueError(f"success_predicate_subject_required:{predicate.kind}")
+        if predicate.kind == "file_replacement":
+            value = predicate.value
+            if (
+                predicate.operator != "eq" or not isinstance(value, Mapping)
+                or set(value) != {"old", "new"}
+                or not isinstance(value["old"], str) or not value["old"]
+                or not isinstance(value["new"], str) or value["old"] == value["new"]
+            ):
+                raise ValueError("success_predicate_value_invalid:file_replacement")
         if predicate.kind == "artifact_count":
             if predicate.operator not in {"eq", "ne", "gte", "gt", "lte", "lt"}:
                 raise ValueError(
@@ -125,11 +164,20 @@ class GoalCompiler:
                 raise ValueError(f"success_predicate_artifact_unsupported:{artifact_type}")
 
     def extract_targets(self, objective: str) -> tuple[str, ...]:
+        ignored: list[tuple[int, int]] = []
+        for pattern in (URL_RE, IP_RE, HOST_RE, PATH_RE):
+            for match in pattern.finditer(objective):
+                prefix = objective[max(0, match.start() - 64) : match.start()]
+                if NON_TARGET_PREFIX_RE.search(prefix):
+                    ignored.append((match.start(), match.end()))
         discovered: list[tuple[int, int, int, str]] = []
         for priority, pattern in enumerate((URL_RE, IP_RE, HOST_RE, PATH_RE)):
             for match in pattern.finditer(objective):
                 target = _trim_target(match.group(0))
-                if target:
+                if target and not any(
+                    match.start() < ignored_end and match.end() > ignored_start
+                    for ignored_start, ignored_end in ignored
+                ):
                     discovered.append((match.start(), match.start() + len(target), priority, target))
         discovered.sort(key=lambda item: (item[0], item[2], -(item[1] - item[0])))
         candidates: list[str] = []
@@ -158,9 +206,13 @@ class GoalCompiler:
             if not isinstance(value, str) or not value.strip():
                 return
             cleaned = value.strip()
-            extracted = self.extract_targets(cleaned)
-            if key in target_keys and not extracted:
-                extracted = (cleaned,)
+            if key not in target_keys:
+                return
+            extracted = (
+                (cleaned,)
+                if "://" in cleaned and not cleaned.casefold().startswith(("http://", "https://"))
+                else (self.extract_targets(cleaned) or (cleaned,))
+            )
             for target in extracted:
                 if target not in candidates:
                     candidates.append(target)
@@ -257,8 +309,8 @@ class GoalCompiler:
         canonical_targets = tuple(canonical_target_values)
         resolved_targets = tuple(
             canonical_targets
-            or self.extract_targets(source_objective)
             or self.extract_context_targets(canonical_context)
+            or self.extract_targets(source_objective)
         )
         projected_hint, _ = project_sensitive(workflow_hint)
         explicit_hints = tuple(
@@ -302,11 +354,18 @@ class GoalCompiler:
             projected_payload, _ = project_sensitive(dict(payload))
             predicate = SuccessPredicate.from_dict(projected_payload)
             self._validate_success_predicate(predicate)
+            if predicate.kind == "file_replacement" and predicate.subject not in resolved_targets:
+                raise ValueError("success_predicate_target_mismatch:file_replacement")
             if rewrite.action_kind == "plan" and rewrite.execution_required is False:
                 artifact_type = predicate.subject.partition(".")[0]
                 if artifact_type and artifact_type not in PLAN_ONLY_ARTIFACT_TYPES:
                     raise ValueError(f"success_predicate_artifact_unreachable_in_plan:{artifact_type}")
             predicates.append(predicate)
+        if not (rewrite.action_kind == "plan" and rewrite.execution_required is False):
+            predicates.extend(
+                item for item in self._file_replacement_predicates(source_objective, resolved_targets)
+                if item not in predicates
+            )
         credential_refs = find_secret_references(
             {
                 "objective": source_objective,

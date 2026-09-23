@@ -56,6 +56,16 @@ def _open_secret(key: bytes, value: str) -> str:
     return plain.decode("utf-8")
 
 
+def _local_provider(base_url: str) -> bool:
+    import ipaddress
+    from urllib.parse import urlsplit
+    hostname = urlsplit(base_url).hostname or ""
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return hostname.casefold() == "localhost"
+
+
 class ControlPlane:
     """Durable, redacted settings with process-local secret bindings."""
 
@@ -97,8 +107,8 @@ class ControlPlane:
                     secret_name TEXT PRIMARY KEY, ciphertext TEXT NOT NULL, updated_at TEXT NOT NULL
                 )"""
             )
-        self._load_secret_values()
         self._migrate_mcp_secret_rows()
+        self._load_secret_values()
 
     @staticmethod
     def _now() -> str:
@@ -128,34 +138,57 @@ class ControlPlane:
         return key
 
     def _load_secret_values(self) -> None:
-        with self.store.connection() as connection:
-            rows = connection.execute("SELECT secret_name,ciphertext FROM trace_secrets").fetchall()
         with self._lock:
+            with self.store.connection() as connection:
+                rows = connection.execute("SELECT secret_name,ciphertext FROM trace_secrets").fetchall()
+                servers = connection.execute("SELECT server_id,spec_json FROM trace_mcp_servers").fetchall()
+            values: dict[str, str] = {}
             for row in rows:
                 try:
-                    self._mcp_secret_values[str(row["secret_name"])] = _open_secret(self._secret_key, str(row["ciphertext"]))
+                    values[str(row["secret_name"])] = _open_secret(self._secret_key, str(row["ciphertext"]))
                 except (ValueError, UnicodeError):
                     continue
+            self._mcp_secret_values = values
+            self._mcp_secret_envs = {
+                (str(row["server_id"]), field, key): name
+                for row in servers
+                for (field, key), name in self._mcp_secret_references(json.loads(row["spec_json"])).items()
+            }
 
-    def _persist_secret_values(self, values: Mapping[str, str]) -> None:
-        if not values:
+    def _persist_secret_values(self, connection: sqlite3.Connection, values: Mapping[str, str]) -> None:
+        """Write ciphertexts in the caller's configuration transaction."""
+        for name, value in values.items():
+            connection.execute(
+                "INSERT INTO trace_secrets(secret_name,ciphertext,updated_at) VALUES(?,?,?) ON CONFLICT(secret_name) DO UPDATE SET ciphertext=excluded.ciphertext,updated_at=excluded.updated_at",
+                (name, _seal_secret(self._secret_key, value), self._now()),
+            )
+
+    @staticmethod
+    def _mcp_secret_references(spec: Mapping[str, Any]) -> dict[tuple[str, str], str]:
+        return {
+            ("env" if field == "env" else "header", str(key)): str(value)[2:-1]
+            for field in ("env", "headers")
+            for key, value in dict(spec.get(field) or {}).items()
+            if str(value).startswith("${TRACE_MCP_SECRET_") and str(value).endswith("}")
+        }
+
+    def _delete_unreferenced_secrets(self, connection: sqlite3.Connection, names: set[str]) -> None:
+        if not names:
             return
-        now = self._now()
-        with self.store.transaction(immediate=True) as connection:
-            for name, value in values.items():
-                connection.execute(
-                    "INSERT INTO trace_secrets(secret_name,ciphertext,updated_at) VALUES(?,?,?) ON CONFLICT(secret_name) DO UPDATE SET ciphertext=excluded.ciphertext,updated_at=excluded.updated_at",
-                    (name, _seal_secret(self._secret_key, value), now),
-                )
+        referenced = {
+            name
+            for row in connection.execute("SELECT spec_json FROM trace_mcp_servers")
+            for name in self._mcp_secret_references(json.loads(row["spec_json"])).values()
+        }
+        connection.executemany("DELETE FROM trace_secrets WHERE secret_name=?", ((name,) for name in names - referenced))
 
     def _migrate_mcp_secret_rows(self) -> None:
         with self.store.connection() as connection:
             rows = connection.execute("SELECT server_id,spec_json FROM trace_mcp_servers").fetchall()
-        updates: list[tuple[str, str, dict[tuple[str, str, str], str], dict[str, str]]] = []
+        updates: list[tuple[str, str, dict[str, str]]] = []
         for row in rows:
             server_id = str(row["server_id"])
             spec = json.loads(str(row["spec_json"]))
-            bindings: dict[tuple[str, str, str], str] = {}
             values: dict[str, str] = {}
             changed = False
             for field in ("env", "headers"):
@@ -164,30 +197,24 @@ class ControlPlane:
                     value_text = str(value)
                     if value_text.startswith("${") and value_text.endswith("}"):
                         continue
-                    env_name = "TRACE_MCP_SECRET_" + hashlib.sha256(f"{server_id}:{field[:-1]}:{key}".encode()).hexdigest()[:24].upper()
+                    kind = "env" if field == "env" else "header"
+                    env_name = "TRACE_MCP_SECRET_" + hashlib.sha256(f"{server_id}:{kind}:{key}".encode()).hexdigest()[:24].upper()
                     source[str(key)] = "${" + env_name + "}"
-                    bindings[(server_id, field[:-1], str(key))] = env_name
                     values[env_name] = value_text
                     changed = True
                 spec[field] = source
             if changed:
-                updates.append((server_id, _json(spec), bindings, values))
+                updates.append((server_id, _json(spec), values))
         if not updates:
             return
         now = self._now()
-        migrated_values: dict[str, str] = {}
         with self.store.transaction(immediate=True) as connection:
-            for server_id, spec_json, _bindings, _values in updates:
+            for server_id, spec_json, values in updates:
+                self._persist_secret_values(connection, values)
                 connection.execute(
                     "UPDATE trace_mcp_servers SET spec_json=?,updated_at=? WHERE server_id=?",
                     (spec_json, now, server_id),
                 )
-        with self._lock:
-            for _server_id, _spec_json, bindings, values in updates:
-                self._mcp_secret_envs.update(bindings)
-                self._mcp_secret_values.update(values)
-                migrated_values.update(values)
-        self._persist_secret_values(migrated_values)
         try:
             with self.store.connection() as connection:
                 connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -203,6 +230,8 @@ class ControlPlane:
             "model": str(row["model"]),
             "api_key_env": str(row["api_key_env"]),
             "api_key_set": bool(secret),
+            "configured": True,
+            "ready": bool(row["enabled"]) and (bool(secret) or _local_provider(str(row["base_url"]))),
             "timeout_seconds": float(row["timeout_seconds"]),
             "max_context_tokens": int(row["max_context_tokens"]),
             "enabled": bool(row["enabled"]),
@@ -229,13 +258,11 @@ class ControlPlane:
                 return item
         raise KeyError(f"provider_not_found:{provider_id}")
 
-    def provider_secret(self, provider_id: str) -> str:
-        with self._lock:
-            secret = self._secrets.get(provider_id, "")
-        if secret:
-            return secret
+    def provider_secret(self, provider_id: str, *, include_environment: bool = True) -> str:
         item = self.provider(provider_id)
-        return os.environ.get(item["api_key_env"], "") if item["api_key_env"] else ""
+        environment = os.environ.get(item["api_key_env"], "") if include_environment and item["api_key_env"] else ""
+        with self._lock:
+            return environment or self._secrets.get(provider_id, "")
 
     def save_provider(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         provider_id = str(payload.get("provider_id") or payload.get("id") or secrets.token_hex(8)).strip()
@@ -263,19 +290,12 @@ class ControlPlane:
             raise ValueError(str(exc)) from None
         secret = str(payload.get("api_key") or "")
         existing_item = next((item for item in self.providers() if item["provider_id"] == provider_id), None)
-        if existing_item and (
+        clear_secret = bool(payload.get("clear_api_key")) or bool(existing_item and (
             existing_item["base_url"] != base_url
             or existing_item["model"] != model
             or existing_item["api_key_env"] != api_key_env
-        ) and not secret:
-            with self._lock:
-                self._secrets.pop(provider_id, None)
+        ) and not secret)
         now = self._now()
-        with self._lock:
-            if secret:
-                self._secrets[provider_id] = secret
-            elif payload.get("clear_api_key"):
-                self._secrets.pop(provider_id, None)
         with self.store.transaction(immediate=True) as connection:
             existing = connection.execute("SELECT created_at FROM trace_providers WHERE provider_id=?", (provider_id,)).fetchone()
             connection.execute(
@@ -286,6 +306,11 @@ class ControlPlane:
                    enabled=excluded.enabled,updated_at=excluded.updated_at""",
                 (provider_id, name, base_url, model, api_key_env, timeout, context, int(payload.get("enabled", True) is not False), 0, str(existing["created_at"]) if existing else now, now),
             )
+        with self._lock:
+            if secret:
+                self._secrets[provider_id] = secret
+            elif clear_secret:
+                self._secrets.pop(provider_id, None)
         return self.provider(provider_id)
 
     def activate_provider(self, provider_id: str) -> dict[str, Any]:
@@ -344,44 +369,17 @@ class ControlPlane:
             result.append({"server_id": row["server_id"], **spec, "enabled": bool(row["enabled"]), "status": statuses.get(str(row["server_id"]), {"status": "configured"})})
         return result
 
-    def _clear_mcp_bindings_locked(self, server_id: str) -> None:
-        for key, env_name in tuple(self._mcp_secret_envs.items()):
-            if key[0] == server_id:
-                self._mcp_secret_values.pop(env_name, None)
-                self._mcp_secret_envs.pop(key, None)
-
     def mcp_secret_bindings(self) -> dict[str, dict[str, str]]:
-        with self.store.connection() as connection:
-            rows = connection.execute("SELECT server_id,spec_json FROM trace_mcp_servers").fetchall()
         with self._lock:
-            values = dict(self._mcp_secret_values)
+            with self.store.connection() as connection:
+                rows = connection.execute("SELECT server_id,spec_json FROM trace_mcp_servers").fetchall()
             bindings: dict[str, dict[str, str]] = {}
             for row in rows:
-                server_id = str(row["server_id"])
-                spec = json.loads(str(row["spec_json"]))
-                names = {
-                    str(value)[2:-1]
-                    for field in ("env", "headers")
-                    for value in dict(spec.get(field) or {}).values()
-                    if str(value).startswith("${") and str(value).endswith("}")
-                }
-                scoped = {name: values[name] for name in names if name in values}
+                names = self._mcp_secret_references(json.loads(row["spec_json"])).values()
+                scoped = {name: self._mcp_secret_values[name] for name in names if name in self._mcp_secret_values}
                 if scoped:
-                    bindings[server_id] = scoped
+                    bindings[str(row["server_id"])] = scoped
             return bindings
-
-    def _stored_mcp_secret_names(self, server_id: str) -> set[str]:
-        with self.store.connection() as connection:
-            row = connection.execute("SELECT spec_json FROM trace_mcp_servers WHERE server_id=?", (server_id,)).fetchone()
-        if row is None:
-            return set()
-        spec = json.loads(str(row["spec_json"]))
-        return {
-            str(value)[2:-1]
-            for field in ("env", "headers")
-            for value in dict(spec.get(field) or {}).values()
-            if str(value).startswith("${TRACE_MCP_SECRET_") and str(value).endswith("}")
-        }
 
     def save_mcp(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         server_id = str(payload.get("server_id") or payload.get("name") or "").strip()
@@ -393,90 +391,69 @@ class ControlPlane:
         scope = str(payload.get("scope") or "shared").casefold()
         if scope not in {"shared", "run"}:
             raise ValueError("mcp_scope_invalid")
-        existing_spec: dict[str, Any] = {}
-        with self.store.connection() as connection:
-            row = connection.execute("SELECT spec_json FROM trace_mcp_servers WHERE server_id=?", (server_id,)).fetchone()
-        if row is not None:
-            existing_spec = json.loads(str(row["spec_json"]))
-        # An edit form deliberately omits secret fields. Preserve their opaque
-        # placeholders unless the caller explicitly sends an empty mapping.
-        raw_env = dict(payload["env"] or {}) if "env" in payload else dict(existing_spec.get("env") or {})
-        raw_headers = dict(payload["headers"] or {}) if "headers" in payload else dict(existing_spec.get("headers") or {})
-        env: dict[str, str] = {}
-        headers: dict[str, str] = {}
         if (transport == "stdio" and not payload.get("command")) or (transport == "http" and not payload.get("url")):
             raise ValueError("mcp_endpoint_required")
-        new_values: dict[str, str] = {}
-        new_env_names: dict[tuple[str, str, str], str] = {}
-        for field, source, target in (("env", raw_env, env), ("header", raw_headers, headers)):
-            for key, value in source.items():
-                key_text, value_text = str(key), str(value)
-                if value_text.startswith("${") and value_text.endswith("}"):
-                    target[key_text] = value_text
-                    continue
-                env_name = "TRACE_MCP_SECRET_" + hashlib.sha256(f"{server_id}:{field}:{key_text}".encode()).hexdigest()[:24].upper()
-                target[key_text] = "${" + env_name + "}"
-                new_values[env_name] = value_text
-                new_env_names[(server_id, field, key_text)] = env_name
-        spec = {
-            "transport": transport,
-            "preset": str(payload.get("preset") or ""),
-            "scope": scope,
-            "command": str(payload.get("command") or ""),
-            "args": [str(x) for x in payload.get("args", [])] if isinstance(payload.get("args", []), list) else [],
-            "env": env,
-            "cwd": str(payload.get("cwd") or ""),
-            "url": str(payload.get("url") or ""),
-            "headers": headers,
-            "enabled": payload.get("enabled") is not False,
-        }
-        now = self._now()
-        old_names = {
-            str(value)[2:-1]
-            for field in ("env", "headers")
-            for value in dict(existing_spec.get(field) or {}).values()
-            if str(value).startswith("${TRACE_MCP_SECRET_") and str(value).endswith("}")
-        }
-        with self.store.transaction(immediate=True) as connection:
-            connection.execute(
-                "INSERT INTO trace_mcp_servers(server_id,spec_json,enabled,updated_at) VALUES(?,?,?,?) ON CONFLICT(server_id) DO UPDATE SET spec_json=excluded.spec_json,enabled=excluded.enabled,updated_at=excluded.updated_at",
-                (server_id, _json(spec), int(spec["enabled"]), now),
-            )
         with self._lock:
-            referenced_names = {
-                str(value)[2:-1]
-                for source in (env, headers)
-                for value in source.values()
-                if str(value).startswith("${TRACE_MCP_SECRET_") and str(value).endswith("}")
-            }
-            current_values = dict(self._mcp_secret_values)
-            preserved_values = {name: current_values[name] for name in referenced_names if name in current_values}
-            self._clear_mcp_bindings_locked(server_id)
-            self._mcp_secret_values.update(preserved_values)
-            self._mcp_secret_values.update(new_values)
-            self._mcp_secret_envs.update(new_env_names)
-        self._persist_secret_values(new_values)
-        removed_names = old_names - referenced_names
-        if removed_names:
             with self.store.transaction(immediate=True) as connection:
-                connection.executemany("DELETE FROM trace_secrets WHERE secret_name=?", ((name,) for name in removed_names))
-        return next(item for item in self.mcp_servers() if item["server_id"] == server_id)
+                row = connection.execute("SELECT spec_json FROM trace_mcp_servers WHERE server_id=?", (server_id,)).fetchone()
+                existing_spec = json.loads(row["spec_json"]) if row is not None else {}
+                old_names = set(self._mcp_secret_references(existing_spec).values())
+                spec = {
+                    "transport": transport,
+                    "preset": str(payload.get("preset") or ""),
+                    "scope": scope,
+                    "command": str(payload.get("command") or ""),
+                    "args": [str(x) for x in payload.get("args", [])] if isinstance(payload.get("args", []), list) else [],
+                    "cwd": str(payload.get("cwd") or ""),
+                    "url": str(payload.get("url") or ""),
+                    "enabled": payload.get("enabled") is not False,
+                }
+                new_values: dict[str, str] = {}
+                # Omitted secret fields preserve references; an explicit empty
+                # mapping clears them in the same transaction as the settings.
+                for field in ("env", "headers"):
+                    source = dict((payload[field] if field in payload else existing_spec.get(field)) or {})
+                    target: dict[str, str] = {}
+                    kind = "env" if field == "env" else "header"
+                    for key, value in source.items():
+                        key_text, value_text = str(key), str(value)
+                        if value_text.startswith("${") and value_text.endswith("}"):
+                            target[key_text] = value_text
+                            continue
+                        name = "TRACE_MCP_SECRET_" + hashlib.sha256(f"{server_id}:{kind}:{key_text}".encode()).hexdigest()[:24].upper()
+                        target[key_text] = "${" + name + "}"
+                        new_values[name] = value_text
+                    spec[field] = target
+                self._persist_secret_values(connection, new_values)
+                for name in self._mcp_secret_references(spec).values():
+                    secret = connection.execute("SELECT ciphertext FROM trace_secrets WHERE secret_name=?", (name,)).fetchone()
+                    if secret is None:
+                        raise ValueError("mcp_secret_unavailable")
+                    _open_secret(self._secret_key, secret["ciphertext"])
+                connection.execute(
+                    "INSERT INTO trace_mcp_servers(server_id,spec_json,enabled,updated_at) VALUES(?,?,?,?) ON CONFLICT(server_id) DO UPDATE SET spec_json=excluded.spec_json,enabled=excluded.enabled,updated_at=excluded.updated_at",
+                    (server_id, _json(spec), int(spec["enabled"]), self._now()),
+                )
+                self._delete_unreferenced_secrets(connection, old_names)
+            # Cache publication follows successful COMMIT; every failure leaves
+            # the old bindings intact, including failures while pruning secrets.
+            self._load_secret_values()
+            return next(item for item in self.mcp_servers() if item["server_id"] == server_id)
 
     def delete_mcp(self, server_id: str) -> None:
-        names = self._stored_mcp_secret_names(server_id)
-        with self.store.transaction(immediate=True) as connection:
-            cursor = connection.execute("DELETE FROM trace_mcp_servers WHERE server_id=?", (server_id,))
-        if cursor.rowcount != 1:
-            raise KeyError(f"mcp_server_not_found:{server_id}")
         with self._lock:
-            self._clear_mcp_bindings_locked(server_id)
-        if names:
             with self.store.transaction(immediate=True) as connection:
-                connection.executemany("DELETE FROM trace_secrets WHERE secret_name=?", ((name,) for name in names))
+                row = connection.execute("SELECT spec_json FROM trace_mcp_servers WHERE server_id=?", (server_id,)).fetchone()
+                if row is None:
+                    raise KeyError(f"mcp_server_not_found:{server_id}")
+                names = set(self._mcp_secret_references(json.loads(row["spec_json"])).values())
+                connection.execute("DELETE FROM trace_mcp_servers WHERE server_id=?", (server_id,))
+                self._delete_unreferenced_secrets(connection, names)
+            self._load_secret_values()
 
     def write_mcp_config(self) -> Path:
         with self.store.connection() as connection:
-            rows = connection.execute("SELECT server_id,spec_json FROM trace_mcp_servers ORDER BY server_id").fetchall()
+            rows = connection.execute("SELECT server_id,spec_json,enabled FROM trace_mcp_servers ORDER BY server_id").fetchall()
         lines = []
         for row in rows:
             spec = json.loads(str(row["spec_json"]))
@@ -491,7 +468,7 @@ class ControlPlane:
                 values = {str(name): str(value) for name, value in dict(spec.get(key, {})).items() if not str(value).startswith("secret://")}
                 if values:
                     lines.append(f"{key} = " + "{" + ", ".join(f"{_toml_string(name)} = {_toml_string(value)}" for name, value in values.items()) + "}")
-            lines.append(f"enabled = {str(bool(spec.get('enabled', True))).lower()}")
+            lines.append(f"enabled = {str(bool(row['enabled'])).lower()}")
             lines.append("")
         self._managed_mcp.parent.mkdir(parents=True, exist_ok=True)
         temporary = self._managed_mcp.with_suffix(".tmp")
