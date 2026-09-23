@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
@@ -25,8 +26,10 @@ def invoke_model_stream(loop: Any, request: ModelRequest) -> ModelResponse:
     response_id = provider = model = ""
     expected_sequence = 0
     completed = False
+    stream = None
     try:
-        for event in loop.model.stream(request):
+        stream = loop.model.stream(request)
+        for event in stream:
             if loop._is_cancelled(request.run_id) or loop._is_interrupted(request.run_id):
                 raise loop._interrupted_error("model_stream_interrupted")
             if completed:
@@ -102,25 +105,48 @@ def invoke_model_stream(loop: Any, request: ModelRequest) -> ModelResponse:
         else:
             accumulator.discard()
         raise
+    finally:
+        active_error = sys.exception()
+        close = getattr(stream, "close", None)
+        if callable(close):
+            try:
+                close()
+            except BaseException as exc:
+                if active_error is not None and isinstance(exc, Exception):
+                    loop.service.runtime.store.append_event(request.run_id, "model_stream_cleanup_failed", {
+                        "request_id": request.request_id, "error_type": type(exc).__name__,
+                    })
+                else:
+                    setattr(threading.current_thread(), "model_partial_usage", (request.request_id, usage))
+                    accumulator.close()
+                    if accumulator.byte_count:
+                        setattr(threading.current_thread(), "model_partial_stream", accumulator)
+                    else:
+                        accumulator.discard()
+                    raise
     status, error = "completed", ""
     metadata: dict[str, Any] = {}
-    if accumulator.byte_count <= MAX_INLINE_MODEL_STREAM_BYTES:
-        text = accumulator.inline_text()
+    try:
+        if accumulator.byte_count <= MAX_INLINE_MODEL_STREAM_BYTES:
+            text = accumulator.inline_text()
+        else:
+            accumulator.close()
+            artifact = loop.service.runtime.artifacts.put_file(
+                accumulator.path,
+                run_id=request.run_id,
+                artifact_type="model_stream_text",
+                media_type="text/plain; charset=utf-8",
+                preview=accumulator.preview(),
+                metadata={"request_id": request.request_id, "complete": True},
+            )
+            projection = loop.service.runtime.artifacts.project(artifact)
+            text = json.dumps({"complete_text_artifact": projection}, ensure_ascii=False, sort_keys=True)
+            metadata["complete_text_artifact"] = artifact.artifact_id
+    except BaseException:
+        setattr(threading.current_thread(), "model_partial_usage", (request.request_id, usage))
+        raise
+    finally:
         accumulator.discard()
-    else:
-        accumulator.close()
-        artifact = loop.service.runtime.artifacts.put_file(
-            accumulator.path,
-            run_id=request.run_id,
-            artifact_type="model_stream_text",
-            media_type="text/plain; charset=utf-8",
-            preview=accumulator.preview(),
-            metadata={"request_id": request.request_id, "complete": True},
-        )
-        accumulator.discard()
-        projection = loop.service.runtime.artifacts.project(artifact)
-        text = json.dumps({"complete_text_artifact": projection}, ensure_ascii=False, sort_keys=True)
-        metadata["complete_text_artifact"] = artifact.artifact_id
     return ModelResponse(
         request_id=request.request_id,
         status=status,

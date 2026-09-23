@@ -4,7 +4,6 @@ import ast
 import hashlib
 import json
 import re
-import shutil
 import socket
 import subprocess
 import urllib.error
@@ -15,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from .android_asc import apk_asc
 from .browser_sessions import BrowserAdapter
+from .managed_tools import resolve_executable
 
 if TYPE_CHECKING:
     from .tool_broker import ToolBroker
@@ -305,7 +305,7 @@ def binary_disassemble(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
 
 def binary_radare2(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
     path, _ = _read_path(arguments)
-    executable = next((shutil.which(name) for name in ("r2", "radare2", "rizin") if shutil.which(name)), "")
+    executable = resolve_executable("r2", "radare2", "rizin")
     if not executable:
         result = binary_analysis(arguments)
         result["requested_command"] = str(arguments.get("command") or "aaa;afl")
@@ -326,6 +326,23 @@ def binary_radare2(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
     )
     output, truncated = _bounded(process.stdout)
     return {"path": str(path), "tool": Path(executable).name, "return_code": process.returncode, "output": output, "truncated": truncated}
+
+
+def binary_backend() -> Mapping[str, Any]:
+    """Describe the installed engine at discovery time, without executing or downloading."""
+    executable = resolve_executable("r2", "radare2", "rizin")
+    try:
+        metadata = Path(executable).stat() if executable else None
+    except OSError:
+        metadata = None
+    if metadata is None:
+        return {"capabilities": ("binary_reverse", "binary_inventory", "disassemble"),
+                "description": "Native fallback: binary metadata, strings and optional Capstone disassembly. trace setup rizin installs a full graph-analysis engine.",
+                "version": "native-binary-query-v1"}
+    identity = f"{executable}:{metadata.st_size}:{metadata.st_mtime_ns}"
+    return {"capabilities": ("binary_reverse", "binary_inventory", "disassemble", "graph_analysis"),
+            "description": f"Installed {Path(executable).name} backend: binary metadata, disassembly and graph analysis. Decompiler plugins are not assumed installed.",
+            "version": "binary-engine-" + hashlib.sha256(identity.encode()).hexdigest()[:16]}
 
 
 def binary_analysis(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -462,11 +479,11 @@ def cloud_inventory(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
     providers = (requested,) if requested in commands else tuple(commands)
     available = []
     for provider in providers:
-        executable = shutil.which(commands[provider][0])
+        executable = resolve_executable(commands[provider][0])
         if not executable:
             continue
         try:
-            process = subprocess.run(commands[provider], capture_output=True, text=True, errors="replace", timeout=30.0, check=False)
+            process = subprocess.run((executable, *commands[provider][1:]), capture_output=True, text=True, errors="replace", timeout=30.0, check=False)
             output, truncated = _bounded(process.stdout or process.stderr, 64 * 1024)
             available.append({"provider": provider, "executable": executable, "return_code": process.returncode, "output": output, "truncated": truncated})
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -527,12 +544,11 @@ def register_open_source_tools(broker: ToolBroker) -> None:
         input_schema=_schema(("path",), {"path": text, "architecture": text, "offset": {"type": "integer"}, "max_bytes": {"type": "integer"}, "max_instructions": {"type": "integer"}}),
     )
     broker.register_adapter(
-        name="binary-radare2", capabilities=("binary_reverse", "decompile", "graph_analysis"), adapter=binary_radare2,
-        description="Read-only radare2/Rizin-compatible adapter with a native lazy binary-query fallback.", priority=620,
+        name="binary-radare2", adapter=binary_radare2, **binary_backend(), priority=620,
         input_schema=_schema(("path",), {"path": text, "command": text, "timeout": {"type": "number"}, "architecture": text, "offset": {"type": "integer"}, "max_bytes": {"type": "integer"}, "max_instructions": {"type": "integer"}, "minimum_length": {"type": "integer"}, "max_results": {"type": "integer"}}),
     )
     broker.register_adapter(
-        name="binary-analysis", capabilities=("binary_reverse", "decompile", "graph_analysis"), adapter=binary_analysis,
+        name="binary-analysis", capabilities=("binary_reverse", "binary_inventory", "disassemble"), adapter=binary_analysis,
         description="Native lazy binary metadata, strings and bounded Capstone analysis without a database build.", priority=640,
         input_schema=_schema(("path",), {"path": text, "architecture": text, "offset": {"type": "integer"}, "max_bytes": {"type": "integer"}, "max_instructions": {"type": "integer"}, "minimum_length": {"type": "integer"}, "max_results": {"type": "integer"}}),
     )

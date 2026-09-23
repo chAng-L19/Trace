@@ -8,15 +8,11 @@ from pathlib import Path
 from typing import Any, Mapping
 from uuid import uuid4
 
+from .managed_tools import chromium_executable
+
 
 def _chrome_path() -> str:
-    candidates = (
-        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-        "/usr/bin/google-chrome", "/usr/bin/chromium",
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    )
-    return next((item for item in candidates if Path(item).is_file()), "")
+    return chromium_executable()
 
 
 class BrowserAdapter:
@@ -338,13 +334,30 @@ class BrowserSessions:
         return self._cleanup_reports.pop(run_id, ())
 
     async def _shutdown(self) -> None:
-        await asyncio.gather(*(
+        results = await asyncio.gather(*(
             self._close_run(key)
             for key in set(self._sessions) | set(self._tasks.values()) | set(self._disposing)
-        ))
+        ), return_exceptions=True)
+        errors = [result for result in results if isinstance(result, BaseException)]
+        for reports in results:
+            if isinstance(reports, (list, tuple)):
+                for report in reports:
+                    if report.get("errors"):
+                        errors.append(RuntimeError("browser_resource_cleanup_failed:" + ",".join(report["errors"])))
         if self._driver is not None:
-            await self._driver.stop()
-            self._driver = None
+            try:
+                await self._driver.stop()
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                self._driver = None
+        self._sessions.clear()
+        self._starting.clear()
+        self._closing_runs.clear()
+        self._disposing.clear()
+        self._tasks.clear()
+        if errors:
+            raise BaseExceptionGroup("browser_cleanup_failed", errors)
 
     def close(self) -> None:
         with self._guard:

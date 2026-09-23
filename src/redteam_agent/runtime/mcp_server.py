@@ -338,6 +338,12 @@ class RuntimeMcpServer(RuntimeMcpToolDispatchMixin):
         current = dict(summary)
         cycles = 1
         run_id = str(current.get("run_id") or "")
+        service = self._application_service()
+        if service is not None and service.model_loop is not None:
+            # The application loop already continued to a durable pause/terminal.
+            # Never automatically clear or spin on its budget/input/shutdown gate.
+            current["automation_cycles"] = cycles
+            return current
         while auto_continue and run_id and current.get("status") == "paused_budget" and cycles < max_cycles:
             current = self._resume_summary(run_id, max_actions=cycle_actions)
             cycles += 1
@@ -428,7 +434,8 @@ class RuntimeMcpServer(RuntimeMcpToolDispatchMixin):
             elif run_id in initial:
                 summary = dict(initial[run_id])
             else:
-                summary = self._resume_summary(run_id, max_actions=cycle_actions)
+                summary = self._resume_summary(run_id, max_actions=cycle_actions,
+                                               run_until_pause=auto_continue, max_cycles=max_cycles)
             results.append(
                 self._ensure_host_handoff(
                     self._continue_summary(

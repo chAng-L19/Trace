@@ -257,6 +257,20 @@ def create_handoff(
             raise ValueError("handoff_attempt_mismatch")
         if str(attempt["status"]) != "waiting_host":
             raise ValueError("handoff_attempt_not_waiting_host")
+        existing = connection.execute(
+            "SELECT * FROM host_handoffs WHERE run_id=? AND branch_id=? AND plan_revision=? "
+            "AND action_id=? AND attempt_id=? AND contract_hash=? AND status='pending' AND consumed_at='' "
+            "ORDER BY created_at DESC, handoff_id DESC LIMIT 1",
+            (run_id, branch_id, plan_revision, action_id, attempt_id, contract_hash),
+        ).fetchone()
+        if existing is not None and not _row_expired(existing):
+            # Keep the durable receipt stable across restarts; only its lost,
+            # process-local secret rotates, without extending the expiry.
+            connection.execute(
+                "UPDATE host_handoffs SET token_hash=? WHERE handoff_id=?",
+                (token_hash, existing["handoff_id"]),
+            )
+            return str(existing["handoff_id"]), raw_token
         _supersede_pending(
             connection,
             run_id=run_id,

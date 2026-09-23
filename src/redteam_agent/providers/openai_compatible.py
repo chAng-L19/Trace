@@ -3,14 +3,16 @@ from __future__ import annotations
 import hashlib
 import http.client
 import io
+import ipaddress
 import json
 import math
+import os
 import re
 import socket
 import threading
 import time
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from contextlib import contextmanager
 from typing import Any
 from urllib.parse import urlsplit
@@ -113,6 +115,8 @@ class OpenAICompatibleProvider:
         *,
         timeout_seconds: float = 120.0,
         max_context_tokens: int = 128_000,
+        api_key_env: str = "",
+        environ: Mapping[str, str] | None = None,
     ) -> None:
         parsed = urlsplit(str(base_url).strip().rstrip("/"))
         if (
@@ -142,6 +146,13 @@ class OpenAICompatibleProvider:
         ) or "/chat/completions"
         self.model = str(model).strip()
         self._api_key = str(api_key)
+        self._api_key_env = str(api_key_env)
+        self._environ = os.environ if environ is None else environ
+        self._continuation_base = str(base_url).rstrip("/")
+        try:
+            self._allow_no_key = ipaddress.ip_address(self._host).is_loopback
+        except ValueError:
+            self._allow_no_key = self._host.casefold() == "localhost"
         self._timeout = float(timeout_seconds)
         self._capabilities = ModelCapabilities(
             native_system_role=True,
@@ -152,16 +163,25 @@ class OpenAICompatibleProvider:
             usage_reporting=True,
             max_context_tokens=int(max_context_tokens),
             metadata={"provider": "openai-compatible", "model": self.model,
-                      "opaque_continuation": True,
-                      "continuation_scope": hashlib.sha256(
-                          (str(base_url).rstrip("/") + "\0" + self._api_key).encode()
-                      ).hexdigest()},
+                      "opaque_continuation": True},
         )
         self._active: dict[str, _ActiveRequest] = {}
         self._lock = threading.RLock()
 
     def capabilities(self) -> ModelCapabilities:
-        return self._capabilities
+        return replace(self._capabilities, metadata={
+            **self._capabilities.metadata,
+            "continuation_scope": hashlib.sha256(
+                (self._continuation_base + "\0" + self._credential()).encode()
+            ).hexdigest(),
+        })
+
+    @property
+    def ready(self) -> bool:
+        return bool(self._credential() or self._allow_no_key)
+
+    def _credential(self) -> str:
+        return self._environ.get(self._api_key_env, "") or self._api_key
 
     def complete(self, request: ModelRequest) -> ModelResponse:
         payload, name_map = request_payload(self, request)
@@ -185,6 +205,9 @@ class OpenAICompatibleProvider:
 
     @contextmanager
     def _exchange(self, request: ModelRequest, payload: Mapping[str, Any]):
+        credential = self._credential()
+        if not credential and not self._allow_no_key:
+            raise RuntimeError("missing_credentials")
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         connection = self._connection()
         active = _ActiveRequest(connection)
@@ -196,8 +219,8 @@ class OpenAICompatibleProvider:
             self._active[request.request_id] = active
         try:
             headers = {"Content-Type": "application/json", "Accept": "text/event-stream" if payload.get("stream") else "application/json"}
-            if self._api_key:
-                headers["Authorization"] = f"Bearer {self._api_key}"
+            if credential:
+                headers["Authorization"] = f"Bearer {credential}"
             if active.cancelled.is_set():
                 raise RuntimeError("provider_request_cancelled")
             self._connect(connection, active, deadline)
@@ -214,7 +237,7 @@ class OpenAICompatibleProvider:
                     error_document = self._document(raw)
                 except RuntimeError:
                     error_document = {}
-                code, message = self._error(error_document, raw)
+                code, message = self._error(error_document, raw, credential=credential)
                 raise ProviderHTTPError(response.status, code, message)
             yield response
             if active.cancelled.is_set():
@@ -442,7 +465,7 @@ class OpenAICompatibleProvider:
             raise RuntimeError("provider_response_must_be_object")
         return value
 
-    def _error(self, document: Mapping[str, Any], raw: bytes) -> tuple[str, str]:
+    def _error(self, document: Mapping[str, Any], raw: bytes, *, credential: str = "") -> tuple[str, str]:
         value = document.get("error")
         if isinstance(value, Mapping):
             code = str(value.get("code") or value.get("type") or "error")
@@ -451,8 +474,8 @@ class OpenAICompatibleProvider:
             code, message = "error", raw.decode("utf-8", errors="replace")
         # Redact before truncation; a key crossing the boundary otherwise leaks
         # its prefix. Some gateways echo credentials in code as well as message.
-        if self._api_key:
-            for secret in (self._api_key, json.dumps(self._api_key)[1:-1]):
+        for candidate in {credential, self._credential(), self._api_key} - {""}:
+            for secret in (candidate, json.dumps(candidate)[1:-1]):
                 code = code.replace(secret, "[REDACTED]")
                 message = message.replace(secret, "[REDACTED]")
         return code[:256], message[:2048]

@@ -56,6 +56,16 @@ def _open_secret(key: bytes, value: str) -> str:
     return plain.decode("utf-8")
 
 
+def _local_provider(base_url: str) -> bool:
+    import ipaddress
+    from urllib.parse import urlsplit
+    hostname = urlsplit(base_url).hostname or ""
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return hostname.casefold() == "localhost"
+
+
 class ControlPlane:
     """Durable, redacted settings with process-local secret bindings."""
 
@@ -220,6 +230,8 @@ class ControlPlane:
             "model": str(row["model"]),
             "api_key_env": str(row["api_key_env"]),
             "api_key_set": bool(secret),
+            "configured": True,
+            "ready": bool(row["enabled"]) and (bool(secret) or _local_provider(str(row["base_url"]))),
             "timeout_seconds": float(row["timeout_seconds"]),
             "max_context_tokens": int(row["max_context_tokens"]),
             "enabled": bool(row["enabled"]),
@@ -246,13 +258,11 @@ class ControlPlane:
                 return item
         raise KeyError(f"provider_not_found:{provider_id}")
 
-    def provider_secret(self, provider_id: str) -> str:
-        with self._lock:
-            secret = self._secrets.get(provider_id, "")
-        if secret:
-            return secret
+    def provider_secret(self, provider_id: str, *, include_environment: bool = True) -> str:
         item = self.provider(provider_id)
-        return os.environ.get(item["api_key_env"], "") if item["api_key_env"] else ""
+        environment = os.environ.get(item["api_key_env"], "") if include_environment and item["api_key_env"] else ""
+        with self._lock:
+            return environment or self._secrets.get(provider_id, "")
 
     def save_provider(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         provider_id = str(payload.get("provider_id") or payload.get("id") or secrets.token_hex(8)).strip()

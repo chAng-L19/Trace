@@ -5,12 +5,16 @@ import configparser
 import importlib
 import importlib.metadata
 import json
+import os
 import shutil
+import socket
 import subprocess
 import sysconfig
+import time
 import zipfile
 from email.parser import BytesParser
 from pathlib import Path, PurePosixPath
+from urllib.request import ProxyHandler, build_opener
 
 
 ENTRY_POINTS = {
@@ -103,6 +107,70 @@ def _mcp_smoke(command: str, *, cwd: Path, root: Path) -> None:
     _require(names == PUBLIC_TOOLS, f"mcp_tools_mismatch:{sorted(names)}")
 
 
+def _web_smoke(command: str, *, cwd: Path) -> None:
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    opener = build_opener(ProxyHandler({}))
+    with (cwd / "web-smoke.log").open("w", encoding="utf-8") as log:
+        process = subprocess.Popen(
+            [command, "--root", str(cwd / "web-state"), "--port", str(port)],
+            cwd=cwd, stdout=log, stderr=log,
+        )
+        try:
+            deadline = time.monotonic() + 30
+            while True:
+                _require(process.poll() is None, "web_exited_before_ready")
+                try:
+                    response = opener.open(f"http://127.0.0.1:{port}/api/auth/status", timeout=2)
+                    break
+                except OSError:
+                    _require(time.monotonic() < deadline, "web_start_timeout")
+                    time.sleep(0.1)
+            with response:
+                payload = json.load(response)
+                _require(response.status == 200 and payload.get("ok") is True, "web_api_not_ready")
+                _require(isinstance(payload.get("authenticated"), bool), "web_auth_status_invalid")
+            with opener.open(f"http://127.0.0.1:{port}/", timeout=2) as page:
+                _require(page.status == 200 and b"Trace" in page.read(), "wheel_static_ui_missing")
+        finally:
+            process.terminate()
+            try:
+                code = process.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+                raise RuntimeError("web_shutdown_timeout") from None
+        if os.name != "nt":
+            _require(code == 0, f"web_sigterm_not_graceful:{code}")
+
+
+def _mcp_shutdown_smoke(command: str, *, cwd: Path) -> None:
+    if os.name == "nt":
+        return  # Windows TerminateProcess is not POSIX SIGTERM.
+    output = cwd / "mcp-shutdown.jsonl"
+    with output.open("w", encoding="utf-8") as log:
+        process = subprocess.Popen(
+            [command, "--root", str(cwd / "mcp-shutdown-state")],
+            stdin=subprocess.PIPE, stdout=log, stderr=log, text=True, cwd=cwd,
+        )
+        try:
+            process.stdin.write('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n')
+            process.stdin.flush()
+            deadline = time.monotonic() + 30
+            while '"serverInfo"' not in output.read_text(encoding="utf-8"):
+                _require(process.poll() is None and time.monotonic() < deadline, "mcp_shutdown_start_timeout")
+                time.sleep(0.1)
+            # Keep stdin open and idle: SIGTERM must interrupt its blocking read.
+            process.terminate()
+            _require(process.wait(timeout=15) == 0, "mcp_sigterm_not_graceful")
+        finally:
+            process.stdin.close()
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+
+
 def installed_smoke(root: Path, source_root: Path) -> None:
     distribution = importlib.metadata.distribution("trace-agent")
     entries = {
@@ -128,7 +196,9 @@ def installed_smoke(root: Path, source_root: Path) -> None:
     _run([commands["redteam-agent-web"], "--help"], cwd=root)
     _mcp_smoke(commands["trace-mcp"], cwd=root, root=root / "trace-mcp-state")
     _mcp_smoke(commands["redteam-agent-mcp"], cwd=root, root=root / "legacy-mcp-state")
-    print(json.dumps({"package": str(package_path), "mcp_tools": sorted(PUBLIC_TOOLS)}))
+    _mcp_shutdown_smoke(commands["trace-mcp"], cwd=root)
+    _web_smoke(commands["trace-web"], cwd=root)
+    print(json.dumps({"package": str(package_path), "mcp_tools": sorted(PUBLIC_TOOLS), "web_http": "ok"}))
 
 
 def main() -> int:

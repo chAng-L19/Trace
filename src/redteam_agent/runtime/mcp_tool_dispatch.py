@@ -19,11 +19,20 @@ class RuntimeMcpToolDispatchMixin:
         else:
             self.runtime.bind_credentials(run_id, bindings)
 
-    def _resume_summary(self, run_id: str, *, max_actions: int) -> dict[str, Any]:
+    def _resume_summary(self, run_id: str, *, max_actions: int,
+                        run_until_pause: bool = True, max_cycles: int = 32) -> dict[str, Any]:
         service = self._application_service()
         if service is None:
             return self.runtime.resume(run_id, max_actions=max_actions).summary()
-        service.run(run_id, max_actions=max_actions)
+        current = service.status(run_id)
+        if (service.model_loop is not None and current.run.status == "paused_budget"
+                and current.run.budget.pause_reason in {
+                    "service_shutdown", "missing_credentials", "model_cycle_limit", "model_no_progress", "waiting_input",
+                }):
+            # A new public redteam_run request explicitly resumes a recoverable
+            # model pause; _continue_summary never spins across these gates.
+            service.resume(run_id, execute=False)
+        service.run(run_id, max_actions=max_actions, run_until_pause=run_until_pause, max_cycles=max_cycles)
         return service.summary(run_id)
 
     def _status_summary(self, run_id: str) -> dict[str, Any]:
@@ -194,7 +203,8 @@ class RuntimeMcpToolDispatchMixin:
                 if credential_bindings:
                     self._bind_credentials(run_id, credential_bindings)
                 self._apply_budget_delta([run_id], budget_delta)
-                summary = self._resume_summary(run_id, max_actions=cycle_actions)
+                summary = self._resume_summary(run_id, max_actions=cycle_actions,
+                                               run_until_pause=auto_continue, max_cycles=max_cycles)
             if run_id:
                 summary = self._continue_summary(
                     summary,
@@ -241,7 +251,9 @@ class RuntimeMcpToolDispatchMixin:
                     self.runtime.store.load_operation(run_id)
                     for run_id in run_ids
                 )
-                results = [self._resume_summary(run_id, max_actions=cycle_actions) for run_id in run_ids]
+                results = [self._resume_summary(run_id, max_actions=cycle_actions,
+                    run_until_pause=bool(arguments.get("auto_continue", True)),
+                    max_cycles=int(arguments.get("max_cycles") or 32)) for run_id in run_ids]
             else:
                 states = self.runtime.start_batch(
                     session_id=session_id,
@@ -350,6 +362,10 @@ class RuntimeMcpToolDispatchMixin:
                     }
         elif name == "redteam_events":
             run_id = str(arguments.get("run_id") or "")
+            # Keep the MCP projection consistent with the application facade:
+            # an unknown run is an error, never an apparently empty event log.
+            if self.runtime.store.load_operation(run_id) is None:
+                raise KeyError(f"operation_not_found:{run_id}")
             events = self.runtime.store.events(
                 run_id,
                 after_event_id=int(arguments.get("after_event_id") or 0),

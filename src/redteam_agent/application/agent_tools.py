@@ -23,6 +23,23 @@ _PAGE = {
     "offset": {"type": "integer", "minimum": 0},
     "limit": {"type": "integer", "minimum": 1, "maximum": 100},
 }
+_WORKER_RESULT = {
+    "task_id": _TEXT, "worker_kind": _TEXT, "idempotency_key": _TEXT, "input_hash": _TEXT,
+    "reason": _TEXT, "output_hash": _TEXT,
+    "artifact_hashes": {"type": "object", "additionalProperties": _TEXT, "maxProperties": 100},
+    "result": {
+        "type": "object", "properties": {
+            "kind": {"type": "string", "enum": ["worker_result"]},
+            "schema_version": {"type": "integer", "enum": [1]},
+            "task_id": _TEXT,
+            "status": {"type": "string", "enum": ["completed", "failed", "cancelled", "timed_out"]},
+            "output": {}, "artifact_refs": {"type": "array", "items": _TEXT, "maxItems": 100},
+            "error": {"type": "string"}, "retryable": {"type": "boolean"},
+            "metadata": {"type": "object"},
+        }, "required": ["task_id", "status"], "additionalProperties": False,
+    },
+}
+_RESULT_REQUIRED = ("task_id", "worker_kind", "idempotency_key", "input_hash", "result", "reason")
 
 
 def _definition(name: str, description: str, properties: dict, required=(), *, write=False):
@@ -59,6 +76,10 @@ _TOOLS = (
         "required_artifacts": {"type": "array", "items": _TEXT, "maxItems": 100},
     }, ("task_id", "capability", "payload"), write=True),
     _definition("cancel_worker", "Request cancellation of a worker; repeated requests are reconciled from durable state.", {"task_id": _TEXT}, ("task_id",), write=True),
+    _definition("settle_worker", "Settle an unknown interrupted worker as failed/cancelled, or completed with existing task-bound artifact SHA-256 hashes and contract_hash(output). Never reruns the task.",
+                _WORKER_RESULT, _RESULT_REQUIRED, write=True),
+    _definition("submit_worker_result", "Submit a terminal Codex result with its handoff_id (legacy: contract_hash of the persisted waiting WorkerResult) and exact task identity. Completion requires existing artifacts with matching task_id/worker_kind metadata, their SHA-256 hashes and contract_hash(output). Identical submissions are idempotent.",
+                {**_WORKER_RESULT, "handoff_id": _TEXT}, (*_RESULT_REQUIRED, "handoff_id"), write=True),
 )
 _BY_NAME = {tool.qualified_name: tool for tool in _TOOLS}
 
@@ -164,6 +185,8 @@ class AgentToolAdapter(ToolPort):
             return asdict(self.service.worker_status(run_id, arguments["task_id"]))
         if name == "worker_results":
             return self._page([asdict(item) for item in self.service.worker_results(run_id)], arguments)
+        if name in {"settle_worker", "submit_worker_result"}:
+            return getattr(self.service, name)(run_id, arguments).to_dict()
         if name == "cancel_worker":
             task_id = arguments["task_id"]
             record = self.service.worker_status(run_id, task_id)

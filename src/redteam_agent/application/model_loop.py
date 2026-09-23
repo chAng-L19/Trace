@@ -6,7 +6,6 @@ from dataclasses import replace
 from typing import Any
 from uuid import uuid4
 from ..core import (
-    ModelCapabilities,
     ModelPort,
     ModelRequest,
     ModelResponse,
@@ -20,17 +19,17 @@ from ..runtime.model_common import utc_now
 from ..runtime.artifact_store import ArtifactIntegrityError
 from ..runtime.security import safe_error_text
 from ..runtime.conversation_records import DiagnosticArtifactRecord
-from .contracts import AgentRunView, Observation
+from .contracts import AgentRunView
 from ..runtime.session_journal import ModelObservationRecord, ModelRequestRecord, ModelResponseRecord
 from .agent_loop_support import (
     ModelIntegrityMixin,
-    handle_tool_expand,
     record_tactical_attempts,
     record_tactical_update,
     tool_catalog_summary,
 )
 from .bounded_output import BoundedOutput
 from .model_turn import run_model_turn
+from .model_cycle import run_model_cycles
 from .model_stream import MAX_INLINE_MODEL_STREAM_BYTES, invoke_model_stream
 MAX_INLINE_MODEL_OBSERVATION_BYTES = 64 * 1024
 class ModelLoopError(RuntimeError):
@@ -69,171 +68,30 @@ class AgentLoop(ModelIntegrityMixin):
         self._active_requests: dict[str, set[str]] = {}
         self._active_calls: dict[str, set[str]] = {}
         self._lock = threading.RLock()
-    def run(self, run_id: str, *, max_actions: int | None = None) -> AgentRunView:
-        view = self.service._resume_runtime(
-            run_id,
-            max_actions=max_actions,
-            model_led=True,
-        )
-        for _ in range(self.max_turns):
-            if view.terminal.terminal or view.run.status in {"completed", "failed", "cancelled"}:
-                return view
-            if self._is_cancelled(run_id):
-                return self.service.status(run_id)
-            if self._is_interrupted(run_id):
-                return self.service.status(run_id)
-            if view.run.status == "paused_budget":
-                return view
-            budget_view = self.service._enforce_runtime_budget(run_id)
-            if budget_view.run.status == "paused_budget":
-                return budget_view
-            if view.run.status != "waiting_worker" or not view.next_action:
-                return view
-            recovered = self._recover_pending_turn(view)
-            if recovered is None:
-                try:
-                    response, request = self._model_turn(view)
-                except ModelContextBudgetError:
-                    return self.service.status(run_id)
-                existing: Mapping[str, ToolResult] = {}
-                reconcile = False
-            else:
-                response, request, existing = recovered
-                reconcile = True
-                self.service.conversation.record_model_response(run_id, response)
-            if self._is_cancelled(run_id):
-                return self.service.status(run_id)
-            if self._is_interrupted(run_id):
-                return self.service.status(run_id)
-            current = self.service.status(run_id)
-            if current.run.status == "paused_budget":
-                return current
-            tactical_update = self._record_tactical_update(view, request, response)
-            budget_view = self.service._record_model_usage(
-                run_id,
-                request.request_id,
-                response.usage,
-            )
-            if budget_view.run.status == "paused_budget":
-                return budget_view
-            expanded_tools = handle_tool_expand(self, run_id, response)
-            if expanded_tools and not response.tool_calls:
-                self._mark_turn_consumed(view, request, "tool_catalog_expanded")
-                view = self.service._resume_runtime(run_id, max_actions=max_actions, model_led=True)
-                continue
-            if not response.tool_calls:
-                self._mark_turn_consumed(view, request, "model_response_no_tools")
-                return budget_view
-            try:
-                results = self._execute_tool_calls(
-                    view,
-                    request,
-                    response,
-                    existing=existing,
-                    reconcile=reconcile,
-                )
-            except ModelInterruptedError:
-                return self.service.status(run_id)
-            if self._is_cancelled(run_id):
-                return self.service.cancel(run_id, reason="model_loop_cancelled")
-            if self._is_interrupted(run_id):
-                return self.service.status(run_id)
-            current = self.service.status(run_id)
-            if current.run.status == "paused_budget":
-                return current
-            artifact_ids = self.service.conversation.record_tool_results(
-                request.request_id,
-                view.run.run_id,
-                results,
-            )
-            self._record_tactical_attempts(
-                view,
-                request,
-                response,
-                results,
-                artifact_ids=artifact_ids,
-                tactical_update=tactical_update,
-            )
-            successful = tuple(item for item in results if item.status == "success")
-            if not successful:
-                # A failed tool result is still a completed protocol turn.  It
-                # must be visible to the model so it can change arguments,
-                # choose another tool, or suspend the hypothesis.  Recovery
-                # uses the durable observation/attempt records to avoid
-                # repeating the failed side effect.
-                self._mark_turn_consumed(view, request, "tool_calls_failed")
-                view = self.service._resume_runtime(
-                    run_id,
-                    max_actions=max_actions,
-                    model_led=True,
-                )
-                continue
-            if (view.next_action != "provide_target" and
-                    response.structured_output.get("commit_lifecycle_gate") is not True):
-                self._mark_turn_consumed(view, request, "lifecycle_gate_not_committed")
-                view = self.service._resume_runtime(run_id, max_actions=max_actions, model_led=True)
-                continue
-            if view.next_action == "provide_target":
-                target = self._target_from_results(successful)
-                self.service.runtime.provide_target(run_id, targets=(target,))
-                self._mark_turn_consumed(view, request, "target_provided")
-                view = self.service._resume_runtime(
-                    run_id,
-                    max_actions=max_actions,
-                    model_led=True,
-                )
-                continue
-            output: Any
-            if len(successful) == 1:
-                output = successful[0].output
-            else:
-                output = {"tool_results": [item.to_dict() for item in successful]}
-            receipt = dict(view.handoff)
-            if receipt:
-                self.service.runtime.submit_model_observation(
-                    run_id=run_id,
-                    request_id=request.request_id,
-                    call_ids=tuple(item.call_id for item in successful),
-                    handoff_id=str(receipt.get("handoff_id") or ""),
-                    handoff_token=str(receipt.get("handoff_token") or ""),
-                    attempt_id=str(receipt.get("attempt_id") or ""),
-                    contract_hash=str(receipt.get("contract_hash") or ""),
-                    continue_run=False,
-                )
-            else:
-                observation = Observation(
-                    action_id=view.next_action,
-                    output=output,
-                    tool="model-loop:" + ",".join(item.tool_name for item in successful),
-                    usage={"_accounted_request_id": request.request_id},
-                    idempotency_key=contract_hash(
-                        {
-                            "run_id": run_id,
-                            "request_id": request.request_id,
-                            "action_id": view.next_action,
-                            "calls": [item.call_id for item in successful],
-                        }
-                    ),
-                    continue_run=False,
-                )
-                self.service._submit_runtime_observation(run_id, observation)
-            self._mark_turn_consumed(view, request, "lifecycle_observation_submitted")
-            view = self.service._resume_runtime(
-                run_id,
-                max_actions=max_actions,
-                model_led=True,
-            )
-        return view
+    def run(self, run_id: str, *, max_actions: int | None = None,
+            run_until_pause: bool = True, max_cycles: int = 32) -> AgentRunView:
+        return run_model_cycles(self, run_id, max_actions=max_actions,
+                                run_until_pause=run_until_pause, max_cycles=max_cycles)
     def interrupt(self, run_id: str) -> None:
         with self._lock:
             self._interrupted_runs.add(run_id)
             requests = tuple(self._active_requests.get(run_id, ()))
             calls = tuple(self._active_calls.get(run_id, ()))
         for request_id in requests:
-            self.model.cancel(request_id)
+            try:
+                self.model.cancel(request_id)
+            except Exception as exc:
+                self.service.runtime.store.append_event(run_id, "model_cancel_failed", {
+                    "request_id": request_id, "error_type": type(exc).__name__, "status": "unknown",
+                })
         if self.tools is not None:
             for call_id in calls:
-                self.tools.cancel(call_id)
+                try:
+                    self.tools.cancel(call_id)
+                except Exception as exc:
+                    self.service.runtime.store.append_event(run_id, "model_tool_cancel_failed", {
+                        "call_id": call_id, "error_type": type(exc).__name__, "status": "unknown",
+                    })
     def resume(self, run_id: str) -> None:
         with self._lock:
             self._interrupted_runs.discard(run_id)
@@ -449,13 +307,9 @@ class AgentLoop(ModelIntegrityMixin):
         if not current.terminal.terminal:
             self.service._record_model_usage(request.run_id, request.request_id, usage)
     def _save_failure_response(self, request: ModelRequest, error: BaseException) -> None:
-        if any(
-            item.request_id == request.request_id
-            for item in self.service.runtime.store.model_responses(request.run_id)
-        ):
-            return
-        accumulator = getattr(threading.current_thread(), "model_partial_stream", None)
-        partial_usage = getattr(threading.current_thread(), "model_partial_usage", None)
+        thread = threading.current_thread()
+        accumulator = thread.__dict__.pop("model_partial_stream", None)
+        partial_usage = thread.__dict__.pop("model_partial_usage", None)
         usage = (
             dict(partial_usage[1])
             if isinstance(partial_usage, tuple) and partial_usage[0] == request.request_id
@@ -463,21 +317,31 @@ class AgentLoop(ModelIntegrityMixin):
         )
         partial_text = ""
         partial_artifact: Mapping[str, Any] = {}
-        if isinstance(accumulator, BoundedOutput):
-            if accumulator.byte_count <= MAX_INLINE_MODEL_STREAM_BYTES:
-                partial_text = accumulator.inline_text()
-            else:
-                accumulator.close()
-                artifact = self.service.runtime.artifacts.put_file(
-                    accumulator.path,
-                    run_id=request.run_id,
-                    artifact_type="partial_model_stream",
-                    media_type="text/plain; charset=utf-8",
-                    preview=accumulator.preview(),
-                    metadata={"request_id": request.request_id, "complete": False},
-                )
-                partial_artifact = self.service.runtime.artifacts.project(artifact)
-            accumulator.discard()
+        try:
+            if any(
+                item.request_id == request.request_id
+                for item in self.service.runtime.store.model_responses(request.run_id)
+            ):
+                return
+            if usage:
+                self._account_response_usage(request, usage)
+            if isinstance(accumulator, BoundedOutput):
+                if accumulator.byte_count <= MAX_INLINE_MODEL_STREAM_BYTES:
+                    partial_text = accumulator.inline_text()
+                else:
+                    accumulator.close()
+                    artifact = self.service.runtime.artifacts.put_file(
+                        accumulator.path,
+                        run_id=request.run_id,
+                        artifact_type="partial_model_stream",
+                        media_type="text/plain; charset=utf-8",
+                        preview=accumulator.preview(),
+                        metadata={"request_id": request.request_id, "complete": False},
+                    )
+                    partial_artifact = self.service.runtime.artifacts.project(artifact)
+        finally:
+            if isinstance(accumulator, BoundedOutput):
+                accumulator.discard()
         diagnostic_id = ""
         safe_error = safe_error_text(error)
         if partial_text or partial_artifact:
@@ -504,7 +368,7 @@ class AgentLoop(ModelIntegrityMixin):
             )
         response = ModelResponse(
             request_id=request.request_id,
-            status="interrupted" if isinstance(error, ModelInterruptedError) else "failed",
+            status="interrupted" if isinstance(error, ModelInterruptedError) or self._is_interrupted(request.run_id) else "failed",
             provider=type(self.model).__name__,
             model=request.model,
             text="",
@@ -528,12 +392,6 @@ class AgentLoop(ModelIntegrityMixin):
                 created_at=utc_now(),
             )
         )
-        if hasattr(threading.current_thread(), "model_partial_stream"):
-            delattr(threading.current_thread(), "model_partial_stream")
-        if hasattr(threading.current_thread(), "model_partial_usage"):
-            delattr(threading.current_thread(), "model_partial_usage")
-        if usage:
-            self._account_response_usage(request, usage)
     def _execute_tool_calls(
         self,
         view: AgentRunView,

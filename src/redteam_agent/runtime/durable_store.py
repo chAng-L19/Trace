@@ -182,14 +182,28 @@ class DurableStore(
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=30.0)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("PRAGMA busy_timeout=30000")
-        secure_file(self.path)
-        secure_file(self.path.with_name(f"{self.path.name}-wal"))
-        secure_file(self.path.with_name(f"{self.path.name}-shm"))
-        return connection
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA busy_timeout=30000")
+            deadline = time.monotonic() + 30.0
+            while True:
+                try:
+                    connection.execute("PRAGMA journal_mode=WAL").fetchone()
+                    break
+                except sqlite3.OperationalError as exc:
+                    # Concurrent first opens can fail WAL conversion without invoking the busy handler.
+                    if ((getattr(exc, "sqlite_errorcode", 0) & 0xFF) not in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
+                            or time.monotonic() >= deadline):
+                        raise
+                    time.sleep(0.01)
+            connection.execute("PRAGMA foreign_keys=ON")
+            secure_file(self.path)
+            secure_file(self.path.with_name(f"{self.path.name}-wal"))
+            secure_file(self.path.with_name(f"{self.path.name}-shm"))
+            return connection
+        except BaseException:
+            connection.close()
+            raise
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
@@ -491,7 +505,7 @@ class DurableStore(
     def latest_operation(self, session_id: str, *, include_terminal: bool = True) -> OperationState | None:
         query = "SELECT * FROM operations WHERE session_id=?"
         if not include_terminal:
-            query += " AND status NOT IN ('completed', 'failed', 'cancelled')"
+            query += " AND status NOT IN ('completed', 'failed', 'failed_integrity', 'cancelled')"
         query += " ORDER BY updated_at DESC, version DESC LIMIT 1"
         with self.connection() as connection:
             row = connection.execute(query, (session_id,)).fetchone()

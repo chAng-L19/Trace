@@ -216,7 +216,14 @@ class OperationHandoffMixin:
         if pending is not None and pending.contract_hash == contract_hash:
             with self._handoff_token_lock:
                 raw_token = self._handoff_tokens.get(pending.handoff_id, "")
-            if raw_token:
+            if raw_token and self.store.validate_handoff(raw_token=raw_token, **pending.identity()):
+                if state.status == "running":
+                    state.status = "waiting_host"
+                    state.current_action_id = action.action_id
+                    self.store.save_operation(
+                        state, expected_version=state.state_version, lease_token=token,
+                        event_type="host_handoff_resumed", event={"action_id": action.action_id},
+                    )
                 return {
                     **pending.identity(),
                     "handoff_token": raw_token,
@@ -236,6 +243,7 @@ class OperationHandoffMixin:
             ),
             None,
         )
+        new_placeholder = placeholder is None
         if placeholder is None:
             exhaustion = state.budget.exhaustion_reason()
             if exhaustion and not allow_budget_exhausted:
@@ -282,16 +290,19 @@ class OperationHandoffMixin:
             self.store.create_task_attempt(placeholder)
             state.action_attempts[action.action_id] = state.action_attempts.get(action.action_id, 0) + 1
             state.budget.record_action()
-        state.status = "waiting_host"
-        state.current_action_id = action.action_id
-        state.action_status[action.action_id] = "running"
-        self.store.save_operation(
-            state,
-            expected_version=state.state_version,
-            lease_token=token,
-            event_type="host_handoff_ready",
-            event={"action_id": action.action_id, "attempt_id": placeholder.attempt_id, "contract_hash": contract_hash},
-        )
+        if new_placeholder or (state.status, state.current_action_id, state.action_status.get(action.action_id)) != (
+            "waiting_host", action.action_id, "running"
+        ):
+            state.status = "waiting_host"
+            state.current_action_id = action.action_id
+            state.action_status[action.action_id] = "running"
+            self.store.save_operation(
+                state,
+                expected_version=state.state_version,
+                lease_token=token,
+                event_type="host_handoff_ready",
+                event={"action_id": action.action_id, "attempt_id": placeholder.attempt_id, "contract_hash": contract_hash},
+            )
         handoff_id, raw_token = self.store.create_handoff(
             run_id=state.run_id,
             branch_id=state.branch_id,

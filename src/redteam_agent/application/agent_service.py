@@ -5,7 +5,6 @@ import sqlite3
 import threading
 from pathlib import Path
 from typing import Any, Mapping, Sequence
-from uuid import uuid4
 
 from ..adapters.runtime import (
     LEGACY_TO_CORE_STATUS,
@@ -15,9 +14,9 @@ from ..adapters.runtime import (
     terminal_from_runtime,
     RuntimeToolAdapter,
 )
-from ..core import Event, ModelPort, ToolPort, WorkerPort, WorkerResult, WorkerTask, contract_hash
+from ..core import Event, ModelPort, ToolPort, WorkerPort
 from ..runtime.durable_store import StateVersionConflict, StoreConflictError
-from ..runtime.worker_store import WORKER_BLOCKED_RUN_STATUSES, WorkerStore
+from ..runtime.worker_store import WorkerStore
 from ..runtime.terminal_judge import OperationResult
 from ..runtime.operation_runtime import OperationRuntime
 from ..runtime.exploration import ExplorationLedger
@@ -39,14 +38,17 @@ from .contracts import (
     StartRequest,
     validate_run_transition,
 )
-from .bounded_output import BoundedOutput
+from .worker_service import WorkerServiceMixin
+from .service_execution import ServiceExecutionMixin, service_write
+from .bootstrap import build_runtime, config_paths as resolve_config_paths, configure_service
+from ..runtime.settings import _runtime_settings
 from .agent_tools import AgentToolAdapter
 from .asset_graph import project_asset_attack_graph
-from .model_loop import AgentLoop, ModelInterruptedError
+from .model_loop import AgentLoop
 from .context import ContextSelection, ContextSelector, ConversationLedger, TraceableCompactor
 from .resources import ResourceIndex, ResourceResolver, ResourceSelection
 from .transparency import TransparencyProjector
-class AgentService:
+class AgentService(ServiceExecutionMixin, WorkerServiceMixin):
     """The canonical application entry point for durable agent operations."""
 
     def __init__(
@@ -61,16 +63,22 @@ class AgentService:
         model_streaming: bool = False,
         model_max_retries: int = 2,
         model_max_turns: int = 8,
+        config_paths: Sequence[Path | str] | None = None,
+        provider_options: Mapping[str, Any] | None = None,
+        load_external_configuration: bool = True,
     ) -> None:
         if runtime is None and root is None:
             raise ValueError("agent_service_root_required")
         if runtime is not None and root is not None and runtime.root.resolve() != root.resolve():
             raise ValueError("agent_service_runtime_root_mismatch")
+        self.config_paths = resolve_config_paths(config_paths) if load_external_configuration else []
+        environ = None if load_external_configuration else {}
         if runtime is not None:
             self.runtime = runtime
+            self.runtime_settings = _runtime_settings(self.config_paths, environ=environ)
         else:
             assert root is not None
-            self.runtime = OperationRuntime(root=root)
+            self.runtime, self.runtime_settings = build_runtime(root, self.config_paths, environ=environ)
         self.resources = ResourceResolver()
         resolved_tool_port = ToolRegistry(
             tool_port or RuntimeToolAdapter(self.runtime),
@@ -112,7 +120,7 @@ class AgentService:
             self.workers = WorkerManager(
                 workers,
                 factories={
-                    "codex_handoff": lambda: CodexHandoffWorker(records=self.worker_records),
+                    "codex_handoff": lambda: CodexHandoffWorker(records=self.worker_records, workspaces=self.workspaces),
                     "docker": lambda: DockerWorkerAdapter(records=self.worker_records),
                 },
                 capabilities={"codex_handoff": ("codex.handoff",)},
@@ -121,6 +129,12 @@ class AgentService:
         self._model_lock = threading.RLock()
         self._model_condition = threading.Condition(self._model_lock)
         self._active_model_loops: dict[str, dict[AgentLoop, int]] = {}
+        self._active_runs: dict[str, int] = {}
+        self._active_writes = 0
+        self._write_local = threading.local()
+        self._closing = False
+        self._close_complete = threading.Event()
+        self._shutdown_deadline = 0.0
         resolved_tool_port.delegate = AgentToolAdapter(self, resolved_tool_port.delegate)
         self.agent_loop = (
             AgentLoop(
@@ -135,6 +149,11 @@ class AgentService:
             if model_port is not None
             else None
         )
+
+        configure_service(self, model_port=model_port, model_name=model_name,
+                          streaming=model_streaming, options=provider_options,
+                          max_retries=model_max_retries, max_turns=model_max_turns,
+                          load_external_configuration=load_external_configuration)
 
     @property
     def model_loop(self) -> AgentLoop | None:
@@ -152,6 +171,7 @@ class AgentService:
     ) -> None:
         """Replace the provider used by future turns through the canonical service."""
         with self._model_lock:
+            self._ensure_open()
             previous = self.agent_loop
             resolved_retries = previous.max_retries if max_retries is None and previous is not None else (2 if max_retries is None else max_retries)
             resolved_turns = previous.max_turns if max_turns is None and previous is not None else (8 if max_turns is None else max_turns)
@@ -177,6 +197,7 @@ class AgentService:
         for loop in loops:
             (loop.cancel if cancel else loop.interrupt)(run_id)
 
+    @service_write
     def control_write(self, operation: Any, *args: Any, **kwargs: Any) -> Any:
         """Single application boundary for adapter-owned durable settings."""
         if not callable(operation):
@@ -224,9 +245,15 @@ class AgentService:
             raise ValueError("completed_run_requires_successful_terminal_decision")
         return view
 
+    @service_write
     def start(self, request: StartRequest | Mapping[str, Any]) -> AgentStartResult:
-        resolved = StartRequest.from_value(request)
-        states = self.runtime.start_batch(**resolved.runtime_arguments(), model_led=self.agent_loop is not None)
+        with self._model_lock:
+            self._ensure_open()
+            if isinstance(request, Mapping):
+                request = {"max_actions": self.runtime_settings["max_actions_per_cycle"],
+                           "max_retries_per_action": self.runtime_settings["max_retries_per_action"], **request}
+            resolved = StartRequest.from_value(request)
+            states = self.runtime.start_batch(**resolved.runtime_arguments(), model_led=self.agent_loop is not None)
         views = tuple(
             self._validate_result("created", self._view(self.runtime.status(state.run_id)))
             for state in states
@@ -241,100 +268,6 @@ class AgentService:
         for view in views:
             self.conversation.record_start(view, resolved)
         return AgentStartResult(runs=views, batch_id=next(iter(batch_ids), ""))
-
-    def run(
-        self,
-        run_id: str,
-        budget_delta: BudgetDelta | Mapping[str, Any] | None = None,
-        *,
-        max_actions: int | None = None,
-    ) -> AgentRunView:
-        before = self.status(run_id)
-        delta = BudgetDelta.from_value(budget_delta)
-        if delta.changes_budget and before.run.status in {"completed", "failed", "cancelled"}:
-            raise ValueError(f"operation_terminal:{before.run.status}")
-        if delta.changes_budget:
-            arguments = {
-                "actions": delta.actions,
-                "tokens": delta.tokens,
-                "time_seconds": delta.time_seconds,
-                "deadline": delta.deadline,
-                "acknowledge_missing_usage": delta.acknowledge_missing_usage,
-            }
-            if delta.idempotency_key:
-                self.runtime.apply_budget_delta_once(
-                    run_id,
-                    idempotency_key=delta.idempotency_key,
-                    **arguments,
-                )
-            else:
-                self.runtime.apply_budget_delta(run_id, **arguments)
-        with self._model_lock:
-            loop = self.agent_loop
-            if loop is not None:
-                active = self._active_model_loops.setdefault(run_id, {})
-                active[loop] = active.get(loop, 0) + 1
-        if loop is None:
-            return self._resume_runtime(run_id, max_actions=max_actions)
-        try:
-            return self._run_model_loop(loop, run_id, max_actions=max_actions)
-        finally:
-            with self._model_condition:
-                active = self._active_model_loops[run_id]
-                active[loop] -= 1
-                if not active[loop]:
-                    del active[loop]
-                if not active:
-                    del self._active_model_loops[run_id]
-                self._model_condition.notify_all()
-
-    def _run_model_loop(
-        self,
-        loop: AgentLoop,
-        run_id: str,
-        *,
-        max_actions: int | None,
-    ) -> AgentRunView:
-        ttl = 30.0
-        token = self.runtime.store.acquire_lease(
-            run_id,
-            "__model_loop__",
-            f"agent-service:model-loop:{uuid4().hex}",
-            ttl_seconds=ttl,
-        )
-        if token is None:
-            return self.status(run_id)
-        stopped = threading.Event()
-
-        def renew() -> None:
-            while not stopped.wait(ttl / 3):
-                try:
-                    if self.runtime.store.renew_lease(token, ttl_seconds=ttl) is not None:
-                        continue
-                except Exception:
-                    pass
-                loop.interrupt(run_id)
-                return
-
-        heartbeat = threading.Thread(target=renew, name="model-loop-lease", daemon=True)
-        try:
-            heartbeat.start()
-            try:
-                result = loop.run(run_id, max_actions=max_actions)
-            except ModelInterruptedError:
-                result = self.status(run_id)
-                if result.run.status not in {"paused_budget", "cancelling", "cancelled"}:
-                    raise
-        finally:
-            stopped.set()
-            heartbeat.join(timeout=5)
-            self.runtime.store.release_lease(token)
-        state = self.runtime.store.load_operation(run_id)
-        if state is not None and state.status == "cancelling":
-            return self._view(
-                self.runtime.cancel(run_id, reason=state.cancel_reason or "cancel_requested")
-            )
-        return result
 
     def _resume_runtime(
         self,
@@ -371,6 +304,7 @@ class AgentService:
         )
         return self._validate_result(before.run.status, view)
 
+    @service_write
     def submit_observation(
         self,
         run_id: str,
@@ -450,28 +384,34 @@ class AgentService:
         self.status(run_id)
         return self.runtime.status(run_id).summary()
 
+    @service_write
     def bind_credentials(self, run_id: str, bindings: Mapping[str, str]) -> None:
         self.runtime.bind_credentials(run_id, bindings)
 
+    @service_write
     def apply_budget_delta(self, run_id: str, **delta: Any) -> AgentRunView:
         before = self.status(run_id)
         view = self._view(self.runtime.apply_budget_delta(run_id, **delta))
         return self._validate_result(before.run.status, view)
 
+    @service_write
     def apply_budget_delta_once(self, run_id: str, *, idempotency_key: str, **delta: Any) -> AgentRunView:
         before = self.status(run_id)
         view = self._view(self.runtime.apply_budget_delta_once(run_id, idempotency_key=idempotency_key, **delta))
         return self._validate_result(before.run.status, view)
 
+    @service_write
     def apply_budget_delta_batch(self, run_ids: list[str], **delta: Any) -> None:
         self.runtime.apply_budget_delta_batch(run_ids, **delta)
 
+    @service_write
     def provide_target(self, run_id: str, targets: Sequence[str]) -> AgentRunView:
         before = self.status(run_id)
         self.runtime.provide_target(run_id, targets=targets)
         view = self.status(run_id)
         return self._validate_result(before.run.status, view)
 
+    @service_write
     def cancel(self, run_id: str, reason: str = "user_requested") -> AgentRunView:
         before = self.status(run_id)
         try:
@@ -479,6 +419,7 @@ class AgentService:
         except (StateVersionConflict, StoreConflictError) as exc:
             view = self._settle_control_conflict(run_id, exc)
         self._interrupt_model_loops(run_id, cancel=True)
+        self._cancel_run_workers(run_id)
         if view.run.status == "cancelling":
             with self._model_condition:
                 self._model_condition.wait_for(
@@ -494,6 +435,7 @@ class AgentService:
                 view = self.status(run_id)
         return self._validate_result(before.run.status, view)
 
+    @service_write
     def pause(self, run_id: str, reason: str = "user_requested") -> AgentRunView:
         before = self.status(run_id)
         view = self._view(self.runtime.pause_run(run_id, reason=reason))
@@ -501,6 +443,7 @@ class AgentService:
             self._interrupt_model_loops(run_id)
         return self._validate_result(before.run.status, view)
 
+    @service_write
     def resume(
         self,
         run_id: str,
@@ -508,7 +451,10 @@ class AgentService:
         *,
         max_actions: int | None = None,
         execute: bool = True,
+        run_until_pause: bool = True,
+        max_cycles: int = 32,
     ) -> AgentRunView:
+        self._ensure_open()
         delta = BudgetDelta.from_value(budget_delta)
         before = self.status(run_id)
         if delta.changes_budget and before.run.status in {"completed", "failed", "cancelled"}:
@@ -534,7 +480,7 @@ class AgentService:
         if loop is not None:
             loop.resume(run_id)
         if execute:
-            return self.run(run_id, max_actions=max_actions)
+            return self.run(run_id, max_actions=max_actions, run_until_pause=run_until_pause, max_cycles=max_cycles)
         view = self.status(run_id)
         return self._validate_result(before.run.status, view)
 
@@ -567,6 +513,7 @@ class AgentService:
             raise KeyError(f"operation_not_found:{run_id}")
         return self.conversation.messages(run_id)
 
+    @service_write
     def tool_catalog(self, run_id: str, *, capabilities: tuple[str, ...] = (), profile: str = ""):
         if self.runtime.store.load_operation(run_id) is None:
             raise KeyError(f"operation_not_found:{run_id}")
@@ -577,11 +524,13 @@ class AgentService:
             raise KeyError(f"operation_not_found:{run_id}")
         return self.tools.snapshot(run_id)
 
+    @service_write
     def expand_tools(self, run_id: str, selectors: tuple[str, ...] = ()):
         if self.runtime.store.load_operation(run_id) is None:
             raise KeyError(f"operation_not_found:{run_id}")
         return self.tools.expand(run_id, selectors)
 
+    @service_write
     def refresh_tools(self, *, force: bool = False):
         return self.tools.refresh(force=force)
 
@@ -638,6 +587,7 @@ class AgentService:
     def replay_session(self, run_id: str, leaf_id: str | None = None):
         return self.journal.replay(run_id, leaf_id)
 
+    @service_write
     def branch_session(
         self,
         run_id: str,
@@ -651,12 +601,15 @@ class AgentService:
             expected_leaf_id=expected_leaf_id,
         )
 
+    @service_write
     def fork_session(self, run_id: str, from_entry_id: str, branch_id: str):
         return self.journal.fork(run_id, from_entry_id, branch_id)
 
+    @service_write
     def checkout_session(self, run_id: str, branch_id: str):
         return self.journal.checkout(run_id, branch_id)
 
+    @service_write
     def select_context(self, run_id: str, *, max_messages: int = 32) -> ContextSelection:
         return self.context_selector.select(
             self.status(run_id),
@@ -724,98 +677,17 @@ class AgentService:
             token_budget=configured_budget,
         )
 
+    @service_write
     def compact_context(self, run_id: str, message_ids: tuple[str, ...] = ()):
         if self.runtime.store.load_operation(run_id) is None:
             raise KeyError(f"operation_not_found:{run_id}")
         return self.context_compactor.compact(run_id, message_ids)
-
-    def execute_worker(self, task: WorkerTask | Mapping[str, Any]) -> WorkerResult:
-        resolved = task if isinstance(task, WorkerTask) else WorkerTask.from_dict(task)
-        state = self.runtime.store.load_operation(resolved.run_id)
-        if state is None:
-            raise KeyError(f"operation_not_found:{resolved.run_id}")
-        if state.status in WORKER_BLOCKED_RUN_STATUSES:
-            existing = self.worker_records.get_for_run(resolved.task_id, resolved.run_id)
-            if existing is None or existing.result is None:
-                raise ValueError(f"worker_run_not_executable:{resolved.run_id}:{state.status}")
-        for artifact_id in resolved.required_artifacts:
-            try:
-                self.runtime.artifacts.verify(artifact_id, run_id=resolved.run_id)
-            except KeyError:
-                raise ValueError(f"worker_required_artifact_missing:{artifact_id}")
-        result = self.workers.execute(resolved)
-        for artifact_id in result.artifact_refs:
-            self.runtime.artifacts.verify(artifact_id, run_id=resolved.run_id)
-        self._record_worker_observation(resolved, result)
-        return result
-
-    def _record_worker_observation(self, task: WorkerTask, result: WorkerResult) -> None:
-        """Persist one bounded worker result projection for later model turns."""
-        bounded = BoundedOutput.capture_json(result.output)
-        try:
-            output_projection = bounded.preview()
-        finally:
-            bounded.discard()
-        result_projection = {
-            **result.to_dict(),
-            "output": output_projection,
-            "metadata": {
-                **dict(result.metadata),
-                "complete_output_artifacts": list(result.artifact_refs),
-            },
-        }
-        payload = {
-            "task_id": task.task_id,
-            "worker_kind": str(task.metadata.get("worker_kind") or task.capability.partition(".")[0]),
-            "action_id": str(task.metadata.get("action_id") or ""),
-            "idempotency_key": task.idempotency_key,
-            "result": result_projection,
-        }
-        observation_hash = contract_hash(payload)
-        observation_id = contract_hash({"task_id": task.task_id, "status": result.status})
-        self.worker_records.record_observation(
-            task.run_id,
-            {**payload, "observation_hash": observation_hash, "observation_id": observation_id},
-        )
-
-    def worker_observations(self, run_id: str) -> tuple[Mapping[str, Any], ...]:
-        if self.runtime.store.load_operation(run_id) is None:
-            raise KeyError(f"operation_not_found:{run_id}")
-        return tuple(
-            dict(item["payload"])
-            for item in self.runtime.store.events(run_id)
-            if item["event_type"] == "worker_observation_recorded"
-        )
-
-    def close(self) -> None:
-        close = getattr(self.workers, "close", None)
-        if callable(close):
-            close()
-        self.runtime.broker.close()
 
     def __enter__(self) -> "AgentService":
         return self
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
         self.close()
-
-    def worker_status(self, run_id: str, task_id: str):
-        record = self.worker_records.get_for_run(task_id, run_id)
-        if record is None:
-            raise KeyError(f"worker_task_not_found:{run_id}:{task_id}")
-        return record
-
-    def worker_results(self, run_id: str):
-        if self.runtime.store.load_operation(run_id) is None:
-            raise KeyError(f"operation_not_found:{run_id}")
-        return self.worker_records.records(run_id)
-
-    def cancel_worker(self, run_id: str, task_id: str) -> bool:
-        if self.worker_records.get_for_run(task_id, run_id) is None:
-            raise KeyError(f"worker_task_not_found:{run_id}:{task_id}")
-        if isinstance(self.workers, WorkerManager):
-            return self.workers.cancel(task_id, run_id)
-        return self.workers.cancel(task_id)
 
     def artifact(self, run_id: str, artifact_id: str):
         ref = self.runtime.artifacts.get_ref(artifact_id, run_id=run_id)
@@ -836,6 +708,7 @@ class AgentService:
             raise KeyError(f"operation_not_found:{run_id}")
         return tuple(ref for ref in self.runtime.artifacts.search(run_id, query, limit=limit) if not ref.metadata.get("provider_private"))
 
+    @service_write
     def record_exploration(self, run_id: str, record: Mapping[str, Any]):
         if self.runtime.store.load_operation(run_id) is None:
             raise KeyError(f"operation_not_found:{run_id}")
@@ -852,6 +725,7 @@ class AgentService:
             raise KeyError(f"operation_not_found:{run_id}")
         return self.exploration.projection(run_id)
 
+    @service_write
     def recon_digest(self, run_id: str, *, source_message_ids: tuple[str, ...] = ()):
         return self.exploration.build_recon_digest(
             run_id,

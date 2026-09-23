@@ -7,7 +7,6 @@ import os
 import re
 import shlex
 import queue
-import shutil
 import subprocess
 import threading
 import time
@@ -20,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import ToolCallResult, ToolDescriptor, utc_now
+from .managed_tools import resolve_executable
 from .security import redact_sensitive, safe_error_text
 
 
@@ -116,7 +116,7 @@ class StdioMcpClient:
         self.server_name = server_name
         self.roots = tuple(path.expanduser().resolve(strict=False) for path in roots)
         environment = _child_environment(env)
-        executable = shutil.which(command) or command
+        executable = resolve_executable(command, path=environment.get("PATH")) or command
         self.process = subprocess.Popen(
             [executable, *args],
             stdin=subprocess.PIPE,

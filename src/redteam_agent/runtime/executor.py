@@ -491,6 +491,9 @@ class ActionExecutor(ExecutorActionsMixin, ExecutorTrustMixin):
         decision: VerificationDecision,
         node: EvidenceNode,
     ) -> tuple[str, PlanRevision | None, tuple[str, ...]]:
+        state.action_failure_streaks[f"{state.branch_id}:{action.action_id}"] = 0
+        if state.failure_reason == f"action_retry_limit_exhausted:{action.action_id}":
+            state.failure_reason = ""
         if node.evidence_id not in state.evidence_ids:
             state.evidence_ids.append(node.evidence_id)
         succeeded = state.action_tools_succeeded.setdefault(action.action_id, [])
@@ -564,20 +567,23 @@ class ActionExecutor(ExecutorActionsMixin, ExecutorTrustMixin):
             state.status = "cancelling" if cancellation_pending else "waiting_host"
             state.current_action_id = action.action_id
             return "action_host_handoff_required"
-        attempts = state.action_attempts.get(action.action_id, 0)
+        failure_key = f"{state.branch_id}:{action.action_id}"
+        failures = state.action_failure_streaks.get(failure_key, 0) + 1
+        state.action_failure_streaks[failure_key] = failures
+        retry_budget_available = failures < max(1, min(action.max_retries, state.goal.max_retries_per_action))
         exclusions = tuple(dict.fromkeys((*tried, *state.action_tools_succeeded.get(action.action_id, ()))))
         alternative = self.broker.select(action.required_capabilities, exclude=exclusions)
         retry_allowed = (
             allow_retry
             and result.retryable
-            and attempts <= min(action.max_retries, state.goal.max_retries_per_action)
+            and retry_budget_available
         )
         if retry_allowed:
             tried.remove(descriptor.qualified_name)
             state.action_status[action.action_id] = "pending"
             state.status = "running"
             event_type = "action_retry_scheduled"
-        elif allow_retry and alternative is not None:
+        elif allow_retry and retry_budget_available and alternative is not None:
             state.action_status[action.action_id] = "pending"
             state.status = "running"
             event_type = "action_fallback_scheduled"
@@ -596,6 +602,9 @@ class ActionExecutor(ExecutorActionsMixin, ExecutorTrustMixin):
             state.status = "waiting_host"
             state.current_action_id = action.action_id
             event_type = "action_host_handoff_required"
+            if not retry_budget_available:
+                state.failure_reason = f"action_retry_limit_exhausted:{action.action_id}"
+                event_type = "action_retry_limit_reached"
         if cancellation_pending:
             state.status = "cancelling"
         return event_type

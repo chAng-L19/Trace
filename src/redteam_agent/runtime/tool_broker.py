@@ -7,7 +7,7 @@ import re
 import threading
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -224,6 +224,11 @@ class ToolBroker(McpBrokerMixin):
 
     def descriptors(self) -> tuple[ToolDescriptor, ...]:
         with self._lifecycle_lock:
+            from .open_source_tools import binary_backend, binary_radare2
+
+            name = "builtin:binary-radare2"
+            if self._adapters.get(name) is binary_radare2:
+                self._descriptors[name] = replace(self._descriptors[name], **binary_backend())
             return tuple(sorted(self._descriptors.values(), key=lambda item: (item.priority, item.qualified_name.casefold())))
 
     @staticmethod

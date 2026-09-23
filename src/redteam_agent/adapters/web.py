@@ -6,6 +6,7 @@ import ipaddress
 import json
 import math
 import os
+import signal
 import ssl
 import time
 from dataclasses import dataclass, field
@@ -18,8 +19,8 @@ from ..application import AgentService
 from ..application.contracts import BudgetDelta
 from ..core import ModelPort, contract_hash
 from ..providers import OpenAICompatibleProvider
+from ..application.bootstrap import resolve_provider
 from ..runtime.store_common import ImmutableRecordError, StoreConflictError
-from .web_control import ControlPlane
 from .web_routes import ControlRoutesMixin
 from .web_projection import MAX_SEARCH_RECORDS, search_graph_projection, search_record_projection
 WEB_SCHEMA_VERSION = 1
@@ -130,20 +131,17 @@ class WebApi(ControlRoutesMixin):
         self.service = service
         self.command_ttl_seconds = max(1.0, float(command_ttl_seconds))
         self.owner = f"web-{uuid4().hex}"
-        self.control = ControlPlane(service.runtime.store, service.runtime.root)
+        self.control = service.control
         self.force_auth = False
         self.tls_enabled = False
-        self._mcp_restore_error = ""
+        self._mcp_restore_error = service.mcp_restore_error
+    def dispatch(self, method, path, *, body=None, headers=None):
         try:
-            # Rebuild from the database before discovery; an exported TOML may
-            # be absent or stale after a crash between COMMIT and refresh.
-            self._reload_control_plane()
-        except Exception:
-            # MCP transport timeouts/failures must not prevent serving the UI.
-            # _reload_control_plane records an observable, redacted failure.
-            pass
-        self._load_active_provider()
-    def dispatch(
+            return self._dispatch(method, path, body=body, headers=headers)
+        except Exception as exc:
+            return self._internal_error(exc)
+
+    def _dispatch(
         self,
         method: str,
         path: str,
@@ -162,6 +160,15 @@ class WebApi(ControlRoutesMixin):
         query = {key: values[-1] for key, values in parse_qs(parsed.query).items() if values}
         payload = dict(body or {})
         request_headers = {str(key).casefold(): str(value) for key, value in (headers or {}).items()}
+        if parsed.path in {"/health/live", "/health/ready", "/healthz", "/readyz"}:
+            if method != "GET":
+                return self._error(405, "method_not_allowed")
+            loop = self.service.model_loop
+            configured = loop is not None
+            ready = configured and bool(getattr(loop.model, "ready", True)) and not self.service.closing
+            live = parsed.path in {"/health/live", "/healthz"}
+            return self._ok({"live": not self.service.closing, "configured": configured, "ready": ready},
+                            status=200 if (not self.service.closing if live else ready) else 503)
         if segments[:2] == ["api", "auth"]:
             return self._auth(method, segments[2:], payload, request_headers)
         if (self.control.auth_required or self.force_auth) and segments[:2] != ["api", "auth"]:
@@ -198,7 +205,7 @@ class WebApi(ControlRoutesMixin):
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             return self._error(400, str(exc))
         except Exception as exc:  # pragma: no cover - defensive protocol boundary
-            return self._error(500, f"internal_error:{type(exc).__name__}")
+            return self._internal_error(exc)
 
     def _control_request(
         self,
@@ -500,6 +507,8 @@ class WebApi(ControlRoutesMixin):
                     run_id,
                     budget_delta,
                     max_actions=self._optional_int(body.get("max_actions")),
+                    run_until_pause=bool(body.get("run_until_pause", True)),
+                    max_cycles=int(body.get("max_cycles", 32)),
                 )
             )
         if command == "pause":
@@ -511,6 +520,8 @@ class WebApi(ControlRoutesMixin):
                     run_id,
                     budget_delta,
                     max_actions=self._optional_int(body.get("max_actions")),
+                    run_until_pause=bool(body.get("run_until_pause", True)),
+                    max_cycles=int(body.get("max_cycles", 32)),
                     execute=bool(body.get("execute", True)),
                 )
             )
@@ -687,31 +698,11 @@ def model_provider_from_environment(
     timeout_seconds: float | None = None,
     max_context_tokens: int | None = None,
 ) -> OpenAICompatibleProvider | None:
-    values = environ if environ is not None else os.environ
-    resolved_model = str(model or values.get("TRACE_MODEL") or "").strip()
-    if not resolved_model:
-        return None
-    resolved_base = str(
-        base_url or values.get("TRACE_API_BASE_URL") or "https://api.openai.com/v1"
-    ).strip()
-    key_name = str(api_key_env or values.get("TRACE_API_KEY_ENV") or "OPENAI_API_KEY").strip()
-    resolved_timeout = (
-        float(timeout_seconds)
-        if timeout_seconds is not None
-        else float(values.get("TRACE_API_TIMEOUT_SECONDS") or 120)
-    )
-    resolved_context = (
-        int(max_context_tokens)
-        if max_context_tokens is not None
-        else int(values.get("TRACE_MODEL_CONTEXT_TOKENS") or 128_000)
-    )
-    return OpenAICompatibleProvider(
-        resolved_base,
-        resolved_model,
-        str(values.get(key_name) or ""),
-        timeout_seconds=resolved_timeout,
-        max_context_tokens=resolved_context,
-    )
+    provider, _ = resolve_provider(None, (), {
+        "model": model, "base_url": base_url, "api_key_env": api_key_env,
+        "timeout_seconds": timeout_seconds, "max_context_tokens": max_context_tokens,
+    }, environ=environ)
+    return provider
 
 def serve(
     root: Path,
@@ -724,6 +715,7 @@ def serve(
     api_key_env: str = "",
     api_timeout_seconds: float | None = None,
     model_context_tokens: int | None = None,
+    config_paths: list[str] | None = None,
 ) -> None:
     # Import lazily so ``python -m redteam_agent.adapters.web`` and the
     # installed ``trace-web`` entry point do not create a cycle:
@@ -738,10 +730,11 @@ def serve(
     if tls_enabled:
         tls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         tls_context.load_cert_chain(tls_cert, tls_key)
-    provider = model_port or model_provider_from_environment(model=model_name, base_url=api_base_url, api_key_env=api_key_env, timeout_seconds=api_timeout_seconds, max_context_tokens=model_context_tokens)
-    resolved_model = model_name or str(provider.capabilities().metadata.get("model") if provider is not None else "")
-    service = AgentService(root=root, model_port=provider, model_name=resolved_model,
-                           model_streaming=provider.capabilities().streaming if provider is not None else False)
+    service = AgentService(root=root, model_port=model_port, model_name=model_name,
+        model_streaming=model_port.capabilities().streaming if model_port is not None else False,
+        config_paths=config_paths, provider_options={"model": model_name, "base_url": api_base_url,
+        "api_key_env": api_key_env, "timeout_seconds": api_timeout_seconds,
+        "max_context_tokens": model_context_tokens})
     try:
         is_loopback = ipaddress.ip_address(host).is_loopback
     except ValueError:
@@ -755,18 +748,26 @@ def serve(
     api = WebApi(service)
     api.force_auth = not is_loopback
     api.tls_enabled = tls_enabled
-    server = TraceHTTPServer((host, int(port)), api)
-    if tls_context is not None:
-        server.socket = tls_context.wrap_socket(server.socket, server_side=True)
+    server = None
     try:
+        server = TraceHTTPServer((host, int(port)), api)
+        if tls_context is not None:
+            server.socket = tls_context.wrap_socket(server.socket, server_side=True)
         server.serve_forever()
+    except KeyboardInterrupt:
+        pass
     finally:
-        server.server_close()
-        service.close()
+        try:
+            service.close()
+        finally:
+            if server is not None:
+                server.server_close()
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="trace-web")
-    parser.add_argument("--root", type=Path, required=True)
+    agent_home = Path(os.environ.get("REDTEAM_AGENT_HOME") or Path.home() / ".redteam-agent")
+    parser.add_argument("--root", type=Path, default=Path(os.environ.get("TRACE_HOME") or agent_home / "operations"))
+    parser.add_argument("--config", action="append", default=[])
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--model", default="")
@@ -775,7 +776,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--api-timeout-seconds", type=float)
     parser.add_argument("--model-context-tokens", type=int)
     arguments = parser.parse_args(argv)
-    serve(arguments.root.expanduser().resolve(), host=arguments.host, port=arguments.port, model_name=arguments.model, api_base_url=arguments.api_base_url, api_key_env=arguments.api_key_env, api_timeout_seconds=arguments.api_timeout_seconds, model_context_tokens=arguments.model_context_tokens)
+    # SIGTERM (Docker/systemd) follows the same cleanup path as Ctrl+C.
+    previous_sigterm = signal.signal(signal.SIGTERM, signal.default_int_handler)
+    try:
+        serve(arguments.root.expanduser().resolve(), host=arguments.host, port=arguments.port, model_name=arguments.model, api_base_url=arguments.api_base_url, api_key_env=arguments.api_key_env, api_timeout_seconds=arguments.api_timeout_seconds, model_context_tokens=arguments.model_context_tokens, config_paths=arguments.config)
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
     return 0
 
 __all__ = ["DEFAULT_EVENT_LIMIT", "MAX_JSON_RESPONSE_BYTES", "MAX_REQUEST_BYTES", "WEB_SCHEMA_VERSION", "TraceHTTPServer", "WebApi", "WebResponse", "main", "model_provider_from_environment", "serve"]
@@ -783,13 +789,10 @@ __all__ = ["DEFAULT_EVENT_LIMIT", "MAX_JSON_RESPONSE_BYTES", "MAX_REQUEST_BYTES"
 
 def __getattr__(name: str) -> Any:
     """Lazily expose the HTTP server while keeping the adapter importable."""
-
     if name == "TraceHTTPServer":
         from .web_server import TraceHTTPServer
-
         return TraceHTTPServer
     raise AttributeError(name)
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
