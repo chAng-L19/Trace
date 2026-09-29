@@ -185,7 +185,7 @@ class ArtifactStore:
         digest = self._digest(raw)
         path = self._path(digest)
         self._write_blob(path, raw, digest)
-        parent_ids = tuple(dict.fromkeys(str(item) for item in parents if str(item)))
+        parent_ids = tuple(sorted(dict.fromkeys(str(item) for item in parents if str(item))))
         durable_preview = self._bounded_projection(preview, max_bytes=DEFAULT_INLINE_BYTES)
         durable_metadata = self._bounded_projection(
             dict(metadata or {}), max_bytes=DEFAULT_METADATA_BYTES
@@ -278,7 +278,7 @@ class ArtifactStore:
                 self._verify_path(path, digest=digest, byte_count=byte_count)
         finally:
             staging.unlink(missing_ok=True)
-        parent_ids = tuple(dict.fromkeys(str(item) for item in parents if str(item)))
+        parent_ids = tuple(sorted(dict.fromkeys(str(item) for item in parents if str(item))))
         durable_preview = self._bounded_projection(preview, max_bytes=DEFAULT_INLINE_BYTES)
         durable_metadata = self._bounded_projection(
             dict(metadata or {}), max_bytes=DEFAULT_METADATA_BYTES
@@ -321,7 +321,7 @@ class ArtifactStore:
 
     def _save_ref(self, ref: ArtifactRef, parents: Sequence[str]) -> ArtifactRef:
         serialized = _dump(ref.to_dict())
-        parent_ids = tuple(dict.fromkeys(str(item) for item in parents if str(item)))
+        parent_ids = tuple(sorted(dict.fromkeys(str(item) for item in parents if str(item))))
         with self.store.transaction(immediate=True) as connection:
             blob = connection.execute(
                 "SELECT content_hash, byte_count, storage_key FROM artifact_blobs WHERE content_hash=?",
@@ -428,10 +428,10 @@ class ArtifactStore:
                 "SELECT byte_count, storage_key FROM artifact_blobs WHERE content_hash=?",
                 (ref.content_hash,),
             ).fetchone()
-            links = tuple(
+            legacy_links = tuple(
                 str(item["parent_id"])
                 for item in connection.execute(
-                    "SELECT parent_id FROM artifact_links WHERE artifact_id=? AND run_id=? ORDER BY parent_id",
+                    "SELECT parent_id FROM artifact_links WHERE artifact_id=? AND run_id=? ORDER BY rowid",
                     (artifact_id, run_id),
                 ).fetchall()
             )
@@ -448,24 +448,49 @@ class ArtifactStore:
             media_type=ref.media_type,
             preview=ref.preview,
             metadata=ref.metadata,
-            parents=links,
+            parents=tuple(sorted(legacy_links)),
         )
         if expected_id != artifact_id:
-            raise ArtifactIntegrityError(f"artifact_lineage_integrity:{artifact_id}")
+            legacy_id = self._reference_id(
+                run_id=ref.run_id,
+                content_hash=ref.content_hash,
+                artifact_type=ref.artifact_type,
+                media_type=ref.media_type,
+                preview=ref.preview,
+                metadata=ref.metadata,
+                parents=legacy_links,
+            )
+            if legacy_id != artifact_id:
+                raise ArtifactIntegrityError(f"artifact_lineage_integrity:{artifact_id}")
         return ref
 
-    def read(self, artifact_id: str, *, run_id: str) -> bytes:
+    def read(self, artifact_id: str, *, run_id: str, offset: int = 0, limit: int | None = None) -> bytes:
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise ValueError("artifact_offset_invalid")
+        if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 1):
+            raise ValueError("artifact_limit_invalid")
         ref = self.get_ref(artifact_id, run_id=run_id)
         if ref is None:
             raise KeyError(f"artifact_not_found:{artifact_id}")
         path = self._path(ref.content_hash)
         try:
-            data = path.read_bytes()
+            # ponytail: verify the whole CAS blob per range; chunk hashes only if throughput requires them.
+            digest = hashlib.sha256()
+            byte_count = 0
+            result = bytearray()
+            with path.open("rb") as source:
+                for chunk in iter(lambda: source.read(64 * 1024), b""):
+                    digest.update(chunk)
+                    end = byte_count + len(chunk)
+                    selected_end = end if limit is None else min(end, offset + limit)
+                    if selected_end > max(byte_count, offset):
+                        result.extend(chunk[max(0, offset - byte_count):selected_end - byte_count])
+                    byte_count = end
         except OSError as exc:
             raise ArtifactIntegrityError(f"artifact_missing:{artifact_id}") from exc
-        if len(data) != ref.byte_count or self._digest(data) != ref.content_hash:
+        if byte_count != ref.byte_count or digest.hexdigest() != ref.content_hash:
             raise ArtifactIntegrityError(f"artifact_integrity_mismatch:{artifact_id}")
-        return data
+        return bytes(result)
 
     def read_json(self, artifact_id: str, *, run_id: str) -> Any:
         return json.loads(self.read(artifact_id, run_id=run_id).decode("utf-8"))
@@ -498,7 +523,10 @@ class ArtifactStore:
                 "SELECT a.artifact_id, f.artifact_type AS fts_type, f.preview AS fts_preview, "
                 "f.metadata AS fts_metadata FROM artifact_fts f "
                 "JOIN artifact_refs a ON a.artifact_id=f.artifact_id "
-                "WHERE f.run_id=? AND a.run_id=? AND artifact_fts MATCH ? ORDER BY a.created_at LIMIT ?",
+                "WHERE f.run_id=? AND a.run_id=? AND artifact_fts MATCH ? "
+                "AND instr(a.metadata_json, '\"provider_private\": true')=0 "
+                "AND instr(a.metadata_json, '\"provider_private\":true')=0 "
+                "ORDER BY a.created_at LIMIT ?",
                 (run_id, run_id, literal, bounded),
             ).fetchall()
         results: list[ArtifactRef] = []

@@ -14,6 +14,8 @@ jobs:
   test:
     name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
     strategy:
       fail-fast: false
       matrix:
@@ -26,17 +28,86 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - name: Install package and test dependencies
-        run: python -m pip install --upgrade pip && python -m pip install ".[dev]"
-      - name: Install Chromium for browser fixtures
-        run: python -m playwright install --with-deps chromium
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install package
+        run: python -m pip install --upgrade pip && python -m pip install .
       - name: Compile source
-        run: python -m compileall -q src scripts tests
+        run: python -X pycache_prefix="$RUNNER_TEMP/trace-pycache" -m compileall -q src scripts
+      - name: Check frontend JavaScript
+        shell: bash
+        run: |
+          set -o pipefail
+          find src -type f -name '*.js' -print0 | xargs -0 -r -n1 node --check
       - name: Verify dependency consistency
         run: python -m pip check
-      - name: Run test suite
-        run: python -m pytest -q
       - name: Run Trace self-test
-        run: python -m redteam_agent self-test
+        run: trace self-test
+      - name: Run dependency-free CLI/state smoke
+        run: python -B scripts/cli_state_smoke.py
       - name: Build wheel
         run: python -m pip wheel . --no-deps --wheel-dir dist
+      - name: Audit wheel contents and entry points
+        run: python scripts/release_smoke.py audit-wheel dist/*.whl
+      - name: Verify isolated wheel installation
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/trace-wheel"
+          "$RUNNER_TEMP/trace-wheel/bin/python" -m pip install dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/trace-wheel/bin/python" "$GITHUB_WORKSPACE/scripts/release_smoke.py" installed-smoke \
+            --root "$RUNNER_TEMP/trace-smoke" \
+            --source-root "$GITHUB_WORKSPACE"
+      - name: Verify Linux user installation
+        shell: bash
+        run: |
+          export TRACE_INSTALL_PREFIX="$RUNNER_TEMP/trace-user"
+          export TRACE_HOME="$RUNNER_TEMP/trace-user-state"
+          export XDG_CACHE_HOME="$RUNNER_TEMP/trace-user-cache"
+          sh deploy/install-linux.sh "$GITHUB_WORKSPACE"/dist/*.whl
+          "$TRACE_INSTALL_PREFIX/trace-service" cli self-test
+          sh deploy/install-linux.sh "$GITHUB_WORKSPACE"/dist/*.whl
+          test -x "$TRACE_INSTALL_PREFIX/previous/bin/trace"
+          test "$(readlink "$TRACE_INSTALL_PREFIX/current")" != "$(readlink "$TRACE_INSTALL_PREFIX/previous")"
+          ln -s "$(readlink "$TRACE_INSTALL_PREFIX/previous")" "$TRACE_INSTALL_PREFIX/.rollback"
+          mv -Tf "$TRACE_INSTALL_PREFIX/.rollback" "$TRACE_INSTALL_PREFIX/current"
+          "$TRACE_INSTALL_PREFIX/trace-service" cli self-test
+      - name: Check deployment shell syntax
+        run: sh -n deploy/install-linux.sh && sh -n deploy/run-trace.sh
+
+  docker:
+    name: Docker build and runtime smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Prepare runtime credentials
+        shell: bash
+        run: |
+          echo "TRACE_ADMIN_PASSWORD=$(openssl rand -hex 24)" >> "$GITHUB_ENV"
+      - name: Check Compose and build image
+        run: docker compose config --quiet && docker compose build
+      - name: Verify HTTP, browser, storage and graceful stop
+        shell: bash
+        run: |
+          docker compose up -d --wait --wait-timeout 180
+          test "$(docker inspect --format '{{.HostConfig.ReadonlyRootfs}}' "$(docker compose ps -q trace)")" = true
+          curl --fail --silent http://127.0.0.1:8765/api/auth/status | python -c \
+            'import json,sys; r=json.load(sys.stdin); assert r["ok"] and r["required"] and not r["authenticated"]'
+          docker compose exec -T trace python /opt/trace/healthcheck.py
+          docker compose exec -T trace python -c \
+            'import os,pathlib; assert os.getuid() == 10001; [pathlib.Path(p,".smoke").write_text("persistent") for p in ("/var/lib/trace", "/var/lib/trace/artifact-store", "/var/lib/trace/workspaces", "/var/cache/trace")]'
+          docker compose exec -T trace python -c \
+            'from playwright.sync_api import sync_playwright; p=sync_playwright().start(); b=p.chromium.launch(headless=True); page=b.new_page(); page.goto("data:text/html,<title>Trace smoke</title>"); assert page.title()=="Trace smoke"; b.close(); p.stop()'
+          docker compose exec -T trace trace setup chromium --offline --json
+          docker compose stop
+          test "$(docker inspect --format '{{.State.ExitCode}}' "$(docker compose ps -aq trace)")" = 0
+          docker compose up -d --force-recreate --wait --wait-timeout 90
+          docker compose exec -T trace python -c \
+            'import pathlib; assert all(pathlib.Path(p,".smoke").read_text()=="persistent" for p in ("/var/lib/trace", "/var/lib/trace/artifact-store", "/var/lib/trace/workspaces", "/var/cache/trace"))'
+          docker compose run --rm --no-deps trace cli self-test
+      - name: Stop smoke containers
+        if: always()
+        run: docker compose down --volumes

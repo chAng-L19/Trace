@@ -44,11 +44,15 @@ class LocalWorker:
         self._cancel_requested: set[str] = set()
         self._cancel_events: dict[str, threading.Event] = {}
         self._lock = threading.RLock()
+        self._closed = False
 
     def capabilities(self) -> tuple[str, ...]:
         return ("local.command", "local.process")
 
     def execute(self, task: WorkerTask) -> WorkerResult:
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("local_worker_closed")
         with self.records.execution(task, on_lease_lost=lambda: self.cancel(task.task_id)):
             try:
                 return self._execute(task)
@@ -152,8 +156,13 @@ class LocalWorker:
                     options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
                 else:
                     options["start_new_session"] = True
-                process = subprocess.Popen(tuple(argv), **options)
                 with self._lock:
+                    if self._closed:
+                        return self._finish(
+                            task, "cancelled",
+                            WorkerResult(task.task_id, "cancelled", error="worker_cancelled"),
+                        )
+                    process = subprocess.Popen(tuple(argv), **options)
                     self._active[task.task_id] = process
                     cancel_requested = task.task_id in self._cancel_requested
                 if cancel_requested:
@@ -271,7 +280,8 @@ class LocalWorker:
 
     def close(self) -> None:
         with self._lock:
-            task_ids = tuple(self._active)
+            self._closed = True
+            task_ids = tuple(self._cancel_events)
         for task_id in task_ids:
             self.cancel(task_id)
 

@@ -306,7 +306,7 @@ class NextActionProposal:
 
 
 class NextActionPolicy:
-    """Choose the next ready action without creating a second scheduler state."""
+    """Select a quality gate; choose executable actions only for compatibility runs."""
 
     def __init__(self, broker: ToolBroker) -> None:
         self.broker = broker
@@ -399,6 +399,9 @@ class NextActionPolicy:
                 continue
             if not self._dependency_facts_valid(state, workflow, action, facts):
                 continue
+            if state.model_led:
+                # Gate order constrains evidence lineage, never the model's tactics.
+                return NextActionProposal(action, reason="lifecycle_evidence_required")
             if action.tool_strategy == "capability_coverage" and self.ensemble_satisfied(state, action):
                 ranked.append((-self._rank(state, action, None), index, action.action_id, action, None))
                 continue

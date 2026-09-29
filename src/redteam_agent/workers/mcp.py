@@ -58,6 +58,13 @@ class McpWorker:
         )
         try:
             tool_result = self.tools.reconcile(call)
+            if self.records.cancel_requested(task.task_id):
+                cancelled = self.records.transition(
+                    task.task_id, expected_statuses=("running",), status="cancelled",
+                    result=WorkerResult(task.task_id, "cancelled", error="worker_cancelled"),
+                )
+                assert cancelled.result is not None
+                return cancelled.result
             if tool_result is None and recovering:
                 unknown = self.records.mark_interrupted_unknown(task.task_id, owner="mcp-worker")
                 return unknown.result  # type: ignore[return-value]
@@ -93,7 +100,7 @@ class McpWorker:
                                 "output_hash": contract_hash(tool_result.output),
                                 **bounded.preview(),
                             },
-                            metadata={"task_id": task.task_id, "tool_name": tool_name},
+                            metadata={"task_id": task.task_id, "worker_kind": self.kind, "tool_name": tool_name},
                             parents=task.required_artifacts,
                         )
                     finally:

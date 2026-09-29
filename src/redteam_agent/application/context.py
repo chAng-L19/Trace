@@ -12,11 +12,14 @@ from ..runtime.conversation_records import (
     ConversationMessageRecord,
 )
 from ..runtime.model_common import utc_now
+from ..runtime.evidence_gate import EvidenceGate
+from ..runtime.verifier import SemanticVerifier
 from .contracts import AgentRunView, StartRequest
 from .context_contracts import ContextBudget, ContextSelection
 from .bounded_output import BoundedOutput
 from .resources import resource_context_metadata, resource_context_projection
 from .tool_projection import ToolObservationProjector
+from .agent_loop_support import context_summary_projection
 class ConversationLedger:
     def __init__(
         self,
@@ -230,9 +233,10 @@ class TraceableCompactor:
             else self.store.context_summaries(run_id)
         )
         for existing in active_summaries:
-            if existing.source_hash == source_hash:
+            if existing.source_hash == source_hash and existing.summary.get("method") == "structured_projection_v1":
                 return existing
         summary_identity = {
+            "method": "structured_projection_v1",
             "source_hash": source_hash,
             "parent_entry_id": self.journal.leaf_id(run_id) if self.journal is not None else None,
             "branch_id": self.journal.active_branch_id(run_id) if self.journal is not None else "",
@@ -241,21 +245,29 @@ class TraceableCompactor:
         for existing in self.store.context_summaries(run_id):
             if existing.summary_id == summary_id:
                 return existing
+        selected_ids = {item.message_id for item in selected}
         entries = []
         for item in selected:
-            rendered = json.dumps(item.content, ensure_ascii=False, sort_keys=True, default=str)
             entries.append(
                 {
                     "message_id": item.message_id,
                     "role": item.role,
                     "content_hash": item.content_hash,
-                    "preview": rendered[:256],
+                    "source_type": item.source_type,
+                    "source_id": item.source_id,
+                    "projection": context_summary_projection(item.content),
                 }
             )
         summary = {
             "kind": "traceable_context_summary",
+            "method": "structured_projection_v1",
             "source_count": len(selected),
             "entries": entries,
+            "parent_summaries": [
+                {"summary_id": item.summary_id, "summary_hash": item.summary_hash, "source_hash": item.source_hash}
+                for item in active_summaries
+                if set(item.source_message_ids) <= selected_ids
+            ][-1:],
         }
         record = ContextSummaryRecord(
             summary_id=summary_id,
@@ -306,6 +318,8 @@ class ContextSelector:
         reserved_output_tokens: int | None = None,
         force_compaction: bool = False,
         overflow_retry: int = 0,
+        tools: Sequence[Mapping[str, Any]] = (),
+        response_schema: Mapping[str, Any] | None = None,
     ) -> ContextSelection:
         run_id = view.run.run_id
         self.ledger.append(
@@ -317,7 +331,9 @@ class ContextSelector:
                 "action is a quality gate, not a prescribed tactic. Generate and prioritize "
                 "search nodes yourself, use native tool calls, preserve uncertainty, and "
                 "reopen prior directions when new evidence or capability appears. Model text "
-                "and exploration records are never verified evidence."
+                "and exploration records are never verified evidence. Set commit_lifecycle_gate "
+                "to true only when submitting evidence for the current gate. Tactical records "
+                "may set priority (0-100, higher first), intent_id, and parent_intent_id."
             ),
             protected=True,
             source_type="system_base",
@@ -346,6 +362,8 @@ class ContextSelector:
             turn_boundary=True,
             force_compaction=force_compaction,
             overflow_retry=overflow_retry,
+            tools=tools,
+            response_schema=response_schema,
         )
     def select(
         self,
@@ -358,6 +376,8 @@ class ContextSelector:
         turn_boundary: bool = False,
         force_compaction: bool = False,
         overflow_retry: int = 0,
+        tools: Sequence[Mapping[str, Any]] = (),
+        response_schema: Mapping[str, Any] | None = None,
     ) -> ContextSelection:
         budget = ContextBudget.from_values(
             window_tokens=max_context_tokens,
@@ -390,7 +410,9 @@ class ContextSelector:
             "action is a quality gate, not a prescribed tactic. Generate and prioritize "
             "search nodes yourself, use native tool calls, preserve uncertainty, and reopen "
             "prior directions when new evidence or capability appears. Model text and "
-            "exploration records are never verified evidence."
+            "exploration records are never verified evidence. Set commit_lifecycle_gate "
+            "to true only when submitting evidence for the current gate. Tactical records "
+            "may set priority (0-100, higher first), intent_id, and parent_intent_id."
         )
         fixed_projection = (
             [
@@ -408,12 +430,21 @@ class ContextSelector:
                 }
             ]
         )
+        fixed_projection.extend(
+            {"role": item.role, "content": item.content} for item in protected_messages
+            if item.source_type not in {"system_base", "original_goal"}
+        )
+        protected_tokens = self._estimate_tokens(fixed_projection)
+        schemas = {"tools": list(tools), "response_schema": dict(response_schema or {})}
+        schemas_hash = contract_hash(schemas)
+        def projected_tokens(messages: Any) -> int:
+            return self._estimate_tokens({"messages": messages, **schemas})
         fixed_projection = resource_context_projection(
             resource_selection,
             fixed_projection,
             stable_prefix=stable_prefix,
         )
-        fixed_tokens = self._estimate_tokens(fixed_projection)
+        fixed_tokens = projected_tokens(fixed_projection)
         groups = self._atomic_groups(unprotected)
         if force_compaction and groups:
             selected = tuple(groups[-1])
@@ -437,7 +468,7 @@ class ContextSelector:
                 group_tokens = self._estimate_tokens(
                     [{"role": item.role, "content": item.content} for item in group]
                 )
-                if chosen and consumed + group_tokens > available:
+                if consumed + group_tokens > available:
                     break
                 chosen.append(group)
                 consumed += group_tokens
@@ -470,7 +501,7 @@ class ContextSelector:
             if any(item.message_id not in summarized_ids for item in excluded)
             else ()
         )
-        should_compact = turn_boundary and bool(compaction_candidates) and (
+        should_compact = turn_boundary and (not window or fixed_tokens + reserve <= window) and bool(compaction_candidates) and (
             force_compaction
             or (
             len(unprotected) > self.compaction_threshold
@@ -499,12 +530,8 @@ class ContextSelector:
         ]
         resource_metadata = resource_context_metadata(resource_selection)
         source_projection.append(resource_metadata)
+        source_projection.append({"schemas_hash": schemas_hash})
         projected: list[Mapping[str, Any]] = list(fixed_projection)
-        projected.extend(
-            {"role": item.role, "content": item.content}
-            for item in protected_messages
-            if item.source_type not in {"system_base", "original_goal"}
-        )
         if summaries:
             latest = summaries[-1]
             summary_message = {
@@ -519,7 +546,7 @@ class ContextSelector:
             projected_with_summary.extend(
                 {"role": item.role, "content": item.content} for item in selected
             )
-            if not window or self._estimate_tokens(projected_with_summary) + reserve <= window:
+            if not window or projected_tokens(projected_with_summary) + reserve <= window:
                 projected.append(summary_message)
                 chosen_summaries = (latest,)
         projected.extend({"role": item.role, "content": item.content} for item in selected)
@@ -530,26 +557,36 @@ class ContextSelector:
         for summary in chosen_summaries:
             if summary.summary_id not in compaction_ids:
                 compaction_ids.append(summary.summary_id)
-        if force_compaction and summaries:
-            latest_summary_id = summaries[-1].summary_id
-            if latest_summary_id not in compaction_ids:
-                compaction_ids.append(latest_summary_id)
         source_hash = contract_hash(source_projection)
         projection_bytes = len(
-            json.dumps(projected, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+            json.dumps({"messages": projected, **schemas}, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
         )
-        estimated_tokens = self._estimate_tokens(projected)
+        estimated_tokens = projected_tokens(projected)
         overflow_tokens = max(0, estimated_tokens + reserve - window) if window else 0
+        context_status = "ready"
+        if overflow_tokens:
+            without_tools = self._estimate_tokens({"messages": fixed_projection, **schemas, "tools": []})
+            context_status = ("protected_context_overflow" if protected_tokens + reserve > window
+                              else "tool_schema_overflow" if without_tools + reserve <= window < fixed_tokens + reserve
+                              else "context_window_exceeded")
+        projection_metrics = {
+            "message_tokens": self._estimate_tokens(projected),
+            "tool_schema_tokens": self._estimate_tokens(tools) if tools else 0,
+            "response_schema_tokens": self._estimate_tokens(response_schema) if response_schema else 0,
+            "context_status": context_status,
+        }
         selected_tokens = self._estimate_tokens(
             [{"role": item.role, "content": item.content} for item in selected]
         )
         context = {
             "messages": projected,
+            "schemas_hash": schemas_hash,
             "source_message_ids": [item.message_id for item in source_messages],
             "summary_ids": [item.summary_id for item in chosen_summaries],
             "source_hash": source_hash,
             "protected_hash": protected_hash,
             "token_projection": {
+                **projection_metrics,
                 "estimated_context_tokens": estimated_tokens,
                 "provider_context_tokens": provider_context_tokens,
                 "selected_tokens": selected_tokens,
@@ -600,6 +637,7 @@ class ContextSelector:
             compaction_ids=tuple(compaction_ids),
             overflow_retry=max(0, int(overflow_retry)),
             **resource_metadata,
+            **projection_metrics,
         )
 
     def _estimate_tokens(self, value: Any) -> int:
@@ -656,9 +694,13 @@ class ContextSelector:
         verified_refs = [
             item.evidence_id
             for item in view.evidence
-            if item.verified and item.trust in {"runtime_verified", "derived_verified"}
+            if EvidenceGate.trusted(item)
         ]
         recon_digests = self.service.journal.recon_digests(view.run.run_id)
+        current_gate = next(
+            (action for action in state.plan_snapshot.get("actions", ()) if action.get("action_id") == view.next_action),
+            {},
+        )
         return {
             "original_goal": {
                 "goal_id": view.goal.goal_id,
@@ -674,7 +716,18 @@ class ContextSelector:
                 "revision": state.plan_revision,
                 "branch_id": state.branch_id,
                 "current_action_id": state.current_action_id,
-                "snapshot": dict(state.plan_snapshot),
+                "output_contract": SemanticVerifier.output_contract(str(current_gate.get("verifier") or "")),
+                "snapshot": (
+                    {
+                        "role": "lifecycle_quality_gates",
+                        "commit_required": True,
+                        "gates": [
+                            {key: action[key] for key in ("action_id", "name", "expected_artifact", "depends_on") if key in action}
+                            for action in state.plan_snapshot.get("actions", ())
+                        ],
+                    }
+                    if state.model_led else dict(state.plan_snapshot)
+                ),
                 "retained_tactical_state": self._retained_tactical_state(view.run.run_id),
                 "tactical_ledger": self.service.exploration.projection(view.run.run_id),
                 "latest_recon_digest": (

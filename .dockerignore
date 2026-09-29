@@ -1,0 +1,22 @@
+# Allowlist: runtime state, credentials, backups and build residue never enter context.
+**
+!Dockerfile
+!.dockerignore
+!pyproject.toml
+!README.md
+!LICENSE
+!src/
+!src/**
+!deploy/
+!deploy/run-trace.sh
+!deploy/healthcheck.py
+**/__pycache__/**
+**/*.py[cod]
+**/*.egg-info/**
+**/.env*
+**/*.key
+**/*.pem
+**/*secret*
+**/*.sqlite*
+**/*.bak
+**/*backup*/**

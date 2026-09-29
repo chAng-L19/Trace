@@ -1,0 +1,40 @@
+services:
+  trace:
+    image: ${TRACE_IMAGE:-trace-agent:local}
+    build:
+      context: .
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c}
+        TRACE_INSTALL_BROWSER: ${TRACE_INSTALL_BROWSER:-1}
+    ports:
+      - "127.0.0.1:${TRACE_PORT:-8765}:8765"
+    environment:
+      TRACE_ADMIN_PASSWORD: ${TRACE_ADMIN_PASSWORD:?Set TRACE_ADMIN_PASSWORD in your environment or .env}
+      # HTTP is restricted to the host's loopback-published port.
+      TRACE_ALLOW_INSECURE_HTTP: "1"
+      # Empty overrides leave persisted Web settings and application defaults intact.
+      TRACE_MODEL: ${TRACE_MODEL:-}
+      TRACE_API_BASE_URL: ${TRACE_API_BASE_URL:-}
+      TRACE_API_KEY_ENV: ${TRACE_API_KEY_ENV:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      TRACE_API_TIMEOUT_SECONDS: ${TRACE_API_TIMEOUT_SECONDS:-}
+      TRACE_MODEL_CONTEXT_TOKENS: ${TRACE_MODEL_CONTEXT_TOKENS:-}
+    volumes:
+      - trace-state:/var/lib/trace
+      - trace-artifacts:/var/lib/trace/artifact-store
+      - trace-workspaces:/var/lib/trace/workspaces
+      - trace-cache:/var/cache/trace
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,mode=1777,size=1g
+    shm_size: 256mb
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 45s
+    restart: unless-stopped
+
+volumes:
+  trace-state:
+  trace-artifacts:
+  trace-workspaces:
+  trace-cache:

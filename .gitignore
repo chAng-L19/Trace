@@ -6,6 +6,9 @@ __pycache__/
 .tmp/
 .tmp-*
 .venv/
+.env
+.env.*
+!.env.example
 .build-*/
 .browser-*
 .trace-web-*/

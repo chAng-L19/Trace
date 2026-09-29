@@ -3,23 +3,23 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "codex-redteam-agent"
+name = "trace-agent"
 version = "0.1.0"
-description = "Host-independent durable red-team agent runtime"
+description = "Trace evidence-driven durable agent runtime"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
-authors = [{ name = "codex-redteam-mode contributors" }]
+license = "MIT"
+authors = [{ name = "Trace contributors" }]
 dependencies = [
-  "capstone>=5.0,<6",
-  "frida>=17.0,<18",
-  "playwright>=1.62,<1.63",
+  "capstone==5.0.9",
+  "frida==17.17.0",
+  "playwright==1.62.0",
 ]
 
-[project.optional-dependencies]
-dev = ["pytest>=8"]
-
 [project.scripts]
+trace = "redteam_agent.cli:main"
+trace-mcp = "redteam_agent.runtime.mcp_transport:main"
+trace-web = "redteam_agent.adapters.web:main"
 redteam-agent = "redteam_agent.cli:main"
 redteam-agent-mcp = "redteam_agent.runtime.mcp_transport:main"
 redteam-agent-web = "redteam_agent.adapters.web:main"
@@ -31,8 +31,4 @@ package-dir = { "" = "src" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-redteam_agent = ["workflows/*.toml", "static/*"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-q"
+redteam_agent = ["workflows/*.toml", "static/*", "tool_manifest.json"]

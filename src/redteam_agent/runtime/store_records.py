@@ -292,6 +292,39 @@ class DurableRecordStoreMixin:
             if cursor.rowcount != 1:
                 raise StoreConflictError(f"attempt_transition_conflict:{attempt.attempt_id}:{expected_status}")
 
+    def rebind_task_attempt_execution_identity(
+        self,
+        attempt: TaskAttempt,
+        *,
+        expected_status: str,
+        lease_token: LeaseToken,
+    ) -> None:
+        """Replace a handoff placeholder with its validated ToolPort identity."""
+
+        if (lease_token.run_id, lease_token.action_id) != (attempt.run_id, attempt.action_id):
+            raise LeaseLostError(f"lease_identity_mismatch:{attempt.run_id}:{attempt.action_id}")
+        serialized = _dump(attempt.to_dict())
+        with self.transaction(immediate=True) as connection:
+            if not self._assert_lease(connection, lease_token):
+                raise LeaseLostError(f"lease_lost:{attempt.run_id}:{attempt.action_id}")
+            cursor = connection.execute(
+                "UPDATE task_attempts SET tool=?, tool_version=?, input_hash=?, attempt_json=? "
+                "WHERE attempt_id=? AND status=? AND fencing_token=?",
+                (
+                    attempt.tool,
+                    attempt.tool_version,
+                    attempt.input_hash,
+                    serialized,
+                    attempt.attempt_id,
+                    expected_status,
+                    attempt.fencing_token,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise StoreConflictError(
+                    f"attempt_rebind_conflict:{attempt.attempt_id}:{expected_status}"
+                )
+
     def claim_task_attempt(
         self,
         attempt: TaskAttempt,

@@ -27,6 +27,35 @@ def _target(arguments: Mapping[str, Any]) -> str:
     return str(arguments.get("target") or "")
 
 
+def _file_outcomes(arguments: Mapping[str, Any], *, baseline: bool = False) -> dict[str, Any]:
+    target = _target(arguments)
+    predicates = arguments.get("success_predicates", ())
+    replacements = [item for item in predicates if isinstance(item, Mapping)
+                    and item.get("kind") == "file_replacement" and item.get("subject") == target]
+    if not replacements:
+        return {}
+    row: dict[str, Any] = {"target": target}
+    try:
+        path = Path(target).expanduser().resolve(strict=True)
+        # Bounded proof data; retain hashes rather than file contents in SQLite.
+        with path.open("rb") as stream:
+            data = stream.read(4 * 1024 * 1024 + 1)
+        if len(data) > 4 * 1024 * 1024:
+            raise ValueError("file_outcome_read_limit")
+        row.update({"resolved_path": str(path), "actual_sha256": hashlib.sha256(data).hexdigest()})
+    except (OSError, ValueError) as exc:
+        return {"file_outcomes": [{**row, "error": type(exc).__name__}]}
+    if not baseline:
+        return {"file_outcomes": [row]}
+    outcomes = []
+    for predicate in replacements:
+        value = predicate["value"]
+        old, new = value["old"].encode("utf-8"), value["new"].encode("utf-8")
+        outcomes.append({**row, "replacement": dict(value), "substitutions": data.count(old),
+                         "expected_sha256": hashlib.sha256(data.replace(old, new)).hexdigest()})
+    return {"file_outcomes": outcomes}
+
+
 def _declared_clause_ids(item: Mapping[str, Any]) -> set[str]:
     raw = item.get("clause_ids")
     if raw is None and isinstance(item.get("payload"), Mapping):
@@ -104,6 +133,7 @@ def local_inspector(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
         "confidence": 1.0,
         "clause_ids": _artifact_clause_ids(arguments, "surface_map"),
         "clause_support": _artifact_clause_support(arguments, "surface_map"),
+        **_file_outcomes(arguments, baseline=True),
         **surface,
     }
 
@@ -179,6 +209,7 @@ def impact_builder(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
         "clause_support": _artifact_clause_support(arguments, "impact_proof"),
         "verified": True,
         "impact": {"source": str(reproduction.get("evidence_id")), "observed": concrete},
+        **_file_outcomes(arguments),
     }
 
 
@@ -225,6 +256,7 @@ def cleanup_builder(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
         "actions": actions,
         "verified": True,
         "outstanding_changes": [],
+        **_file_outcomes(arguments),
     }
 
 

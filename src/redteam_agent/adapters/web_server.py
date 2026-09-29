@@ -204,13 +204,15 @@ class TraceRequestHandler(BaseHTTPRequestHandler):
             elif isinstance(exc, (ValueError, TypeError)):
                 self._write(self.api._error(400, str(exc)))
             else:
-                self._write(self.api._error(500, f"internal_error:{type(exc).__name__}"))
+                self._write(self.api._internal_error(exc))
 
     def log_message(self, format: str, *args: Any) -> None:
         return
 
 
 class TraceHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+    block_on_close = False
     def __init__(self, address: tuple[str, int], api: WebApi) -> None:
         super().__init__(address, TraceRequestHandler)
         self.api = api

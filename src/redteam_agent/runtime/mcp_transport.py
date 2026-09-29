@@ -2,182 +2,19 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
+import signal
 import sys
-import tomllib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping
 
-from .adaptive_planner import AdaptivePlanner
-from .handoff import DEFAULT_HANDOFF_TTL_SECONDS
 from .mcp_config import MAX_REQUEST_BYTES
-from .operation_runtime import OperationRuntime
-from .tool_broker import ToolBroker
 
 if TYPE_CHECKING:
     from .mcp_server import RuntimeMcpServer
 
 
-def _default_config_paths(explicit: list[str]) -> list[Path]:
-    paths = [Path(item).expanduser().resolve(strict=False) for item in explicit]
-    configured = os.environ.get("REDTEAM_AGENT_CONFIG", "").strip()
-    agent_home = Path(os.environ.get("REDTEAM_AGENT_HOME") or (Path.home() / ".redteam-agent"))
-    default = Path(configured).expanduser().resolve(strict=False) if configured else agent_home.expanduser().resolve(strict=False) / "config.toml"
-    if default not in paths:
-        paths.append(default)
-    return paths
-
-
-def _settings_warning(path: Path, key: str, value: Any, reason: str) -> None:
-    rendered = repr(value)
-    if len(rendered) > 120:
-        rendered = f"{rendered[:117]}..."
-    sys.stderr.write(
-        f"redteam-agent-runtime: ignored automation.{key} from {path}: "
-        f"{reason} (value={rendered})\n"
-    )
-
-
-def _bounded_int_setting(
-    automation: Mapping[str, Any],
-    key: str,
-    default: int,
-    *,
-    minimum: int,
-    maximum: int,
-    path: Path,
-) -> int:
-    if key not in automation:
-        return default
-    value = automation.get(key)
-    try:
-        if isinstance(value, bool):
-            raise ValueError
-        if isinstance(value, float):
-            if not math.isfinite(value) or not value.is_integer():
-                raise ValueError
-        parsed = int(value)
-    except (TypeError, ValueError, OverflowError):
-        _settings_warning(path, key, value, "expected a finite integer; using default")
-        return default
-    bounded = max(minimum, min(maximum, parsed))
-    if bounded != parsed:
-        _settings_warning(
-            path,
-            key,
-            value,
-            f"outside [{minimum}, {maximum}]; clamped to {bounded}",
-        )
-    return bounded
-
-
-def _bounded_float_setting(
-    automation: Mapping[str, Any],
-    key: str,
-    default: float | None,
-    *,
-    minimum: float,
-    maximum: float,
-    path: Path,
-) -> float | None:
-    if key not in automation:
-        return default
-    value = automation.get(key)
-    try:
-        if isinstance(value, bool):
-            raise ValueError
-        parsed = float(value)
-        if not math.isfinite(parsed):
-            raise ValueError
-    except (TypeError, ValueError, OverflowError):
-        _settings_warning(path, key, value, "expected a finite number; using default")
-        return default
-    bounded = max(minimum, min(maximum, parsed))
-    if bounded != parsed:
-        _settings_warning(
-            path,
-            key,
-            value,
-            f"outside [{minimum}, {maximum}]; clamped to {bounded}",
-        )
-    return bounded
-
-
-def _runtime_settings(paths: list[Path]) -> dict[str, Any]:
-    settings: dict[str, Any] = {
-        "tool_priority": (),
-        "max_actions_per_cycle": 64,
-        "action_timeout_seconds": None,
-        "max_retries_per_action": 2,
-        "max_domains": 7,
-        "max_hypothesis_branches": 4,
-        "handoff_ttl_seconds": DEFAULT_HANDOFF_TTL_SECONDS,
-    }
-    for path in paths:
-        if not path.is_file():
-            continue
-        try:
-            payload = tomllib.loads(path.read_text(encoding="utf-8-sig"))
-        except (OSError, tomllib.TOMLDecodeError) as exc:
-            sys.stderr.write(f"redteam-agent-runtime: skipped invalid config {path}: {exc}\n")
-            continue
-        automation = payload.get("automation") if isinstance(payload.get("automation"), Mapping) else {}
-        raw_priority = automation.get("tool_priority")
-        if isinstance(raw_priority, list):
-            settings["tool_priority"] = tuple(str(item) for item in raw_priority if str(item).strip())
-        elif raw_priority is not None:
-            _settings_warning(path, "tool_priority", raw_priority, "expected an array; using default")
-        settings["max_actions_per_cycle"] = _bounded_int_setting(
-            automation,
-            "max_actions_per_cycle",
-            settings["max_actions_per_cycle"],
-            minimum=1,
-            maximum=512,
-            path=path,
-        )
-        settings["action_timeout_seconds"] = _bounded_float_setting(
-            automation,
-            "action_timeout_seconds",
-            settings["action_timeout_seconds"],
-            minimum=0.1,
-            maximum=86_400.0,
-            path=path,
-        )
-        settings["max_retries_per_action"] = _bounded_int_setting(
-            automation,
-            "max_retries_per_action",
-            settings["max_retries_per_action"],
-            minimum=0,
-            maximum=8,
-            path=path,
-        )
-        settings["max_domains"] = _bounded_int_setting(
-            automation,
-            "max_domains",
-            settings["max_domains"],
-            minimum=1,
-            maximum=7,
-            path=path,
-        )
-        settings["max_hypothesis_branches"] = _bounded_int_setting(
-            automation,
-            "max_hypothesis_branches",
-            settings["max_hypothesis_branches"],
-            minimum=1,
-            maximum=8,
-            path=path,
-        )
-        settings["handoff_ttl_seconds"] = _bounded_float_setting(
-            automation,
-            "handoff_ttl_seconds",
-            settings["handoff_ttl_seconds"],
-            minimum=1.0,
-            maximum=86_400.0,
-            path=path,
-        )
-        break
-    return settings
+from .settings import _default_config_paths, _runtime_settings
 
 
 def _iter_request_lines(
@@ -259,28 +96,25 @@ def main(argv: list[str] | None = None) -> int:
     # ``__main__`` and leaves both modules partially initialized.
     from .mcp_server import RuntimeMcpServer
 
-    parser = argparse.ArgumentParser(description="Host-independent durable red-team Agent MCP runtime")
+    parser = argparse.ArgumentParser(prog="trace-mcp", description="Trace durable Agent MCP runtime")
     parser.add_argument("--root", default="", help="Durable state root")
-    parser.add_argument("--config", action="append", default=[], help="Codex config.toml path")
+    parser.add_argument("--config", action="append", default=[], help="MCP config.toml path")
+    parser.add_argument("--model", default="")
+    parser.add_argument("--api-base-url", default="")
+    parser.add_argument("--api-key-env", default="")
+    parser.add_argument("--api-timeout-seconds", type=float)
+    parser.add_argument("--model-context-tokens", type=int)
     arguments = parser.parse_args(argv)
     agent_home = Path(os.environ.get("REDTEAM_AGENT_HOME") or (Path.home() / ".redteam-agent")).expanduser().resolve(strict=False)
-    root = Path(arguments.root).expanduser().resolve(strict=False) if arguments.root else agent_home / "operations"
-    config_paths = _default_config_paths(arguments.config)
-    settings = _runtime_settings(config_paths)
-    broker = ToolBroker(tool_priority=settings["tool_priority"])
-    broker.discover_from_configs(config_paths)
-    runtime = OperationRuntime(
-        root=root,
-        broker=broker,
-        action_timeout_cap=settings["action_timeout_seconds"],
-        planner=AdaptivePlanner(
-            max_domains=settings["max_domains"],
-            max_hypothesis_branches=settings["max_hypothesis_branches"],
-        ),
-    )
+    root = Path(arguments.root or os.environ.get("TRACE_HOME") or (agent_home / "operations")).expanduser().resolve(strict=False)
     from ..application.agent_service import AgentService
 
-    service = AgentService(runtime=runtime)
+    service = AgentService(root=root, config_paths=arguments.config, provider_options={
+        "model": arguments.model, "base_url": arguments.api_base_url,
+        "api_key_env": arguments.api_key_env, "timeout_seconds": arguments.api_timeout_seconds,
+        "max_context_tokens": arguments.model_context_tokens,
+    })
+    runtime, settings = service.runtime, service.runtime_settings
     server = RuntimeMcpServer(
         runtime,
         service=service,
@@ -288,9 +122,13 @@ def main(argv: list[str] | None = None) -> int:
         default_max_retries_per_action=settings["max_retries_per_action"],
         handoff_ttl_seconds=settings["handoff_ttl_seconds"],
     )
+    previous_sigterm = signal.signal(signal.SIGTERM, signal.default_int_handler)
     try:
         _serve_stdio(server, sys.stdin, sys.stdout)
+    except KeyboardInterrupt:
+        pass
     finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
         service.close()
     return 0
 

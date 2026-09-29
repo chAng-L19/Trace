@@ -7,7 +7,6 @@ import os
 import re
 import shlex
 import queue
-import shutil
 import subprocess
 import threading
 import time
@@ -20,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import ToolCallResult, ToolDescriptor, utc_now
+from .managed_tools import resolve_executable
 from .security import redact_sensitive, safe_error_text
 
 
@@ -116,7 +116,7 @@ class StdioMcpClient:
         self.server_name = server_name
         self.roots = tuple(path.expanduser().resolve(strict=False) for path in roots)
         environment = _child_environment(env)
-        executable = shutil.which(command) or command
+        executable = resolve_executable(command, path=environment.get("PATH")) or command
         self.process = subprocess.Popen(
             [executable, *args],
             stdin=subprocess.PIPE,
@@ -143,7 +143,11 @@ class StdioMcpClient:
         self._error_reader = threading.Thread(target=self._read_stderr, daemon=True)
         self._reader.start()
         self._error_reader.start()
-        self._initialize(timeout=startup_timeout)
+        try:
+            self._initialize(timeout=startup_timeout)
+        except BaseException:
+            self.close()
+            raise
 
     def _read_stdout(self) -> None:
         if self.process.stdout is None:
@@ -374,7 +378,7 @@ class StdioMcpClient:
             {
                 "protocolVersion": "2025-06-18",
                 "capabilities": {"roots": {"listChanged": False}},
-                "clientInfo": {"name": "redteam-agent-runtime", "version": "1"},
+                "clientInfo": {"name": "trace-agent-runtime", "version": "1"},
             },
             timeout=timeout,
         )
@@ -541,7 +545,7 @@ class HttpMcpClient:
             {
                 "protocolVersion": "2025-06-18",
                 "capabilities": {"roots": {"listChanged": False}},
-                "clientInfo": {"name": "redteam-agent-runtime", "version": "1"},
+                "clientInfo": {"name": "trace-agent-runtime", "version": "1"},
             },
             timeout=timeout,
         )

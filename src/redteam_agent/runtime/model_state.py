@@ -635,6 +635,7 @@ class OperationState:
     status: str = "running"
     action_status: dict[str, str] = field(default_factory=dict)
     action_attempts: dict[str, int] = field(default_factory=dict)
+    action_failure_streaks: dict[str, int] = field(default_factory=dict)
     action_tools_tried: dict[str, list[str]] = field(default_factory=dict)
     action_tools_succeeded: dict[str, list[str]] = field(default_factory=dict)
     evidence_ids: list[str] = field(default_factory=list)
@@ -645,6 +646,7 @@ class OperationState:
     cleanup_status: str = "not_started"
     credential_refs: list[str] = field(default_factory=list)
     dependencies: dict[str, dict[str, Any]] = field(default_factory=dict)
+    model_led: bool = False
     created_at: str = field(default_factory=utc_now)
     updated_at: str = field(default_factory=utc_now)
 
@@ -708,6 +710,10 @@ class OperationState:
             status=str(payload.get("status") or "running"),
             action_status={str(key): str(value) for key, value in _mapping(payload.get("action_status")).items()},
             action_attempts=action_attempts,
+            action_failure_streaks={
+                str(key): max(0, _safe_int(value, 0))
+                for key, value in _mapping(payload.get("action_failure_streaks")).items()
+            },
             action_tools_tried={
                 str(key): [str(item) for item in value]
                 for key, value in _mapping(payload.get("action_tools_tried")).items()
@@ -730,6 +736,7 @@ class OperationState:
                 for key, value in _mapping(payload.get("dependencies")).items()
                 if isinstance(value, Mapping)
             },
+            model_led=payload.get("model_led") is True,
             created_at=created_at,
             updated_at=str(payload.get("updated_at") or utc_now()),
         )

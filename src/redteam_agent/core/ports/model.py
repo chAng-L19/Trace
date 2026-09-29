@@ -114,6 +114,7 @@ class ModelRequest:
     model: str = ""
     allow_parallel_tools: bool = False
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    continuation: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return versioned_payload(
@@ -127,6 +128,7 @@ class ModelRequest:
                 "model": self.model,
                 "allow_parallel_tools": self.allow_parallel_tools,
                 "metadata": dict(self.metadata),
+                **({"continuation": dict(self.continuation)} if self.continuation else {}),
             },
         )
 
@@ -142,6 +144,7 @@ class ModelRequest:
             model=optional_text(payload.get("model")),
             allow_parallel_tools=bool(payload.get("allow_parallel_tools", False)),
             metadata=json_mapping(payload.get("metadata"), field="model_request.metadata"),
+            continuation=json_mapping(payload.get("continuation"), field="model_request.continuation"),
         )
 
 
@@ -161,6 +164,8 @@ class ModelResponse:
     error: str = ""
     response_hash: str = ""
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    response_id: str = ""
+    continuation: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return versioned_payload(
@@ -178,6 +183,8 @@ class ModelResponse:
                 "error": self.error,
                 "response_hash": self.response_hash,
                 "metadata": dict(self.metadata),
+                **({"response_id": self.response_id} if self.response_id else {}),
+                **({"continuation": dict(self.continuation)} if self.continuation else {}),
             },
         )
 
@@ -200,6 +207,8 @@ class ModelResponse:
             error=str(payload.get("error") or ""),
             response_hash=optional_text(payload.get("response_hash")),
             metadata=json_mapping(payload.get("metadata"), field="model_response.metadata"),
+            response_id=optional_text(payload.get("response_id")),
+            continuation=json_mapping(payload.get("continuation"), field="model_response.continuation"),
         )
 
 

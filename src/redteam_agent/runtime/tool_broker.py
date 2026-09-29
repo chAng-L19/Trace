@@ -7,11 +7,12 @@ import re
 import threading
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from .models import ToolCallResult, ToolDescriptor, utc_now
+from .browser_sessions import BrowserAdapter, BrowserSessions
 from .mcp_broker import McpBrokerMixin
 from .mcp_config import McpServerSpec
 from .security import redact_sensitive, safe_error_text
@@ -42,12 +43,16 @@ class ToolBroker(McpBrokerMixin):
         self._clients: dict[str, StdioMcpClient | HttpMcpClient] = {}
         self._run_clients: dict[tuple[str, str], StdioMcpClient | HttpMcpClient] = {}
         self._active_call_clients: dict[str, StdioMcpClient | HttpMcpClient] = {}
+        self._browser_sessions = BrowserSessions()
+        self._active_browser_calls: dict[str, str] = {}
+        self._pending_cleanup_reports: dict[str, tuple[Mapping[str, Any], ...]] = {}
         self._server_configs: dict[str, McpServerSpec] = {}
         self._server_status: dict[str, dict[str, Any]] = {}
         self._config_paths: list[Path] = []
         self._workspace_root: Path | None = None
         self._mcp_secret_bindings: dict[str, Mapping[str, str]] = {}
         self._last_refresh = 0.0
+        self._refresh_pending = False
         self._lifecycle_lock = threading.RLock()
         self._active_calls = 0
         self._health: dict[str, ToolHealthState] = {}
@@ -219,6 +224,11 @@ class ToolBroker(McpBrokerMixin):
 
     def descriptors(self) -> tuple[ToolDescriptor, ...]:
         with self._lifecycle_lock:
+            from .open_source_tools import binary_backend, binary_radare2
+
+            name = "builtin:binary-radare2"
+            if self._adapters.get(name) is binary_radare2:
+                self._descriptors[name] = replace(self._descriptors[name], **binary_backend())
             return tuple(sorted(self._descriptors.values(), key=lambda item: (item.priority, item.qualified_name.casefold())))
 
     @staticmethod
@@ -356,7 +366,15 @@ class ToolBroker(McpBrokerMixin):
             self._active_calls += 1
             adapter = self._adapters.get(qualified)
         try:
-            if adapter is not None:
+            if isinstance(adapter, BrowserAdapter):
+                if external_call_id and run_id:
+                    with self._lifecycle_lock:
+                        self._active_browser_calls[external_call_id] = run_id
+                output = self._browser_sessions.call(
+                    adapter.operation, arguments, run_id=run_id,
+                    workspace=self._workspace_for(run_id), timeout=timeout,
+                )
+            elif adapter is not None:
                 output = self._invoke_adapter(adapter, arguments, timeout=timeout)
             else:
                 with self._lifecycle_lock:
@@ -451,17 +469,44 @@ class ToolBroker(McpBrokerMixin):
                 tool_version=descriptor.version,
             )
         finally:
+            refresh = False
             with self._lifecycle_lock:
                 if external_call_id:
                     self._active_call_clients.pop(external_call_id, None)
+                    self._active_browser_calls.pop(external_call_id, None)
                 self._active_calls = max(0, self._active_calls - 1)
+                refresh = self._active_calls == 0 and self._refresh_pending
+            if refresh:
+                self.refresh(force=True)
 
     def cancel(self, call_id: str) -> bool:
         with self._lifecycle_lock:
             client = self._active_call_clients.get(call_id)
+            browser_run = self._active_browser_calls.get(call_id)
+        if browser_run:
+            with self._lifecycle_lock:
+                reports = self._browser_sessions.close_run(browser_run)
+                if reports:
+                    self._pending_cleanup_reports[browser_run] = (
+                        *self._pending_cleanup_reports.get(browser_run, ()),
+                        *reports,
+                    )
+            return True
         if isinstance(client, StdioMcpClient):
             return client.cancel_request(call_id)
         return False
+
+    def close_run(self, run_id: str) -> tuple[Mapping[str, Any], ...]:
+        with self._lifecycle_lock:
+            pending = self._pending_cleanup_reports.pop(run_id, ())
+            browser_reports = self._browser_sessions.close_run(run_id)
+            return (*pending, *browser_reports, *super().close_run(run_id))
+
+    def close(self) -> None:
+        try:
+            self._browser_sessions.close()
+        finally:
+            super().close()
 
     def reconcile(
         self,

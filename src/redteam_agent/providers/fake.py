@@ -87,6 +87,8 @@ class FakeModelProvider:
                 raise RuntimeError("fake_provider_stream_script_exhausted")
             scripted = self._streams.pop(0)
         for index, item in enumerate(scripted.events):
+            if request.request_id in self.cancelled:
+                raise RuntimeError("provider_request_cancelled")
             if scripted.error is not None and scripted.error_after == index:
                 raise scripted.error
             if isinstance(item, ModelStreamEvent):
@@ -100,6 +102,8 @@ class FakeModelProvider:
                 yield ModelStreamEvent.from_dict(payload)
         if scripted.error is not None and scripted.error_after is None:
             raise scripted.error
+        if request.request_id in self.cancelled:
+            raise RuntimeError("provider_request_cancelled")
 
     def cancel(self, request_id: str) -> bool:
         with self._lock:

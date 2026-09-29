@@ -86,6 +86,9 @@ class ResourceSelection:
         return {
             "selection_hash": self.selection_hash,
             "resources": [item.to_dict(include_content=True) for item in self.selected],
+            "unmatched": list(self.unmatched),
+            "omitted": list(self.omitted),
+            "disabled": list(self.disabled),
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -107,7 +110,7 @@ def resource_context_projection(
     *,
     stable_prefix: bool,
 ) -> list[dict[str, Any]]:
-    if not selection.selected:
+    if not (selection.selected or selection.unmatched or selection.omitted or selection.disabled):
         return fixed_projection
     resource_context = {"resource_context": selection.prompt_projection()}
     if stable_prefix:

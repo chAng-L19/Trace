@@ -563,12 +563,45 @@ class SessionJournal:
             lambda record: record.summary_id,
         )
 
+    def operation_events(self, run_id: str) -> tuple[Mapping[str, Any], ...]:
+        selected_ids = [
+            entry.raw_id
+            for entry in self.replay(run_id)
+            if entry.raw_table == "operation_events"
+        ]
+        records = {
+            str(item["event_id"]): item
+            for item in self.store.events(run_id, limit=1_000_000)
+        }
+        try:
+            return tuple(records[event_id] for event_id in selected_ids)
+        except KeyError as exc:
+            raise ImmutableRecordError(
+                f"journal_raw_missing:operation_events:{exc.args[0]}"
+            ) from exc
+
+    def model_requests(self, run_id: str) -> tuple[Any, ...]:
+        return self._active_records(
+            run_id,
+            "model_requests",
+            self.store.model_requests,
+            lambda record: record.request_id,
+        )
+
     def model_responses(self, run_id: str) -> tuple[Any, ...]:
         return self._active_records(
             run_id,
             "model_responses",
             self.store.model_responses,
             lambda record: record.request_id,
+        )
+
+    def model_observations(self, run_id: str) -> tuple[Any, ...]:
+        return self._active_records(
+            run_id,
+            "model_observations",
+            self.store.model_observations,
+            lambda record: record.observation_id,
         )
 
     def exploration_records(self, run_id: str) -> tuple[Any, ...]:

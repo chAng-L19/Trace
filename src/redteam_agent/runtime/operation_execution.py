@@ -38,6 +38,11 @@ class OperationExecutionMixin:
         candidates: set[str] = set()
 
         for missing in terminal.missing:
+            if missing.startswith("file_replacement:"):
+                action_id = producer.get("reproduction_artifact")
+                if action_id:
+                    candidates.add(action_id)
+                continue
             if missing.startswith("required_action_evidence:"):
                 action_id = missing.split(":", 1)[1]
                 if action_id in by_id:
@@ -139,7 +144,13 @@ class OperationExecutionMixin:
         )
         return reopened
 
-    def resume(self, run_id: str, *, max_actions: int | None = None) -> OperationResult:
+    def resume(
+        self,
+        run_id: str,
+        *,
+        max_actions: int | None = None,
+        model_led: bool = False,
+    ) -> OperationResult:
         initial = self.store.load_operation(run_id)
         if initial is None:
             raise KeyError(f"operation_not_found:{run_id}")
@@ -159,7 +170,12 @@ class OperationExecutionMixin:
             current = self.store.load_operation(run_id) or initial
             return self._result(current, self._workflow_for(current))
         try:
-            result = self._resume_locked(run_id, token=token, max_actions=max_actions)
+            result = self._resume_locked(
+                run_id,
+                token=token,
+                max_actions=max_actions,
+                model_led=model_led,
+            )
             if result.state.status in {"completed", "failed", "failed_integrity", "cancelled"}:
                 self._close_run_resources(run_id)
             return result
@@ -184,7 +200,14 @@ class OperationExecutionMixin:
         )
         return self._result(state, workflow, terminal=TerminalDecision(True, False, reason))
 
-    def _resume_locked(self, run_id: str, *, token: LeaseToken, max_actions: int | None) -> OperationResult:
+    def _resume_locked(
+        self,
+        run_id: str,
+        *,
+        token: LeaseToken,
+        max_actions: int | None,
+        model_led: bool = False,
+    ) -> OperationResult:
         state = self.store.load_operation(run_id)
         if state is None:
             raise KeyError(f"operation_not_found:{run_id}")
@@ -200,6 +223,17 @@ class OperationExecutionMixin:
             workflow = self._workflow_for(state)
         except (TypeError, ValueError, ImmutableRecordError) as exc:
             return self._fail_integrity(state, base, f"plan_integrity:{exc}", token)
+
+        if model_led and not state.model_led:
+            state.model_led = True
+            self.store.save_operation(
+                state,
+                expected_version=state.state_version,
+                lease_token=token,
+                event_type="model_led_enabled",
+                event={},
+            )
+        model_led = state.model_led
 
         if state.status == "completed":
             decision = self.terminal_judge.evaluate(
@@ -281,7 +315,7 @@ class OperationExecutionMixin:
                     state,
                     workflow,
                     next_action=action.action_id,
-                    missing_capabilities=action.required_capabilities,
+                    missing_capabilities=() if model_led else action.required_capabilities,
                     handoff=handoff,
                 )
         if state.status == "paused_budget" and state.budget.pause_reason == "cycle_action_limit":
@@ -388,6 +422,14 @@ class OperationExecutionMixin:
                 continue
 
             descriptor = decision.descriptor
+            if model_led:
+                handoff = self._issue_handoff(state, workflow, action, token)
+                return self._result(
+                    state,
+                    workflow,
+                    next_action=action.action_id,
+                    handoff=handoff,
+                )
             if descriptor is None:
                 self.broker.refresh()
                 descriptor = self.broker.select(

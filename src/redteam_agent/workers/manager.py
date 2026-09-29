@@ -3,16 +3,20 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 import threading
 from typing import Any
+from uuid import uuid4
 
 from ..core import WorkerPort, WorkerResult, WorkerTask
 from ..runtime.worker_store import WORKER_TERMINAL_STATUSES, WorkerStore
+from ..runtime.store_common import StoreConflictError
+from .workspace import WorkspaceManager
 
 
 class CodexHandoffWorker:
     kind = "codex_handoff"
 
-    def __init__(self, *, records: WorkerStore) -> None:
+    def __init__(self, *, records: WorkerStore, workspaces: WorkspaceManager | None = None) -> None:
         self.records = records
+        self.workspaces = workspaces or WorkspaceManager(records.store.root, records.store)
 
     def capabilities(self) -> tuple[str, ...]:
         return ("codex.handoff",)
@@ -25,18 +29,36 @@ class CodexHandoffWorker:
         prepared = self.records.prepare(task, worker_kind=self.kind, owner="codex-host")
         if prepared.result is not None:
             return prepared.result
-        result = WorkerResult(task_id=task.task_id, status="waiting_worker", output={"next_action_spec": dict(task.payload), "required_artifacts": list(task.required_artifacts)}, metadata={"worker_kind": self.kind, "replay_protected": True})
-        self.records.transition(task.task_id, expected_statuses=("prepared", "unknown"), status="waiting_worker", result=result, owner="codex-host")
-        return result
+        workspace = self.workspaces.ensure(task.run_id)
+        self.workspaces.resolve(workspace, str(task.payload.get("cwd") or "."))
+        result = WorkerResult(
+            task_id=task.task_id, status="waiting_worker",
+            output={"next_action_spec": dict(task.payload), "required_artifacts": list(task.required_artifacts),
+                    "workspace": str(workspace.path), "run_id": task.run_id,
+                    "idempotency_key": task.idempotency_key, "input_hash": prepared.input_hash},
+            metadata={"worker_kind": self.kind, "replay_protected": True,
+                      "handoff_id": "worker-handoff-" + uuid4().hex, "workspace_key": workspace.workspace_key},
+        )
+        saved = self.records.transition(task.task_id, expected_statuses=("prepared",), status="waiting_worker", result=result, owner="codex-host")
+        assert saved.result is not None
+        return saved.result
 
     def reconcile(self, idempotency_key: str) -> WorkerResult | None:
         return self.records.reconcile_kind(self.kind, idempotency_key)
 
     def cancel(self, task_id: str) -> bool:
         record = self.records.get(task_id)
-        if record is None or record.status != "waiting_worker":
+        if record is None or record.worker_kind != self.kind:
             return False
-        self.records.transition(task_id, expected_statuses=("waiting_worker",), status="cancelled", result=WorkerResult(task_id=task_id, status="cancelled", error="handoff_cancelled"))
+        if record.status == "cancelled":
+            return True
+        if not self.records.request_cancel(task_id):
+            return False
+        try:
+            self.records.transition(task_id, expected_statuses=("prepared", "waiting_worker"), status="cancelled", result=WorkerResult(task_id=task_id, status="cancelled", error="handoff_cancelled"))
+        except StoreConflictError:
+            latest = self.records.get(task_id)
+            return latest is not None and latest.status == "cancelled"
         return True
 
 
@@ -81,6 +103,7 @@ class WorkerManager:
     ) -> None:
         self.workers: dict[str, WorkerPort] = {}
         self._lock = threading.RLock()
+        self._closed = False
         self._factories: dict[str, Callable[[], WorkerPort]] = {
             self._canonical_kind(str(kind)): factory
             for kind, factory in (factories or {}).items()
@@ -116,6 +139,8 @@ class WorkerManager:
     def _resolve(self, kind: str) -> WorkerPort | None:
         canonical = self._canonical_kind(kind)
         with self._lock:
+            if self._closed:
+                return None
             worker = self.workers.get(canonical)
             if worker is not None:
                 return worker
@@ -176,6 +201,8 @@ class WorkerManager:
     def restart(self, kind: str) -> bool:
         canonical = self._canonical_kind(kind)
         with self._lock:
+            if self._closed:
+                return False
             worker = self.workers.pop(canonical, None)
         if worker is None:
             with self._lock:
@@ -187,12 +214,19 @@ class WorkerManager:
 
     def close(self) -> None:
         with self._lock:
+            self._closed = True
             workers = tuple(self.workers.values())
             self.workers.clear()
+        errors = []
         for worker in workers:
             close = getattr(worker, "close", None)
             if callable(close):
-                close()
+                try:
+                    close()
+                except Exception as exc:
+                    errors.append(exc)
+        if errors:
+            raise ExceptionGroup("worker_cleanup_failed", errors)
 
 
 __all__ = ["CodexHandoffWorker", "DockerWorkerAdapter", "WorkerManager"]

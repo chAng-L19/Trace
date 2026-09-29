@@ -8,6 +8,21 @@ from ..core import ModelRequest, ModelResponse, ToolResult, contract_hash
 from ..core.contracts import ContractError, json_mapping, json_value
 from ..runtime.exploration import TacticalAttemptRecord
 from ..runtime.model_common import utc_now
+from .tool_projection import ToolObservationProjector
+
+
+def context_summary_projection(content: Any) -> Any:
+    # ponytail: deterministic field selection; raw message hashes retain omitted detail.
+    if not isinstance(content, Mapping):
+        return ToolObservationProjector._bounded(content)
+    priority = (
+        "status", "status_code", "error", "retryable", "tool_name", "call_id",
+        "decision", "reason", "finish_reason", "structured_output", "tool_calls",
+        "evidence_refs", "artifact_refs", "evidence_ref", "artifact_ref", "raw",
+        "projection", "text", "output",
+    )
+    ordered = {key: content[key] for key in priority if key in content}
+    return ToolObservationProjector._bounded(ordered or content)
 
 
 class ModelIntegrityMixin:
@@ -34,7 +49,7 @@ class ModelIntegrityMixin:
 
     @staticmethod
     def _prompt_projection(request: ModelRequest) -> dict[str, Any]:
-        return {"messages": [dict(item) for item in request.messages], "tools": [dict(item) for item in request.tools], "response_schema": dict(request.response_schema), "model": request.model, "allow_parallel_tools": request.allow_parallel_tools}
+        return {"messages": [dict(item) for item in request.messages], "tools": [dict(item) for item in request.tools], "response_schema": dict(request.response_schema), "model": request.model, "allow_parallel_tools": request.allow_parallel_tools, **({"continuation": dict(request.continuation)} if request.continuation else {})}
 
     @staticmethod
     def _response_projection(response: ModelResponse) -> dict[str, Any]:
