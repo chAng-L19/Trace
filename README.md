@@ -15,7 +15,8 @@ Trace 是证据驱动、可持久恢复、面向强模型战术能力的专业�
 - ToolRegistry 按能力/风险选择工具，支持目录 revision、按需 expand 和运行级可见性；
 - 内置开源工具面：HTTP、DNS、TCP 探测、Playwright 浏览器、Capstone 反汇编、
   二进制信息/字符串、原生惰性二进制查询、Frida、源码搜索、Python AST、云账号只读清单，
-  以及 ASC 思路的 APK/DEX 按需分析、跨 DEX 引用查询和加固迹象探针；
+  云区域/资源枚举，以及 ASC 思路的 APK/DEX 按需分析、跨 DEX 引用查询和加固迹象探针；
+- 可选 Sliver C2 RPC：健康检查、Session/Beacon/Listener 清单与显式 Session 命令执行；
 - 通用 run-scoped MCP Capability Plane，支持 roots、取消、目录刷新和资源清理；
 - EvidenceGraph、SemanticVerifier、TerminalJudge 和五个公开 MCP 工具。
 
@@ -63,6 +64,16 @@ Linux、Docker、systemd 与升级回滚见 [部署说明](deploy/README.md)。
 和 ASC 风格 APK/DEX 查询通过 Python API 调用；radare2/Rizin、Frida 和云 CLI 在本机存在时
 由内置 Adapter 使用，缺少 radare2/Rizin 时自动回退到原生惰性二进制查询。
 `config.toml.example` 仅保留通用 MCP 扩展示例。
+
+Sliver 集成按需安装，不进入默认依赖：
+
+```powershell
+python -m pip install "trace-agent[sliver]"
+```
+
+调用内置 `builtin:sliver-c2` 时，只传入环境变量名，不把 token、CA、客户端证书和私钥放进工具参数；支持
+`health`、`sessions`、`beacons`、`listeners` 和显式 `execute`。执行动作要求 `session_id`、可执行路径与参数数组，
+不接受 shell 字符串；RPC 响应、输出字节数和条目数均有上限。
 
 发布门禁直接验证源码编译、前端 JavaScript、依赖一致性、自检、wheel 内容、
 隔离安装、六个命令入口和 MCP 五工具协议。

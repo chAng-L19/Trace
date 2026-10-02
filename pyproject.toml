@@ -16,6 +16,12 @@ dependencies = [
   "playwright==1.62.0",
 ]
 
+[project.optional-dependencies]
+sliver = [
+  "grpcio>=1.74,<2",
+  "protobuf>=5,<7",
+]
+
 [project.scripts]
 trace = "redteam_agent.cli:main"
 trace-mcp = "redteam_agent.runtime.mcp_transport:main"

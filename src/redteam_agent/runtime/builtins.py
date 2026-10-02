@@ -7,6 +7,7 @@ from typing import Any, Mapping, Sequence
 from .tool_broker import ToolBroker
 from .open_source_tools import register_open_source_tools
 from .evidence_gate import EvidenceGate
+from .sliver import register_sliver_tools
 
 
 def _evidence(arguments: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -409,12 +410,26 @@ def register_builtin_tools(broker: ToolBroker) -> None:
     # These adapters are in-process integrations.  External MCP servers remain
     # optional extensions and are never required for the default capability set.
     register_open_source_tools(broker)
+    register_sliver_tools(broker)
+    text = {"type": "string"}
+    records = {"type": "array", "items": {"type": "object"}}
+    evidence_schema = {"type": "object", "properties": {
+        "target": text, "evidence": records, "clause_contract": records,
+        "intent_envelope": {"type": "object"}, "success_predicates": records,
+        "required_actions": {"type": "array", "items": text},
+        "required_artifacts": {"type": "array", "items": text},
+        "goal_criteria": records, "workflow_id": text, "objective": text,
+        "targets": {"type": "array", "items": text},
+    }}
     broker.register_adapter(
         name="local-target-inspector",
         capabilities=("target_intake", "code_analysis", "source_inventory", "environment_inventory"),
         adapter=local_inspector,
         description="Inventory an existing local file or directory without claiming security findings.",
         priority=400,
+        input_schema={**evidence_schema, "required": ["target"], "properties": {
+            **evidence_schema["properties"], "expected_artifact": text,
+        }},
     )
     broker.register_adapter(
         name="evidence-hypothesis-builder",
@@ -422,6 +437,7 @@ def register_builtin_tools(broker: ToolBroker) -> None:
         adapter=hypothesis_builder,
         description="Build a minimal evidence-linked hypothesis queue.",
         priority=500,
+        input_schema={**evidence_schema, "required": ["evidence"]},
     )
     broker.register_adapter(
         name="evidence-impact-builder",
@@ -429,6 +445,7 @@ def register_builtin_tools(broker: ToolBroker) -> None:
         adapter=impact_builder,
         description="Derive impact only from concrete reproduction observations.",
         priority=500,
+        input_schema={**evidence_schema, "required": ["evidence"]},
     )
     broker.register_adapter(
         name="evidence-coverage-builder",
@@ -436,6 +453,7 @@ def register_builtin_tools(broker: ToolBroker) -> None:
         adapter=coverage_builder,
         description="Build coverage from verified evidence and explicit negative controls.",
         priority=500,
+        input_schema={**evidence_schema, "required": ["evidence"]},
     )
     broker.register_adapter(
         name="evidence-cleanup-builder",
@@ -443,6 +461,7 @@ def register_builtin_tools(broker: ToolBroker) -> None:
         adapter=cleanup_builder,
         description="Verify cleanup requirements from recorded side effects.",
         priority=500,
+        input_schema={**evidence_schema, "required": ["evidence"]},
     )
     broker.register_adapter(
         name="evidence-report-builder",
@@ -450,4 +469,5 @@ def register_builtin_tools(broker: ToolBroker) -> None:
         adapter=report_builder,
         description="Build a provenance-linked final report.",
         priority=500,
+        input_schema=evidence_schema,
     )
