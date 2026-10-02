@@ -3,9 +3,11 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import os
 import re
 import socket
 import subprocess
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -469,26 +471,244 @@ def python_ast_audit(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
     return {"root": str(root), "findings": findings, "count": len(findings), "truncated": False}
 
 
-def cloud_inventory(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
-    requested = str(arguments.get("provider") or "auto").casefold()
-    commands: dict[str, tuple[str, ...]] = {
-        "aws": ("aws", "sts", "get-caller-identity", "--output", "json"),
-        "azure": ("az", "account", "show", "--output", "json"),
-        "gcp": ("gcloud", "auth", "list", "--format=json"),
+_CLOUD_COMMANDS: dict[str, tuple[str, ...]] = {
+    "aws": ("aws", "sts", "get-caller-identity", "--output", "json"),
+    "azure": ("az", "account", "show", "--output", "json"),
+    "gcp": ("gcloud", "auth", "list", "--format=json"),
+    "tencent": ("tccli", "sts", "GetCallerIdentity"),
+    "aliyun": ("aliyun", "sts", "GetCallerIdentity", "--output", "json"),
+}
+
+_CLOUD_PERMISSION_COMMANDS: dict[str, tuple[str, ...]] = {
+    "aws": ("aws", "ec2", "describe-regions", "--output", "json", "--max-items", "1"),
+    "azure": ("az", "group", "list", "--top", "1", "--output", "json"),
+    "gcp": ("gcloud", "projects", "list", "--limit=1", "--format=json"),
+    "tencent": ("tccli", "cvm", "DescribeRegions", "--Limit", "1"),
+    "aliyun": ("aliyun", "ecs", "DescribeRegions", "--PageSize", "1", "--output", "json"),
+}
+
+_CLOUD_EXECUTABLES = {
+    "aws": "aws", "azure": "az", "gcp": "gcloud", "tencent": "tccli", "aliyun": "aliyun",
+    "huawei": "hcloud", "volcengine": "ve", "baidu": "bce", "jdcloud": "jdc",
+}
+
+_CLOUD_ALIASES = {
+    "alibaba": "aliyun", "alibaba_cloud": "aliyun", "huaweicloud": "huawei",
+    "volc": "volcengine", "bce": "baidu", "jd": "jdcloud",
+}
+
+_CLOUD_SDK_HINTS = {
+    "huawei": "huaweicloudsdkcore", "volcengine": "volcengine",
+    "baidu": "bce-python-sdk", "jdcloud": "jdcloud-sdk-python",
+}
+
+
+def _cloud_status(return_code: int, output: str, payload: Any) -> str:
+    if return_code == 0:
+        return "valid" if payload is not None else "malformed"
+    lowered = output.casefold()
+    if any(marker in lowered for marker in ("expired", "expiration", "token has expired")):
+        return "expired"
+    if any(marker in lowered for marker in ("signaturedoesnotmatch", "signature rejected", "invalid signature")):
+        return "signature_rejected"
+    if any(marker in lowered for marker in ("accessdenied", "access denied", "permission denied", "forbidden", "unauthorized")):
+        return "permission_denied"
+    if any(marker in lowered for marker in ("credential", "not logged in", "no active account", "authentication required")):
+        return "missing"
+    if any(marker in lowered for marker in ("timed out", "timeout", "connection", "unreachable", "could not resolve", "network")):
+        return "endpoint_unreachable"
+    if any(marker in lowered for marker in ("invalid", "malformed", "parse error")):
+        return "malformed"
+    return "provider_unavailable"
+
+
+def _cloud_payload(output: str) -> Any:
+    try:
+        return json.loads(output) if output.strip() else None
+    except json.JSONDecodeError:
+        return None
+
+
+def _credential_type(credential_ref: Any) -> str:
+    if not credential_ref:
+        return "ambient"
+    try:
+        bundle = json.loads(str(credential_ref))
+    except (TypeError, ValueError):
+        return "opaque"
+    if not isinstance(bundle, Mapping):
+        return "opaque"
+    keys = {str(key).casefold().replace("-", "_") for key in bundle}
+    if keys & {"oidc_token", "web_identity_token", "federated_token"}:
+        return "oidc"
+    if keys & {"session_token", "security_token", "token"}:
+        return "temporary"
+    if keys & {"profile", "sso_session"}:
+        return "sso"
+    if keys & {"role", "role_arn", "instance_role"}:
+        return "instance_role"
+    return "static"
+
+
+def _cloud_identity(provider: str, payload: Any, *, region: str = "", credential_type: str = "cli") -> dict[str, str]:
+    identity = {"account_id": "", "principal": "", "credential_type": credential_type, "region": region, "expires_at": "", "request_id": ""}
+    if provider == "aws" and isinstance(payload, Mapping):
+        identity.update(account_id=str(payload.get("Account") or ""), principal=str(payload.get("Arn") or ""))
+    elif provider == "azure" and isinstance(payload, Mapping):
+        user = payload.get("user") if isinstance(payload.get("user"), Mapping) else {}
+        identity.update(
+            account_id=str(payload.get("id") or ""),
+            principal=str(user.get("name") or ""),
+            credential_type=str(user.get("type") or "cli"),
+            region=str(payload.get("location") or region),
+        )
+    elif provider == "gcp" and isinstance(payload, list):
+        active = next((item for item in payload if isinstance(item, Mapping) and str(item.get("status") or "").upper() == "ACTIVE"), None)
+        if active is None and payload and isinstance(payload[0], Mapping):
+            active = payload[0]
+        if active is not None:
+            principal = str(active.get("account") or "")
+            identity.update(
+                account_id=str(active.get("project") or ""),
+                principal=principal,
+                credential_type="service_account" if "gserviceaccount.com" in principal else "user",
+            )
+    if isinstance(payload, Mapping):
+        response = payload.get("Response") if isinstance(payload.get("Response"), Mapping) else payload
+        identity["account_id"] = identity["account_id"] or str(
+            response.get("AccountId") or response.get("AccountID") or response.get("ProjectId") or response.get("TenantId") or ""
+        )
+        identity["principal"] = identity["principal"] or str(
+            response.get("Arn") or response.get("PrincipalId") or response.get("UserId") or response.get("UserName") or ""
+        )
+        identity["request_id"] = str(response.get("RequestId") or response.get("request_id") or "")
+        identity["expires_at"] = str(response.get("Expiration") or response.get("ExpiresAt") or response.get("ExpirationTime") or "")
+    return identity
+
+
+def _cloud_environment(provider: str, credential_ref: Any) -> Mapping[str, str] | None:
+    if credential_ref in (None, ""):
+        return None
+    try:
+        bundle = json.loads(str(credential_ref))
+    except json.JSONDecodeError as exc:
+        raise ValueError("credential_ref_malformed") from exc
+    if not isinstance(bundle, Mapping):
+        raise ValueError("credential_ref_malformed")
+    if not isinstance(bundle, Mapping):
+        raise ValueError("credential_ref_malformed")
+    normalized = {str(key).casefold().replace("-", "_"): str(value) for key, value in bundle.items() if value not in (None, "")}
+    aliases = {
+        "aws": {"access_key_id": "AWS_ACCESS_KEY_ID", "secret_access_key": "AWS_SECRET_ACCESS_KEY", "session_token": "AWS_SESSION_TOKEN", "profile": "AWS_PROFILE", "region": "AWS_DEFAULT_REGION"},
+        "tencent": {"access_key_id": "TENCENTCLOUD_SECRET_ID", "secret_access_key": "TENCENTCLOUD_SECRET_KEY", "session_token": "TENCENTCLOUD_TOKEN", "region": "TENCENTCLOUD_REGION"},
+        "aliyun": {"access_key_id": "ALIBABA_CLOUD_ACCESS_KEY_ID", "secret_access_key": "ALIBABA_CLOUD_ACCESS_KEY_SECRET", "session_token": "ALIBABA_CLOUD_SECURITY_TOKEN", "region": "ALIBABA_CLOUD_REGION_ID"},
+        "azure": {"client_id": "AZURE_CLIENT_ID", "client_secret": "AZURE_CLIENT_SECRET", "tenant_id": "AZURE_TENANT_ID"},
+        "gcp": {"access_token": "CLOUDSDK_AUTH_ACCESS_TOKEN", "project_id": "CLOUDSDK_CORE_PROJECT"},
     }
-    providers = (requested,) if requested in commands else tuple(commands)
-    available = []
+    provider_aliases = aliases.get(provider)
+    if provider_aliases is None:
+        raise ValueError("credential_ref_provider_unsupported")
+    environment = os.environ.copy()
+    for key, env_name in provider_aliases.items():
+        if normalized.get(key):
+            environment[env_name] = normalized[key]
+    if not any(normalized.get(key) for key in provider_aliases):
+        raise ValueError("credential_ref_malformed")
+    return environment
+
+
+def cloud_inventory(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    requested = str(arguments.get("provider") or "auto").casefold().strip()
+    requested = _CLOUD_ALIASES.get(requested, requested)
+    operation = str(arguments.get("operation") or "inventory").casefold()
+    if operation not in {"inventory", "credential_check", "permission_check"}:
+        raise ValueError("cloud_operation_invalid")
+    known_providers = tuple(_CLOUD_EXECUTABLES)
+    if requested != "auto" and requested not in known_providers:
+        raise ValueError("cloud_provider_invalid")
+    providers = known_providers if requested == "auto" else (requested,)
+    region = str(arguments.get("region") or "").strip()
+    try:
+        timeout = max(0.1, min(300.0, float(arguments.get("timeout", 30.0))))
+    except (TypeError, ValueError, OverflowError):
+        timeout = 30.0
+    checked: list[Mapping[str, Any]] = []
     for provider in providers:
-        executable = resolve_executable(commands[provider][0])
+        started = time.monotonic()
+        executable = resolve_executable(_CLOUD_EXECUTABLES[provider])
+        command_map = _CLOUD_PERMISSION_COMMANDS if operation == "permission_check" else _CLOUD_COMMANDS
+        command = command_map.get(provider, ())
+        credential_type = _credential_type(arguments.get("credential_ref"))
+        base = {
+            "provider": provider, "operation": operation, "credential_bound": bool(arguments.get("credential_ref")),
+            "credential_type": credential_type, "evidence_type": f"cloud_{operation}", "secret_exposed": False,
+        }
         if not executable:
+            checked.append({**base, "status": "provider_unavailable", "executable": "", "latency_ms": 0.0, **_cloud_identity(provider, None, region=region, credential_type=credential_type)})
+            continue
+        if not command:
+            checked.append({**base, "status": "sdk_backend_unavailable", "executable": executable, "sdk_package": _CLOUD_SDK_HINTS[provider], "latency_ms": 0.0, **_cloud_identity(provider, None, region=region, credential_type=credential_type)})
             continue
         try:
-            process = subprocess.run((executable, *commands[provider][1:]), capture_output=True, text=True, errors="replace", timeout=30.0, check=False)
-            output, truncated = _bounded(process.stdout or process.stderr, 64 * 1024)
-            available.append({"provider": provider, "executable": executable, "return_code": process.returncode, "output": output, "truncated": truncated})
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            available.append({"provider": provider, "executable": executable, "error": type(exc).__name__})
-    return {"requested_provider": requested, "providers": available, "count": len(available)}
+            environment = _cloud_environment(provider, arguments.get("credential_ref"))
+            command_args = list(command[1:])
+            if region and provider in {"aws", "tencent", "aliyun"}:
+                command_args.extend(("--region", region))
+            process = subprocess.run(
+                (executable, *command_args),
+                capture_output=True,
+                text=True,
+                errors="replace",
+                timeout=timeout,
+                check=False,
+                env=environment,
+            )
+            diagnostic = process.stdout or process.stderr
+            payload = _cloud_payload(process.stdout)
+            status = _cloud_status(process.returncode, diagnostic, payload)
+            checked.append({
+                "provider": provider,
+                "status": status,
+                "executable": executable,
+                "return_code": process.returncode,
+                "latency_ms": round((time.monotonic() - started) * 1000, 3),
+                "secret_exposed": False,
+                **_cloud_identity(provider, payload, region=region, credential_type=credential_type),
+            })
+        except ValueError:
+            checked.append({
+                **base,
+                "status": "credential_ref_invalid",
+                "executable": executable,
+                "latency_ms": round((time.monotonic() - started) * 1000, 3),
+                **_cloud_identity(provider, None, region=region, credential_type=credential_type),
+            })
+        except subprocess.TimeoutExpired:
+            checked.append({
+                "provider": provider,
+                "status": "endpoint_unreachable",
+                "executable": executable,
+                "latency_ms": round((time.monotonic() - started) * 1000, 3),
+                "secret_exposed": False,
+                **_cloud_identity(provider, None, region=region, credential_type=credential_type),
+            })
+        except OSError:
+            checked.append({
+                "provider": provider,
+                "status": "provider_unavailable",
+                "executable": executable,
+                "latency_ms": round((time.monotonic() - started) * 1000, 3),
+                "secret_exposed": False,
+                **_cloud_identity(provider, None, region=region, credential_type=credential_type),
+            })
+    return {
+        "operation": operation,
+        "requested_provider": requested,
+        "providers": checked,
+        "count": len(checked),
+        "secret_exposed": False,
+        "credential_bound": bool(arguments.get("credential_ref")),
+    }
 
 
 def _schema(required: Sequence[str], properties: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -574,8 +794,13 @@ def register_open_source_tools(broker: ToolBroker) -> None:
     )
     broker.register_adapter(
         name="cloud-inventory", capabilities=("cloud_inventory", "identity_inventory", "environment_inventory"), adapter=cloud_inventory,
-        description="Direct read-only inventory through locally installed open-source cloud CLIs; never writes credentials to context.", priority=620,
-        input_schema={"type": "object", "properties": {"provider": {"type": "string", "enum": ["auto", "aws", "azure", "gcp"]}}, "additionalProperties": False},
+        description="Single read-only cloud entrypoint for credential, permission, and inventory checks; returns normalized identity metadata without raw credentials or CLI output.", priority=620,
+        input_schema={"type": "object", "properties": {
+            "operation": {"type": "string", "enum": ["credential_check", "permission_check", "inventory"]},
+            "provider": {"type": "string", "enum": ["auto", "aws", "azure", "gcp", "tencent", "aliyun", "huawei", "volcengine", "baidu", "jdcloud"]},
+            "credential_ref": {"type": "string", "description": "Runtime-resolved credential bundle JSON; raw material is used only in the child process environment."},
+            "region": {"type": "string"}, "timeout": {"type": "number", "minimum": 0.1, "maximum": 300},
+        }, "additionalProperties": False},
     )
 
 
