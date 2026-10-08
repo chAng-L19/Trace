@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import math
 import os
 import re
 import socket
@@ -476,16 +477,49 @@ _CLOUD_COMMANDS: dict[str, tuple[str, ...]] = {
     "azure": ("az", "account", "show", "--output", "json"),
     "gcp": ("gcloud", "auth", "list", "--format=json"),
     "tencent": ("tccli", "sts", "GetCallerIdentity"),
-    "aliyun": ("aliyun", "sts", "GetCallerIdentity", "--output", "json"),
+    "aliyun": ("aliyun", "sts", "GetCallerIdentity"),
 }
 
 _CLOUD_PERMISSION_COMMANDS: dict[str, tuple[str, ...]] = {
-    "aws": ("aws", "ec2", "describe-regions", "--output", "json", "--max-items", "1"),
-    "azure": ("az", "group", "list", "--top", "1", "--output", "json"),
+    "aws": ("aws", "ec2", "describe-regions", "--output", "json"),
+    "azure": ("az", "group", "list", "--output", "json"),
     "gcp": ("gcloud", "projects", "list", "--limit=1", "--format=json"),
-    "tencent": ("tccli", "cvm", "DescribeRegions", "--Limit", "1"),
-    "aliyun": ("aliyun", "ecs", "DescribeRegions", "--PageSize", "1", "--output", "json"),
+    "tencent": ("tccli", "cvm", "DescribeRegions"),
+    "aliyun": ("aliyun", "ecs", "DescribeRegions"),
 }
+
+_CLOUD_INVENTORY_COMMANDS: dict[str, dict[str, tuple[str, ...]]] = {
+    "aws": {
+        "regions": ("ec2", "describe-regions", "--all-regions", "--output", "json"),
+        "compute": ("ec2", "describe-instances", "--output", "json"),
+        "storage": ("s3api", "list-buckets", "--output", "json"),
+        "iam": ("iam", "list-roles", "--output", "json", "--max-items", "100"),
+    },
+    "azure": {
+        "regions": ("account", "list-locations", "--output", "json"),
+        "resources": ("resource", "list", "--output", "json"),
+        "compute": ("vm", "list", "--show-details", "--output", "json"),
+        "storage": ("storage", "account", "list", "--output", "json"),
+    },
+    "gcp": {
+        "regions": ("compute", "regions", "list", "--format=json"),
+        "resources": ("asset", "search-all-resources", "--format=json"),
+        "compute": ("compute", "instances", "list", "--format=json"),
+        "storage": ("storage", "buckets", "list", "--format=json"),
+    },
+    "tencent": {
+        "regions": ("cvm", "DescribeRegions"),
+        "compute": ("cvm", "DescribeInstances", "--Limit", "100"),
+    },
+    "aliyun": {
+        "regions": ("ecs", "DescribeRegions"),
+        "compute": ("ecs", "DescribeInstances", "--PageSize", "100"),
+    },
+}
+
+_CLOUD_INVENTORY_ALIASES = {"all": "resources", "assets": "resources", "instances": "compute", "buckets": "storage"}
+_CLOUD_INVENTORY_DEFAULTS = ("regions", "compute", "storage")
+_CLOUD_MAX_RECORDS = 200
 
 _CLOUD_EXECUTABLES = {
     "aws": "aws", "azure": "az", "gcp": "gcloud", "tencent": "tccli", "aliyun": "aliyun",
@@ -504,8 +538,12 @@ _CLOUD_SDK_HINTS = {
 
 
 def _cloud_status(return_code: int, output: str, payload: Any) -> str:
+    if isinstance(payload, Mapping):
+        response = payload.get("Response", payload)
+        if isinstance(response, Mapping) and (response.get("Error") or response.get("Code")):
+            return_code = return_code or 1
     if return_code == 0:
-        return "valid" if payload is not None else "malformed"
+        return "valid" if isinstance(payload, (Mapping, list)) else "malformed"
     lowered = output.casefold()
     if any(marker in lowered for marker in ("expired", "expiration", "token has expired")):
         return "expired"
@@ -527,6 +565,63 @@ def _cloud_payload(output: str) -> Any:
         return json.loads(output) if output.strip() else None
     except json.JSONDecodeError:
         return None
+
+
+def _cloud_records(provider: str, kind: str, payload: Any, *, region: str = "", limit: int = _CLOUD_MAX_RECORDS) -> list[dict[str, Any]]:
+    """Project provider-specific JSON into bounded, provider-neutral asset summaries."""
+    candidates: list[Any] = []
+    collection_keys = ("Response", "Reservations", "Regions", "Region", "RegionSet", "regions", "value", "items", "Instances", "Instance", "InstanceSet", "instanceSet", "Buckets", "buckets", "Roles", "resources", "data")
+
+    def collect(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                collect(item)
+            return
+        if not isinstance(value, Mapping):
+            return
+        for key in collection_keys:
+            nested = value.get(key)
+            if isinstance(nested, (Mapping, list)):
+                collect(nested)
+                return
+        candidates.append(value)
+
+    collect(payload)
+    records: list[dict[str, Any]] = []
+    for item in candidates[:max(1, min(_CLOUD_MAX_RECORDS, int(limit)))]:
+        if not isinstance(item, Mapping):
+            continue
+        def first(*keys: str) -> str:
+            for key in keys:
+                value = item.get(key)
+                if isinstance(value, Mapping):
+                    value = value.get("Name") or value.get("name") or ""
+                if isinstance(value, (str, int, float)) and not isinstance(value, bool) and value != "":
+                    return str(value)
+            return ""
+
+        record = {
+            "provider": provider,
+            "kind": kind,
+            "id": first("id", "Id", "InstanceId", "ResourceId", "resourceId", "Arn", "RoleId", "Name", "name", "RegionId", "RegionName", "Region", "region", "location"),
+            "name": first("name", "Name", "InstanceName", "ResourceName", "resourceName", "RegionName", "DisplayName"),
+            "region": first("region", "Region", "RegionName", "RegionId", "location", "Location") or region,
+            "status": first("status", "Status", "State", "state", "PowerState", "instanceState"),
+            "type": first("type", "Type", "ResourceType", "resourceType", "InstanceType"),
+        }
+        if record["id"]:
+            records.append(record)
+    return records
+
+
+def _cloud_inventory_command(provider: str, kind: str, *, region: str) -> tuple[str, ...]:
+    command = _CLOUD_INVENTORY_COMMANDS.get(provider, {}).get(kind, ())
+    if not command:
+        return ()
+    args = list(command)
+    if region and provider in {"aws", "tencent", "aliyun"}:
+        args.extend(("--region", region))
+    return tuple(args)
 
 
 def _credential_type(credential_ref: Any) -> str:
@@ -591,11 +686,13 @@ def _cloud_environment(provider: str, credential_ref: Any) -> Mapping[str, str] 
         return None
     try:
         bundle = json.loads(str(credential_ref))
-    except json.JSONDecodeError as exc:
-        raise ValueError("credential_ref_malformed") from exc
+    except json.JSONDecodeError:
+        raise ValueError("credential_ref_malformed") from None
     if not isinstance(bundle, Mapping):
         raise ValueError("credential_ref_malformed")
-    if not isinstance(bundle, Mapping):
+    if provider == "azure":
+        raise ValueError("credential_ref_azure_cli_login_required")
+    if any(not isinstance(value, str) or "\x00" in value for value in bundle.values()):
         raise ValueError("credential_ref_malformed")
     normalized = {str(key).casefold().replace("-", "_"): str(value) for key, value in bundle.items() if value not in (None, "")}
     aliases = {
@@ -609,6 +706,17 @@ def _cloud_environment(provider: str, credential_ref: Any) -> Mapping[str, str] 
     if provider_aliases is None:
         raise ValueError("credential_ref_provider_unsupported")
     environment = os.environ.copy()
+    if provider in {"aws", "tencent", "aliyun"}:
+        if not (normalized.get("access_key_id") and normalized.get("secret_access_key")) and not (provider == "aws" and normalized.get("profile")):
+            raise ValueError("credential_ref_incomplete")
+        for key, env_name in provider_aliases.items():
+            if key != "region":
+                environment.pop(env_name, None)
+        if provider == "aws":
+            for env_name in ("AWS_SECURITY_TOKEN", "AWS_DEFAULT_PROFILE", "AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE"):
+                environment.pop(env_name, None)
+    if provider == "gcp" and not normalized.get("access_token"):
+        raise ValueError("credential_ref_incomplete")
     for key, env_name in provider_aliases.items():
         if normalized.get(key):
             environment[env_name] = normalized[key]
@@ -628,10 +736,31 @@ def cloud_inventory(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
         raise ValueError("cloud_provider_invalid")
     providers = known_providers if requested == "auto" else (requested,)
     region = str(arguments.get("region") or "").strip()
+    if region and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", region):
+        raise ValueError("cloud_region_invalid")
+    if requested == "auto" and arguments.get("credential_ref"):
+        raise ValueError("cloud_credential_provider_required")
+    explicit_kinds = "resource_types" in arguments or "scopes" in arguments
+    raw_kinds = arguments.get("resource_types", arguments.get("scopes", _CLOUD_INVENTORY_DEFAULTS))
+    if isinstance(raw_kinds, str):
+        raw_kinds = (raw_kinds,)
+    if not isinstance(raw_kinds, (list, tuple)) or len(raw_kinds) > 8 or any(not isinstance(item, str) or len(item) > 64 for item in raw_kinds):
+        raise ValueError("cloud_resource_types_invalid")
+    resource_types = tuple(dict.fromkeys(_CLOUD_INVENTORY_ALIASES.get(str(item).casefold().strip(), str(item).casefold().strip()) for item in raw_kinds if str(item).strip()))
+    if operation == "inventory" and not resource_types:
+        raise ValueError("cloud_resource_types_required")
     try:
-        timeout = max(0.1, min(300.0, float(arguments.get("timeout", 30.0))))
+        max_results = int(arguments.get("max_results", _CLOUD_MAX_RECORDS))
     except (TypeError, ValueError, OverflowError):
-        timeout = 30.0
+        raise ValueError("cloud_max_results_invalid") from None
+    if type(arguments.get("max_results", _CLOUD_MAX_RECORDS)) is not int or not 1 <= max_results <= _CLOUD_MAX_RECORDS:
+        raise ValueError("cloud_max_results_invalid")
+    try:
+        timeout = float(arguments.get("timeout", 30.0))
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("cloud_timeout_invalid") from None
+    if isinstance(arguments.get("timeout"), bool) or not math.isfinite(timeout) or not 0.1 <= timeout <= 300:
+        raise ValueError("cloud_timeout_invalid")
     checked: list[Mapping[str, Any]] = []
     for provider in providers:
         started = time.monotonic()
@@ -666,7 +795,7 @@ def cloud_inventory(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
             diagnostic = process.stdout or process.stderr
             payload = _cloud_payload(process.stdout)
             status = _cloud_status(process.returncode, diagnostic, payload)
-            checked.append({
+            result = {
                 "provider": provider,
                 "status": status,
                 "executable": executable,
@@ -674,7 +803,45 @@ def cloud_inventory(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
                 "latency_ms": round((time.monotonic() - started) * 1000, 3),
                 "secret_exposed": False,
                 **_cloud_identity(provider, payload, region=region, credential_type=credential_type),
-            })
+            }
+            if operation == "inventory" and status == "valid":
+                assets: list[dict[str, Any]] = []
+                failures: list[dict[str, str]] = []
+                truncated = False
+                supported = _CLOUD_INVENTORY_COMMANDS.get(provider, {})
+                kinds = resource_types if explicit_kinds else tuple(kind for kind in resource_types if kind in supported)
+                for kind in kinds:
+                    if kind not in supported:
+                        failures.append({"kind": kind, "status": "unsupported"})
+                        continue
+                    inventory_command = _cloud_inventory_command(provider, kind, region=region)
+                    try:
+                        inventory_process = subprocess.run(
+                            (executable, *inventory_command), capture_output=True, text=True, errors="replace",
+                            timeout=timeout, check=False, env=environment,
+                        )
+                        inventory_payload = _cloud_payload(inventory_process.stdout)
+                        inventory_status = _cloud_status(inventory_process.returncode, inventory_process.stdout or inventory_process.stderr, inventory_payload)
+                        if inventory_status == "valid":
+                            records = _cloud_records(provider, kind, inventory_payload, region=region, limit=_CLOUD_MAX_RECORDS)
+                            remaining = max_results - len(assets)
+                            truncated |= len(records) >= _CLOUD_MAX_RECORDS or len(records) > remaining
+                            response = inventory_payload.get("Response", inventory_payload) if isinstance(inventory_payload, Mapping) else {}
+                            if isinstance(response, Mapping):
+                                truncated |= any(response.get(key) for key in ("NextToken", "NextMarker", "Marker", "nextPageToken", "IsTruncated"))
+                                total = response.get("TotalCount")
+                                truncated |= isinstance(total, int) and total > len(records)
+                            assets.extend(records[:remaining])
+                        else:
+                            failures.append({"kind": kind, "status": inventory_status})
+                    except (OSError, subprocess.TimeoutExpired):
+                        failures.append({"kind": kind, "status": "endpoint_unreachable"})
+                result.update(resource_types=list(kinds), assets=assets, resource_count=len(assets), failures=failures, truncated=bool(truncated), inventory_complete=not failures and not truncated)
+                if (failures or truncated) and assets:
+                    result["status"] = "partial"
+                elif failures and not assets:
+                    result["status"] = "inventory_failed"
+            checked.append(result)
         except ValueError:
             checked.append({
                 **base,
@@ -701,14 +868,34 @@ def cloud_inventory(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
                 "secret_exposed": False,
                 **_cloud_identity(provider, None, region=region, credential_type=credential_type),
             })
-    return {
+    secret_values = []
+    if arguments.get("credential_ref"):
+        try:
+            bundle = json.loads(str(arguments["credential_ref"]))
+            if isinstance(bundle, Mapping):
+                secret_values = [value for key, value in bundle.items() if isinstance(value, str) and value and str(key).casefold().replace("-", "_") in {"access_key_id", "secret_access_key", "session_token", "access_token", "client_secret"}]
+        except ValueError:
+            pass
+
+    def redact(value: Any) -> Any:
+        if isinstance(value, str):
+            for secret in secret_values:
+                value = value.replace(secret, "[REDACTED]")
+            return value
+        if isinstance(value, dict):
+            return {key: redact(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [redact(item) for item in value]
+        return value
+
+    return redact({
         "operation": operation,
         "requested_provider": requested,
         "providers": checked,
         "count": len(checked),
         "secret_exposed": False,
         "credential_bound": bool(arguments.get("credential_ref")),
-    }
+    })
 
 
 def _schema(required: Sequence[str], properties: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -794,12 +981,14 @@ def register_open_source_tools(broker: ToolBroker) -> None:
     )
     broker.register_adapter(
         name="cloud-inventory", capabilities=("cloud_inventory", "identity_inventory", "environment_inventory"), adapter=cloud_inventory,
-        description="Single read-only cloud entrypoint for credential, permission, and inventory checks; returns normalized identity metadata without raw credentials or CLI output.", priority=620,
+        description="Agent-callable cloud entrypoint for credential, permission, and regional resource inventory; returns normalized metadata without raw credentials or CLI output.", priority=620,
         input_schema={"type": "object", "properties": {
             "operation": {"type": "string", "enum": ["credential_check", "permission_check", "inventory"]},
             "provider": {"type": "string", "enum": ["auto", "aws", "azure", "gcp", "tencent", "aliyun", "huawei", "volcengine", "baidu", "jdcloud"]},
             "credential_ref": {"type": "string", "description": "Runtime-resolved credential bundle JSON; raw material is used only in the child process environment."},
-            "region": {"type": "string"}, "timeout": {"type": "number", "minimum": 0.1, "maximum": 300},
+            "region": {"type": "string"}, "resource_types": {"type": "array", "items": {"type": "string"}, "maxItems": 8},
+            "scopes": {"type": "array", "items": {"type": "string"}, "maxItems": 8}, "max_results": {"type": "integer", "minimum": 1, "maximum": 200},
+            "timeout": {"type": "number", "minimum": 0.1, "maximum": 300},
         }, "additionalProperties": False},
     )
 

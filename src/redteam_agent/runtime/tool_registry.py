@@ -96,7 +96,7 @@ class ToolVisibilityPolicy:
             count = by_server.get(server, 0)
             if matches:
                 reason = "capability_match"
-            elif source in {"registered-adapter", "builtin"}:
+            elif source in {"registered-adapter", "builtin", "application"}:
                 reason = "builtin_default"
             elif not side_effecting and count < self.max_default_per_server:
                 reason = "read_only_default"
@@ -116,6 +116,8 @@ class ToolVisibilityPolicy:
             "binary": ("binary_reverse", "decompile", "disassemble", "graph_analysis"),
             "reverse": ("binary_reverse", "decompile", "disassemble", "graph_analysis"),
             "cloud": ("cloud_inventory", "policy_simulation", "identity_validation"),
+            "c2": ("c2_inventory", "c2_health", "session_inventory", "listener_inventory", "c2_action"),
+            "sliver": ("c2_inventory", "c2_health", "session_inventory", "listener_inventory", "c2_action"),
             "source": ("code_analysis", "source_inventory", "data_flow"),
             "code": ("code_analysis", "source_inventory", "data_flow"),
         }
