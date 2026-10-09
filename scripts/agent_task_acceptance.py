@@ -8,8 +8,10 @@ import json
 import sys
 import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -39,7 +41,7 @@ class Target(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def accept_case(vulnerable):
+def accept_case(vulnerable, *, capture_write_delay=0):
     server = ThreadingHTTPServer(("127.0.0.1", 0), Target)
     server.vulnerable, server.requests = vulnerable, []
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -61,10 +63,21 @@ def accept_case(vulnerable):
             def fetch(path, owner="1"):
                 descriptor = next(item for item in runtime.broker.descriptors()
                                   if item.qualified_name == "builtin:http-request")
-                result = runtime.broker.call(descriptor, {
-                    "url": target + path, "headers": {"X-Fixture-Owner": owner},
-                }, run_id=run_id, timeout=5)
-                assert result.status == "success", result.to_dict()
+                put_bytes = runtime.artifacts.put_bytes
+
+                def write_capture(*args, **kwargs):
+                    if (capture_write_delay and invocation_stages == ["map-surface"]
+                            and kwargs.get("artifact_type", "").endswith("_raw")):
+                        time.sleep(capture_write_delay)
+                    return put_bytes(*args, **kwargs)
+
+                # The socket deadline excludes capture persistence; the broker
+                # retains its normal tool deadline, including the real writes.
+                with patch.object(runtime.artifacts, "put_bytes", write_capture):
+                    result = runtime.broker.call(descriptor, {
+                        "url": target + path, "headers": {"X-Fixture-Owner": owner}, "timeout": 5,
+                    }, run_id=run_id)
+                assert result.status == "success", f"{result.tool}:{result.status}:{result.error}"
                 return dict(result.output)
 
             def execute(arguments):
@@ -155,7 +168,12 @@ def accept_case(vulnerable):
             with AgentService(runtime=runtime, model_port=provider, load_external_configuration=False) as service:
                 run_id = service.start({"session_id": "acceptance", "objective": "Verify local resource authorization",
                                         "targets": [target]}).single.run.run_id
-                result = service.run(run_id)
+                try:
+                    result = service.run(run_id)
+                except Exception as error:
+                    failures = [item.to_dict() for item in service.journal.model_observations(run_id)
+                                if item.status != "success"]
+                    raise AssertionError({"stages": invocation_stages, "tool_failures": failures}) from error
                 assert result.terminal.success and result.run.status == "completed", result.to_dict()
                 assert len(provider.requests) == 7 and len(invocation_stages) == len(set(invocation_stages)) == 7
                 graph = project_asset_attack_graph(service, run_id)
@@ -198,7 +216,7 @@ def accept_case(vulnerable):
 
 def main():
     print(json.dumps({"ok": True, "model": "scripted_fixture_not_live_model",
-                      "cases": [accept_case(True), accept_case(False)]}))
+                      "cases": [accept_case(True), accept_case(False, capture_write_delay=1.3)]}))
 
 
 if __name__ == "__main__":
