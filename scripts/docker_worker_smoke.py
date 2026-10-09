@@ -33,7 +33,7 @@ def fake_cli(calls, environments=None):
         assert list(argv[1:3]) == ["run", "--rm"]
         root = argv[argv.index("--volume") + 1].removesuffix(":/workspace")
         relative = argv[argv.index("--workdir") + 1].removeprefix("/workspace/")
-        assert Path(options["cwd"]) == Path(root) / relative
+        assert Path(options["cwd"]).resolve() == (Path(root) / relative).resolve()
         environment = dict(options["env"])
         for index, value in enumerate(argv):
             if value == "--env":
