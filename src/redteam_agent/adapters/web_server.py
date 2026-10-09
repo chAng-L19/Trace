@@ -171,6 +171,11 @@ class TraceRequestHandler(BaseHTTPRequestHandler):
                 query["after_sequence"] = self.headers.get("Last-Event-ID", "0")
             after = self.api._int_query(query, "after_sequence", 0, 0, 2**63 - 1)
             events = self.api.sse_events(segments[2], after_sequence=after, wait_seconds=float(query.get("wait_seconds", "0") or 0))
+            if not self.api.control.authenticated(
+                {str(key).casefold(): str(value) for key, value in self.headers.items()}, force=self.api.force_auth
+            ):
+                self._write(self.api._error(401, "authentication_required"))
+                return
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")

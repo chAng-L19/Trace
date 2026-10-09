@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import os
 import tempfile
 import tomllib
 from pathlib import Path
@@ -32,7 +33,9 @@ def main() -> None:
         root = Path(temporary)
         with AgentService(root=root / "runtime", load_external_configuration=False) as service:
             api = WebApi(service)
-            response = api.dispatch("GET", "/api/mcp")
+            token = api.control.login(os.environ.get("TRACE_ADMIN_USERNAME") or "trace", os.environ.get("TRACE_ADMIN_PASSWORD") or "admin@123")
+            headers = {"Authorization": "Bearer " + token}
+            response = api.dispatch("GET", "/api/mcp", headers=headers)
             assert response.status == 200
             initial = response.payload()
             assert initial["tools"] == 0  # Native adapters are not MCP tools.
@@ -68,7 +71,7 @@ command = "fixture"
             with patch.object(broker, "_create_client", side_effect=client) as factory:
                 broker.discover_from_configs((config,))
                 prior = factory.call_count
-                result = api.dispatch("GET", "/api/mcp").payload()
+                result = api.dispatch("GET", "/api/mcp", headers=headers).payload()
                 assert factory.call_count == prior  # Reading never starts/reloads a server.
             servers = {item["server_id"]: item for item in result["servers"]}
             assert set(servers) == {"external", "disabled", "broken"}
@@ -82,7 +85,7 @@ command = "fixture"
             assert result["tools"] == 1
             service.control.save_mcp({"server_id": "external", "transport": "http",
                                       "url": "http://fixture.invalid/mcp", "enabled": False})
-            updated = api.dispatch("GET", "/api/mcp").payload()["servers"]
+            updated = api.dispatch("GET", "/api/mcp", headers=headers).payload()["servers"]
             external = [item for item in updated if item["server_id"] == "external"]
             assert len(external) == 1 and external[0]["source"] == "managed"
             assert not external[0]["status"]["callable"]

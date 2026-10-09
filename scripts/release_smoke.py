@@ -14,7 +14,8 @@ import time
 import zipfile
 from email.parser import BytesParser
 from pathlib import Path, PurePosixPath
-from urllib.request import ProxyHandler, build_opener
+from urllib.request import ProxyHandler, Request, build_opener
+from urllib.error import HTTPError
 
 
 ENTRY_POINTS = {
@@ -129,6 +130,22 @@ def _web_smoke(command: str, *, cwd: Path) -> None:
                 payload = json.load(response)
                 _require(response.status == 200 and payload.get("ok") is True, "web_api_not_ready")
                 _require(isinstance(payload.get("authenticated"), bool), "web_auth_status_invalid")
+                _require(payload.get("required") is True and not payload["authenticated"], "web_login_not_required")
+            base_url = f"http://127.0.0.1:{port}"
+            try:
+                opener.open(base_url + "/api/runs", timeout=2)
+            except HTTPError as error:
+                _require(error.code == 401, "anonymous_api_not_401")
+            else:
+                raise RuntimeError("anonymous_api_allowed")
+            login = Request(base_url + "/api/auth/login", method="POST",
+                data=json.dumps({"username": "trace", "password": "admin@123"}).encode(),
+                headers={"Content-Type": "application/json"})
+            with opener.open(login, timeout=5) as response:
+                cookie = response.headers["Set-Cookie"].split(";", 1)[0]
+                _require(json.load(response)["user"]["role"] == "admin", "default_admin_login_failed")
+            with opener.open(Request(base_url + "/api/auth/profile", headers={"Cookie": cookie}), timeout=5) as response:
+                _require(json.load(response)["user"]["username"] == "trace", "profile_route_failed")
             with opener.open(f"http://127.0.0.1:{port}/", timeout=2) as page:
                 _require(page.status == 200 and b"Trace" in page.read(), "wheel_static_ui_missing")
         finally:

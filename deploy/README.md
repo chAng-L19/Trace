@@ -15,13 +15,15 @@ Docker 默认将 `python:3.12.12-slim-bookworm` 固定到多架构 index digest
 ```sh
 cp deploy/trace.env.example .env
 chmod 600 .env
-${EDITOR:-vi} .env  # 设置非空 TRACE_ADMIN_PASSWORD；需要模型时填写 Provider 三项
+${EDITOR:-vi} .env  # 首次管理员初始化配置；需要模型时填写 Provider 三项
 docker compose up --build -d --wait
 curl --fail http://127.0.0.1:8765/api/auth/status
 docker compose logs --tail=30 trace
 ```
 
-浏览器打开 `http://127.0.0.1:8765`，使用 `TRACE_ADMIN_PASSWORD` 登录。模型配置为
+浏览器打开 `http://127.0.0.1:8765`，默认使用 `trace / admin@123` 登录，在个人资料中修改
+账密；管理员可添加用户。`TRACE_ADMIN_USERNAME/PASSWORD` 仅初始化空用户库，不覆盖
+已持久化的账户。所有成员共享运行工作台，管理员管理全局配置，不是多租户部署。模型配置为
 `TRACE_MODEL`、`TRACE_API_BASE_URL`、`OPENAI_API_KEY`；也可先留空，在 Web 中配置。
 可选 `TRACE_*` Provider 项留空时使用 Web 持久配置，再回落到应用默认值；显式填写
 宿主环境或 `.env` 的值会在重启时优先于 Web 配置。Web 录入的 API Key 仅驻留当前

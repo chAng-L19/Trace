@@ -77,8 +77,6 @@ class ControlPlane:
         self._secrets: dict[str, str] = {}
         self._mcp_secret_values: dict[str, str] = {}
         self._mcp_secret_envs: dict[tuple[str, str, str], str] = {}
-        self._sessions: dict[str, tuple[str, float]] = {}
-        self._failed_logins: dict[str, list[float]] = {}
         self._managed_mcp = root / "managed-mcp.toml"
         self._secret_key = self._load_secret_key()
         with self.store.transaction(immediate=True) as connection:
@@ -118,6 +116,8 @@ class ControlPlane:
                     secret_name TEXT PRIMARY KEY, ciphertext TEXT NOT NULL, updated_at TEXT NOT NULL
                 )"""
             )
+        from .web_accounts import Accounts
+        self.accounts = Accounts(self.store)
         self._migrate_mcp_secret_rows()
         self._load_secret_values()
 
@@ -522,58 +522,13 @@ class ControlPlane:
 
     @property
     def auth_required(self) -> bool:
-        configured = bool(os.environ.get("TRACE_ADMIN_PASSWORD") or os.environ.get("TRACE_ADMIN_TOKEN"))
-        return os.environ.get("TRACE_AUTH_REQUIRED", "1" if configured else "0").casefold() not in {"0", "false", "no"}
-
-    def login(self, password: str, *, client_key: str = "direct") -> str:
-        expected = os.environ.get("TRACE_ADMIN_PASSWORD", "")
-        token = os.environ.get("TRACE_ADMIN_TOKEN", "")
-        if not expected and not token:
-            return ""
-        now = time.time()
-        bucket = str(client_key or "direct")[:128]
-        with self._lock:
-            failures = [stamp for stamp in self._failed_logins.get(bucket, []) if stamp > now - 60]
-            self._failed_logins[bucket] = failures
-            if len(failures) >= 5:
-                raise ValueError("login_rate_limited")
-        if not (hmac.compare_digest(password, expected) or hmac.compare_digest(password, token)):
-            with self._lock:
-                self._failed_logins.setdefault(bucket, []).append(now)
-            raise ValueError("invalid_credentials")
-        session = secrets.token_urlsafe(32)
-        with self._lock:
-            self._sessions[hashlib.sha256(session.encode()).hexdigest()] = (session, time.time() + 43200)
-        return session
-
-    def authenticated(self, headers: Mapping[str, str], *, force: bool = False) -> bool:
-        if not (self.auth_required or force):
-            return True
-        raw = str(headers.get("authorization") or "")
-        if raw.casefold().startswith("bearer "):
-            token = raw[7:].strip()
-        else:
-            cookie = str(headers.get("cookie") or "")
-            token = next((part.split("=", 1)[1] for part in cookie.split(";") if part.strip().startswith("trace_session=")), "")
-        if not token:
-            return False
-        digest = hashlib.sha256(token.encode()).hexdigest()
-        with self._lock:
-            record = self._sessions.get(digest)
-            if record is None or record[1] <= time.time():
-                self._sessions.pop(digest, None)
-                return False
         return True
 
+    def login(self, username: str, password: str, *, client_key: str = "direct") -> str:
+        return self.accounts.login(username, password, client_key)
+
+    def authenticated(self, headers: Mapping[str, str], *, force: bool = False) -> bool:
+        return self.accounts.user(headers) is not None
+
     def logout(self, headers: Mapping[str, str]) -> None:
-        cookie = str(headers.get("cookie") or "")
-        token = next((part.split("=", 1)[1] for part in cookie.split(";") if part.strip().startswith("trace_session=")), "")
-        if not token:
-            auth = str(headers.get("authorization") or "")
-            token = auth[7:].strip() if auth.casefold().startswith("bearer ") else ""
-        if token:
-            with self._lock:
-                self._sessions.pop(hashlib.sha256(token.encode()).hexdigest(), None)
-
-
-__all__ = ["ControlPlane"]
+        self.accounts.logout(headers)

@@ -22,6 +22,7 @@ async function loadAuth() {
   const result = await api("/api/auth/status");
   state.authRequired = Boolean(result.required);
   state.authenticated = Boolean(result.authenticated || !result.required);
+  applyUser(result.user);
   $("#logout").hidden = !state.authRequired || !state.authenticated;
   if (result.required && !state.authenticated) {
     setAuthLocked(true);
@@ -36,29 +37,33 @@ async function loadAuth() {
 async function login(event) {
   event.preventDefault();
   const form = event.currentTarget;
-  const password = String(new FormData(form).get("password") || "");
+  const data = new FormData(form);
+  const username = String(data.get("username") || "");
+  const password = String(data.get("password") || "");
   const errorNode = $("#login-error");
   const submit = $("#login-submit");
   errorNode.hidden = true;
   submit.disabled = true;
   submit.textContent = "正在进入";
   try {
-    await api("/api/auth/login", {
+    const result = await api("/api/auth/login", {
       method: "POST",
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ username, password }),
     });
     $("#login-dialog").close();
     form.reset();
     state.authenticated = true;
     state.authRequired = true;
+    applyUser(result.user);
     state.authEpoch += 1;
     setAuthLocked(false);
+    setView("runs");
     $("#logout").hidden = false;
     await Promise.all([loadSystem(), loadRuns({ keepSelection: false })]);
     showNotice("已登录 Trace");
   } catch (error) {
     errorNode.textContent = error.message === "invalid_credentials"
-      ? "密码不正确，请重试。"
+      ? "用户名或密码不正确，请重试。"
       : "登录未完成，请检查服务连接后重试。";
     errorNode.hidden = false;
   } finally {
@@ -84,6 +89,12 @@ async function logout() {
 }
 
 function clearSessionView() {
+  document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close());
+  applyUser(null);
+  $("#user-list").replaceChildren();
+  $("#profile-form").reset();
+  $("#password-form").reset();
+  $("#user-form").reset();
   state.authenticated = false;
   state.selectedId = "";
   state.runs = [];

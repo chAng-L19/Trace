@@ -86,7 +86,18 @@ Web MCP 页面统一展示网页托管与配置文件中的外部服务；官方
 
 Docker worker 使用任务指定的 `image` 与 `argv`，共享运行工作区并保存 stdout/stderr 产物；
 支持非零退出、超时、取消、进程中断恢复和容器清理。需要本机 Docker CLI 与可用 daemon。
+任务容器默认非 root、只读根目录、无 capabilities、禁止提权、网络 `none`；工作区和
+64 MiB `/tmp` 可写。部署端 CPU/内存/PID 上限默认为 1/512 MiB/128，可通过
+`TRACE_DOCKER_MAX_CPUS`、`TRACE_DOCKER_MAX_MEMORY_MB`、`TRACE_DOCKER_MAX_PIDS` 调整；
+任务只能降低限额，联网任务可指定 `network=bridge`。Linux 宿主需非 root 运行，
+工作区路径和 UID/GID 必须与 Docker daemon 所在主机一致。
 Codex worker 仍是持久交接接口，外部宿主负责接收任务和回填结果。
+
+Web 强制用户名密码登录，首次启动创建管理员 `trace / admin@123`；在个人资料中可修改
+用户名、显示名与密码，管理员可以添加成员或管理员。`TRACE_ADMIN_USERNAME/PASSWORD`
+仅在用户库首次初始化时使用，重启不会覆盖已修改账户。修改账密会使其他旧会话失效。
+全局 Provider、Skill、MCP 配置写入仅允许管理员；运行及其证据是可信成员共享的工作台，
+不提供租户隔离。Web 会话保留在单个服务进程中，服务重启后需重新登录。
 
 `cloud-inventory` 的 GCP/Azure 凭据验证会执行只读远程权限探针；本地 CLI
 账号缓存不作为有效凭据证明。`verification_source` 表示验证来源，
