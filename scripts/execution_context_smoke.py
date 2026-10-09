@@ -318,11 +318,14 @@ def check_runtime_deadlines():
         with scenario([], time_limit_seconds=3) as (service, _original, run_id):
             provider = WaitingProvider(streaming)
             service.configure_model(provider, streaming=streaming)
-            started = time.monotonic()
-            result = service.run(run_id)
-            assert time.monotonic() - started < 3.3
+            with patch("redteam_agent.application.model_turn.threading.Timer", wraps=threading.Timer) as timers:
+                result = service.run(run_id)
             assert result.run.budget.pause_reason == "time_limit_exhausted"
             assert len(provider.requests) == 1 and len(provider.cancelled) == 1
+            assert provider.cancelled[0] == provider.requests[0].request_id
+            assert len(timers.call_args_list) == 1
+            # Check the request deadline, excluding durable writes after cancellation.
+            assert 0 < timers.call_args.args[0] <= provider.requests[0].metadata["remaining_time_seconds"]
             assert provider.requests[0].metadata["runtime_deadline"]
             assert provider.requests[0].metadata["remaining_time_seconds"] <= 3
             stored = service.journal.model_responses(run_id)[0].response
