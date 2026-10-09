@@ -35,6 +35,7 @@ const state = {
   authenticated: false,
   authRequired: false,
   authEpoch: 0,
+  user: null,
   search: "",
   registryScroll: 0,
 };
@@ -51,6 +52,7 @@ function commandHeaders() {
 }
 
 async function api(path, options = {}) {
+  const epoch = state.authEpoch;
   const headers = { Accept: "application/json", ...(options.headers || {}) };
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
   const response = await fetch(path, {
@@ -63,7 +65,7 @@ async function api(path, options = {}) {
   const payload = type.includes("application/json")
     ? await response.json()
     : await response.text();
-  if (response.status === 401 && !String(path).startsWith("/api/auth/")) {
+  if (epoch === state.authEpoch && response.status === 401 && !["/api/auth/login", "/api/auth/status"].includes(String(path))) {
     handleAuthExpired();
   }
   if (!response.ok || (payload && payload.ok === false)) {
@@ -686,6 +688,10 @@ function bind() {
   );
   $("#logout").addEventListener("click", logout);
   $("#login-form").addEventListener("submit", login);
+  $("#profile-form").addEventListener("submit", saveAccount);
+  $("#password-form").addEventListener("submit", saveAccount);
+  $("#user-form").addEventListener("submit", submitUser);
+  $("#add-user").addEventListener("click", () => { $("#user-form").reset(); $("#user-dialog").showModal(); });
   $("#add-provider").addEventListener("click", () => openProviderEditor());
   $("#provider-form").addEventListener("submit", submitProvider);
   $("#skill-form").addEventListener("submit", submitSkill);

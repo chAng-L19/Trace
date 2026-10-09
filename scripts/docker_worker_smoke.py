@@ -31,6 +31,11 @@ def fake_cli(calls, environments=None):
         if environments is not None:
             environments.append(("run", dict(options["env"])))
         assert list(argv[1:3]) == ["run", "--rm"]
+        assert "--read-only" in argv
+        for flag, value in (("--cap-drop", "ALL"), ("--security-opt", "no-new-privileges:true"),
+                            ("--tmpfs", "/tmp:rw,nosuid,nodev,size=64m,mode=1777")):
+            assert argv[argv.index(flag) + 1] == value
+        assert int(argv[argv.index("--user") + 1].split(":")[0]) != 0
         root = argv[argv.index("--volume") + 1].removesuffix(":/workspace")
         relative = argv[argv.index("--workdir") + 1].removeprefix("/workspace/")
         assert Path(options["cwd"]).resolve() == (Path(root) / relative).resolve()
@@ -40,7 +45,8 @@ def fake_cli(calls, environments=None):
                 key, text = argv[index + 1].split("=", 1)
                 environment[key] = text
         entry = argv.index("--entrypoint")
-        command = [sys.executable, *argv[entry + 3:]]
+        assert argv[entry + 2] == "--", "image must not become Docker options"
+        command = [sys.executable, *argv[entry + 4:]]
         process = popen(command, **{**options, "env": environment})
         process.args = argv
         return process
@@ -92,10 +98,76 @@ def main():
             assert len(calls) == before
             assert service.workers.reconcile(success.idempotency_key) == result
             checks.extend(["workspace_env_and_evidence", "idempotent_replay_and_reconcile"])
+            if not args.live:
+                option_image = service.execute_worker(task("image-option", "print('bounded')", image="--privileged"))
+                assert option_image.status == "completed", option_image
+                command = next(call for call in calls if "--privileged" in call)
+                assert command[command.index("--privileged") - 1] == "--"
+                checks.append("image_cannot_inject_docker_options")
 
             invalid = service.execute_worker(task("missing-image", "print('never')", image=""))
             assert invalid.status == "failed" and "docker_worker_image_required" in invalid.error
             checks.append("missing_image_is_recorded_failure")
+
+            for name, payload in (("unlimited-pids", {"pids_limit": -1}),
+                                  ("unlimited-memory", {"memory_mb": 0}),
+                                  ("unlimited-cpu", {"cpus": 0}),
+                                  ("excess-cpu", {"cpus": 1e9}),
+                                  ("excess-memory", {"memory_mb": 1e9}),
+                                  ("excess-pids", {"pids_limit": 1e9}),
+                                  ("fractional-memory", {"memory_mb": 1.5}),
+                                  ("huge-memory", {"memory_mb": 10**400}),
+                                  ("null-cpu", {"cpus": None}),
+                                  ("boolean-pids", {"pids_limit": True}),
+                                  ("host-network", {"network": "host"})):
+                rejected = service.execute_worker(task(name, "print('never')", **payload))
+                assert rejected.status == "failed" and "docker_worker_" in rejected.error, rejected
+            checks.append("isolation_parameters_reject_disabled_limits_and_host_network")
+
+            policy = """import os,pathlib,json
+assert os.getuid() != 0
+status = pathlib.Path('/proc/self/status').read_text().splitlines()
+assert next(line for line in status if line.startswith('CapEff:')).split()[1] == '0000000000000000'
+assert next(line for line in status if line.startswith('NoNewPrivs:')).split()[1] == '1'
+try:
+    pathlib.Path('/etc/trace-worker-write').write_text('must-fail')
+except OSError:
+    pass
+else:
+    raise AssertionError('rootfs writable')
+pathlib.Path('/tmp/worker-write').write_text('tmpfs')
+pathlib.Path('isolated-proof').write_text('workspace')
+assert set(os.listdir('/sys/class/net')) == {'lo'}
+print('isolated')
+"""
+            if args.live:
+                isolated = service.execute_worker(task("isolation", policy))
+                assert isolated.status == "completed", isolated
+                checks.append("live_nonroot_capabilities_readonly_tmpfs_network")
+            else:
+                before = len(calls)
+                configured = service.execute_worker(task("limits", "print('limits')", cpus=.5,
+                                                        memory_mb=256, pids_limit=32, network="bridge"))
+                assert configured.status == "completed", configured
+                command = next(call for call in calls[before:] if call[1] == "run")
+                for flag, value in (("--cpus", "0.5"), ("--memory", "256m"), ("--memory-swap", "256m"),
+                                    ("--pids-limit", "32"), ("--network", "bridge")):
+                    assert command[command.index(flag) + 1] == value
+                checks.append("explicit_bounded_resource_and_network_policy")
+                with patch.dict(os.environ, {"TRACE_DOCKER_MAX_CPUS": "2", "TRACE_DOCKER_MAX_MEMORY_MB": "768",
+                                             "TRACE_DOCKER_MAX_PIDS": "256"}):
+                    before = len(calls)
+                    configured = service.execute_worker(task("host-limits", "print('host-defaults')"))
+                    assert configured.status == "completed", configured
+                    command = next(call for call in calls[before:] if call[1] == "run")
+                    for flag, value in (("--cpus", "2.0"), ("--memory", "768m"), ("--pids-limit", "256")):
+                        assert command[command.index(flag) + 1] == value
+                    over = service.execute_worker(task("over-host", "print('never')", cpus=2.1))
+                    assert over.status == "failed" and "resource_limit_exceeded" in over.error
+                with patch.dict(os.environ, {"TRACE_DOCKER_MAX_CPUS": "nan"}):
+                    invalid_host = service.execute_worker(task("invalid-host-limit", "print('never')"))
+                    assert invalid_host.status == "failed" and "resource_limit_exceeded" in invalid_host.error
+                checks.append("deployment_caps_bound_task_limits_and_reject_nonfinite")
 
             failed = service.execute_worker(task("exit", "import sys; print('failure-evidence'); "
                                                 "print('stderr-proof',file=sys.stderr); sys.exit(7)"))

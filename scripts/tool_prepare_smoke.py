@@ -48,6 +48,42 @@ def main():
         result = preparation.prepare(["frida"], offline=True)
         assert not result["success"] and result["tools"][0]["error"] == "package_import_failed"
     checks.append("successful_installer_requires_import_validation")
+    with patch.object(preparation, "run_probe", side_effect=[(1, "wrong SDK version"), (0, "installed"), (0, "")]) as probe:
+        result = preparation.prepare(["huawei"], offline=True)
+        assert result["success"] and result["tools"][0]["action"] == "installed"
+        assert "version('huaweicloudsdkecs') == '3.1.217'" in probe.call_args_list[0].args[0][-1]
+        assert "huaweicloudsdkecs==3.1.217" in probe.call_args_list[1].args[0]
+        assert probe.call_args_list[0].args[0] == probe.call_args_list[2].args[0]
+    checks.append("partial_or_old_sdk_install_is_repaired_and_revalidated")
+    from redteam_agent.runtime.tool_doctor import doctor
+    def inventory(name, root=None, **kwargs):
+        return {"name": name, "installed": False, "path": "", "source": "missing", "checksum_status": "mismatch" if name == "gcp" else "not_installed"}
+    def executable(*names, **kwargs):
+        if names == ("gcloud",):
+            assert kwargs.get("include_managed") is False, "doctor must not execute corrupt managed CLI"
+        return ""
+    with tempfile.TemporaryDirectory() as directory, \
+         patch("redteam_agent.runtime.tool_doctor.managed_install", side_effect=inventory) as managed, \
+         patch("redteam_agent.runtime.tool_doctor.resolve_executable", side_effect=executable), \
+         patch("redteam_agent.runtime.tool_doctor.chromium_executable", return_value=""), \
+         patch("redteam_agent.runtime.tool_doctor._package", side_effect=lambda name, version: {"name": name, "installed": False, "repair": "setup"}), \
+         patch("redteam_agent.runtime.tool_doctor.run_probe", return_value=(1, "missing")):
+        result = doctor(root=Path(directory), runtime_root=Path(directory), configs=[])
+        gcp = next(item for item in result["tools"] if item["name"] == "gcp")
+        assert not gcp["installed"] and gcp["checksum_status"] == "mismatch"
+        for call in managed.call_args_list:
+            if call.args[0] in {"gcp", "aliyun"}:
+                assert call.kwargs["verify"] is True
+    checks.append("doctor_rejects_corrupt_cloud_cli_before_execution")
+    with tempfile.TemporaryDirectory() as directory, \
+         patch("redteam_agent.runtime.tool_doctor.managed_install", side_effect=inventory), \
+         patch("redteam_agent.runtime.tool_doctor.resolve_executable", return_value=""), \
+         patch("redteam_agent.runtime.tool_doctor.chromium_executable", return_value=""), \
+         patch("redteam_agent.runtime.tool_doctor._package", side_effect=lambda name, version: {"name": name, "installed": False, "repair": "setup"}), \
+         patch("redteam_agent.runtime.tool_doctor.run_probe", side_effect=__import__("subprocess").TimeoutExpired("sdk-import", 5)):
+        result = doctor(root=Path(directory), runtime_root=Path(directory), configs=[])
+        assert all(not row["installed"] and row["runtime_validation"] == "failed" for row in result["tools"] if row["name"] in {"huawei", "volcengine", "baidu", "jdcloud"})
+    checks.append("doctor_sdk_timeout_is_a_failed_row")
     with patch.object(preparation, "_package", return_value={"name": "playwright", "installed": True}), \
          patch.object(preparation, "setup", return_value={"tools": [{"name": "chromium", "installed": True}]}) as portable:
         assert preparation.prepare(["chromium"], offline=True)["success"]
@@ -111,13 +147,13 @@ def main():
             return {"name": name, "installed": True}
         with patch.object(preparation, "_package", side_effect=installing):
             results = []
-            workers = [threading.Thread(target=lambda name=name: results.append(preparation.prepare([name], root=Path(directory)))) for name in ("capstone", "frida")]
+            workers = [threading.Thread(target=lambda name=name: results.append(preparation.prepare([name], root=Path(directory) / name))) for name in ("capstone", "frida")]
             for worker in workers:
                 worker.start()
             for worker in workers:
                 worker.join(5)
             assert len(results) == 2 and all(result["success"] for result in results) and not overlap
-    checks.append("python_install_reuses_shared_setup_lock")
+    checks.append("python_install_serializes_across_tools_roots")
     assert not preparation.prepare(["not-a-supported-tool"], offline=True)["success"]
     checks.append("unsupported_dependency_is_not_installed")
     print({"status": "passed", "checks": checks})

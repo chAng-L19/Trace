@@ -9,7 +9,7 @@ const source = readFileSync(`${root}/app.js`, "utf8");
 const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
 assert.equal(new Set(ids).size, ids.length);
 assert.equal(ids.filter((id) => id === "new-run").length, 1);
-assert.equal((html.match(/data-control-tab=/g) || []).length, 5);
+assert.equal((html.match(/data-control-tab=/g) || []).length, 7);
 assert.doesNotMatch(html, /data-open-control|control-tabs|rail-history|empty-new-run|back-to-runs/);
 for (const name of readdirSync(root).filter((name) => name.endsWith(".js"))) {
   const script = readFileSync(`${root}/${name}`, "utf8");
@@ -36,7 +36,7 @@ function node(selector, dataset = {}) {
   return value;
 }
 const runNav = node("runNav", { view: "runs" });
-const tabs = ["providers", "skills", "mcp", "conversations", "system"].map((name) => node(name, { controlTab: name }));
+const tabs = ["providers", "skills", "mcp", "conversations", "system", "profile", "users"].map((name) => node(name, { controlTab: name }));
 const panels = tabs.map((tab) => node(`panel-${tab.dataset.controlTab}`, { controlPanel: tab.dataset.controlTab }));
 const commands = ["run", "pause", "resume", "observation", "cancel"].map((name) => node(`[data-command="${name}"]`, { command: name }));
 const state = { page: "runs", view: null, runs: [], pendingCommands: new Set(), eventCursor: 0 };
@@ -87,3 +87,50 @@ for (const status of ["paused_budget", "waiting_worker", "completed"]) {
 }
 assert.equal(node('[data-command="cancel"]').disabled, true);
 console.log("PASS: unique entry points, navigation, one settings load, task text, command states");
+
+// Execute the production functions with delayed responses across account switches.
+const profileSource = readFileSync(`${root}/profile.js`, "utf8");
+let resolveProfile;
+let profileWrites = 0;
+const accountState = { authEpoch: 1, authenticated: true, user: { role: "admin", username: "old" } };
+const accountContext = vm.createContext({
+  state: accountState,
+  FormData: class { *[Symbol.iterator]() { yield ["display_name", "Old administrator"]; } },
+  api: () => new Promise((resolve) => { resolveProfile = resolve; }),
+  applyUser: (user) => { profileWrites += 1; accountState.user = user; },
+  showNotice() {},
+});
+vm.runInContext(profileSource.slice(profileSource.indexOf("async function saveAccount("),
+  profileSource.indexOf("async function submitUser(")), accountContext);
+const save = accountContext.saveAccount({ preventDefault() {}, currentTarget: {
+  id: "profile-form", reset() {}, querySelector() { return {}; },
+} });
+accountState.authEpoch = 3;
+accountState.user = { role: "member", username: "new" };
+resolveProfile({ user: { role: "admin", username: "old" } });
+await save;
+assert.equal(profileWrites, 0, "old profile response must not restore previous account");
+assert.equal(accountState.user.username, "new");
+
+let resolveRequest;
+let expirations = 0;
+const apiState = { authEpoch: 1, authenticated: true };
+const apiContext = vm.createContext({
+  state: apiState,
+  fetch: () => new Promise((resolve) => { resolveRequest = resolve; }),
+  handleAuthExpired() { expirations += 1; apiState.authenticated = false; },
+});
+vm.runInContext(source.slice(source.indexOf("async function api("), source.indexOf("function showNotice(")), apiContext);
+const oldRequest = apiContext.api("/api/runs").catch((error) => error.message);
+apiState.authEpoch = 3;
+const unauthorized = { status: 401, ok: false, headers: { get: () => "application/json" },
+  json: async () => ({ error: "authentication_required" }) };
+resolveRequest(unauthorized);
+assert.equal(await oldRequest, "authentication_required");
+assert.equal(expirations, 0, "old 401 must not expire the new account");
+assert.equal(apiState.authenticated, true);
+const currentRequest = apiContext.api("/api/runs").catch((error) => error.message);
+resolveRequest(unauthorized);
+await currentRequest;
+assert.equal(expirations, 1, "current 401 must still expire its own account");
+console.log("PASS: delayed profile and 401 responses respect account epochs");

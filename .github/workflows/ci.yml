@@ -65,6 +65,7 @@ jobs:
           python -B scripts/tool_prepare_smoke.py
           python -B scripts/mcp_visibility_smoke.py
           python -B scripts/mcp_host_smoke.py
+          python -B scripts/web_auth_smoke.py
           python -B scripts/docker_worker_smoke.py
           node scripts/frontend_layout_smoke.mjs
       - name: Install browser for capture regression
@@ -126,7 +127,7 @@ jobs:
           python -m playwright install chromium
       - name: Verify Windows execution and local tasks
         run: |
-          $checks = @('cli_state_smoke', 'execution_steps_smoke', 'agent_execution_smoke', 'execution_context_smoke', 'evidence_quality_smoke', 'tool_capture_smoke', 'agent_task_acceptance', 'tool_prepare_smoke', 'mcp_visibility_smoke', 'mcp_host_smoke', 'docker_worker_smoke')
+          $checks = @('cli_state_smoke', 'execution_steps_smoke', 'agent_execution_smoke', 'execution_context_smoke', 'evidence_quality_smoke', 'tool_capture_smoke', 'agent_task_acceptance', 'tool_prepare_smoke', 'mcp_visibility_smoke', 'mcp_host_smoke', 'web_auth_smoke', 'docker_worker_smoke')
           foreach ($check in $checks) {
             python -B "scripts/$check.py"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

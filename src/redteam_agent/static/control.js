@@ -10,6 +10,8 @@ async function loadControl() {
       loadMcp(),
       loadConversations(),
       loadSystemSettings(),
+      loadProfile(),
+      loadUsers(),
     ]);
     if (
       epoch !== state.authEpoch ||
@@ -43,6 +45,7 @@ async function loadProviders() {
     const meta = document.createElement("code");
     meta.textContent = `${item.base_url} · key ${item.api_key_set ? "已绑定" : "未绑定"}`;
     main.append(title, meta);
+    if (state.user?.role !== "admin") { row.append(main); return row; }
     const actions = document.createElement("div");
     actions.className = "button-row";
     const edit = document.createElement("button");
@@ -120,6 +123,7 @@ async function loadSkills() {
     const meta = document.createElement("code");
     meta.textContent = `${item.byte_count} bytes · ${item.content_hash.slice(0, 12)}`;
     main.append(title, meta);
+    if (state.user?.role !== "admin") { row.append(main); return row; }
     const toggle = document.createElement("button");
     toggle.type = "button";
     toggle.textContent = item.enabled ? "已启用" : "已停用";
@@ -209,7 +213,7 @@ async function loadMcp() {
     }
     const actions = document.createElement("div");
     actions.className = "button-row";
-    if (item.source === "catalog") {
+    if (item.source === "catalog" && state.user?.role === "admin") {
       const connect = document.createElement("button");
       connect.type = "button";
       connect.className = "primary";
@@ -217,7 +221,7 @@ async function loadMcp() {
       connect.addEventListener("click", () => openMcpEditor(item));
       actions.append(connect);
     }
-    if (!item.source || item.source === "managed") {
+    if ((!item.source || item.source === "managed") && state.user?.role === "admin") {
       const edit = document.createElement("button");
       edit.type = "button";
       edit.textContent = "编辑";

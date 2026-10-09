@@ -9,7 +9,8 @@ services:
     ports:
       - "127.0.0.1:${TRACE_PORT:-8765}:8765"
     environment:
-      TRACE_ADMIN_PASSWORD: ${TRACE_ADMIN_PASSWORD:?Set TRACE_ADMIN_PASSWORD in your environment or .env}
+      TRACE_ADMIN_USERNAME: ${TRACE_ADMIN_USERNAME:-trace}
+      TRACE_ADMIN_PASSWORD: ${TRACE_ADMIN_PASSWORD:-admin@123}
       # HTTP is restricted to the host's loopback-published port.
       TRACE_ALLOW_INSECURE_HTTP: "1"
       # Empty overrides leave persisted Web settings and application defaults intact.

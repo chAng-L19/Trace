@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import importlib
+import hashlib
 import importlib.util
 import math
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -63,8 +65,9 @@ def _package(name: str, deadline: float, *, offline: bool, proxy: str | None) ->
     pinned = manifest()["python_packages"].get(name)
     requirement, module, executable = ((f"{name}=={pinned}", name, "") if pinned else CLOUD_PACKAGES[name])
     check = [sys.executable, "-c", f"import {module}"]
-    if pinned:
-        check[-1] += f"; import importlib.metadata; assert importlib.metadata.version('{name}') == '{pinned}'"
+    distribution, separator, expected = requirement.partition("==")
+    if separator:
+        check[-1] += f"; import importlib.metadata; assert importlib.metadata.version('{distribution}') == '{expected}'"
     code, _ = run_probe(check, timeout=remaining(deadline))
     action = "unchanged"
     if code:
@@ -99,7 +102,9 @@ def _prepare(names: list[str], *, root: Path | None = None, offline: bool = Fals
         try:
             progress(f"{name}: preparing")
             if name in manifest()["python_packages"] or name in CLOUD_PACKAGES:
-                with setup_lock(tools_root(root), deadline):
+                identity = str(Path(sys.executable).resolve()) + "\0" + str(Path(os.environ["PIP_TARGET"]).resolve() if os.environ.get("PIP_TARGET") else "")
+                lock_root = Path(tempfile.gettempdir()) / ("trace-python-setup-" + hashlib.sha256(identity.encode()).hexdigest()[:24])
+                with setup_lock(lock_root, deadline):
                     result = _package(name, deadline, offline=offline, proxy=proxy)
             elif name in manifest()["tools"]:
                 result = setup([name], root=root, offline=offline, proxy=proxy,

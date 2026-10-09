@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import hashlib
 import os
+import math
 from pathlib import Path
 
 from ..core import WorkerResult, WorkerTask
@@ -49,15 +50,43 @@ class DockerWorkerAdapter(LocalWorker):
         image = str(task.payload.get("image") or "").strip()
         if not image:
             raise ValueError("docker_worker_image_required")
+        uid, gid = (os.getuid(), os.getgid()) if os.name != "nt" else (10001, 10001)
+        if uid == 0:
+            raise ValueError("docker_worker_requires_non_root_host_for_workspace_ownership")
+        limits = {}
+        for field, setting, default in (("cpus", "CPUS", 1), ("memory_mb", "MEMORY_MB", 512),
+                                        ("pids_limit", "PIDS", 128)):
+            maximum = float(os.environ.get(f"TRACE_DOCKER_MAX_{setting}", default))
+            value = task.payload.get(field, maximum)
+            if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+                raise ValueError(f"docker_worker_resource_limit_invalid:{field}")
+            try:
+                requested = float(value)
+            except (ValueError, OverflowError):
+                raise ValueError(f"docker_worker_resource_limit_invalid:{field}") from None
+            if (not math.isfinite(maximum) or maximum <= 0 or not math.isfinite(requested)
+                    or requested <= 0 or requested > maximum):
+                raise ValueError(f"docker_worker_resource_limit_exceeded:{field}")
+            if field != "cpus" and (not maximum.is_integer() or not requested.is_integer()):
+                raise ValueError(f"docker_worker_resource_limit_requires_integer:{field}")
+            limits[field] = requested if field == "cpus" else int(requested)
+        network = str(task.payload.get("network", "none"))
+        if network not in {"none", "bridge"}:
+            raise ValueError("docker_worker_network_requires_none_or_bridge")
         name = self._container_name(task.task_id)
         with self._lock:
             self._containers[task.task_id] = name
         argv = ["docker", "run", "--rm", "--name", name,
+                "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+                "--user", f"{uid}:{gid}", "--cpus", str(limits["cpus"]),
+                "--memory", f"{limits['memory_mb']}m", "--memory-swap", f"{limits['memory_mb']}m",
+                "--pids-limit", str(limits["pids_limit"]), "--network", network,
+                "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m,mode=1777",
                 "--volume", f"{workspace.path.resolve()}:/workspace",
                 "--workdir", "/workspace/" + cwd.relative_to(workspace.path).as_posix()]
         for key, value in (task.payload.get("env") or {}).items():
             argv.extend(("--env", f"{key}={value}"))
-        argv.extend(("--entrypoint", task.payload["argv"][0], image, *task.payload["argv"][1:]))
+        argv.extend(("--entrypoint", task.payload["argv"][0], "--", image, *task.payload["argv"][1:]))
         return argv
 
     def _execute(self, task: WorkerTask) -> WorkerResult:

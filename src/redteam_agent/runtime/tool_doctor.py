@@ -117,18 +117,23 @@ def doctor(*, root: Path | None = None, configs: list[Path] | None = None,
     for name, command, repair in cloud:
         if not command:
             package, module, _ = CLOUD_PACKAGES[name]
-            code, _ = run_probe([sys.executable, "-c", f"import {module}"], timeout=5)
+            try:
+                code, _ = run_probe([sys.executable, "-c", f"import {module}"], timeout=5)
+            except (OSError, subprocess.SubprocessError):
+                code = 1
             rows.append({"name": name, "installed": code == 0, "status": "installed" if code == 0 else "missing",
                          "source": "python_sdk", "package": package, "runtime_validation": "passed" if code == 0 else "failed",
                          "authentication": "not_checked", "repair": repair})
             continue
-        executable = resolve_executable(command, root=root)
+        managed = managed_install(name, root, verify=True, allow_previous=True) if name in manifest()["tools"] else {}
+        executable = (str(managed["path"]) if managed.get("installed") else
+                      resolve_executable(command, root=root, include_managed=False))
         version, validation = _version([executable, "version" if name in {"aliyun", "tencent"} else "--version"]) if executable else ("", "not_installed")
         installed = bool(executable) and validation == "passed"
-        managed = managed_install(name, root) if name in manifest()["tools"] else {}
         rows.append({"name": name, "installed": installed, "status": "installed" if installed else "missing",
                      "source": "managed" if managed.get("installed") else "system" if executable else "missing", "path": executable, "version": version,
-                     "checksum_status": managed.get("checksum_status") if managed.get("installed") else "external_unverified" if executable else "not_installed",
+                     "checksum_status": managed.get("checksum_status", "not_installed") if not executable or managed.get("installed") else "external_unverified",
+                     "managed_checksum_status": managed.get("checksum_status", "not_installed"),
                      "runtime_validation": validation, "authentication": "not_checked", "repair": repair})
     by_name = {item["name"]: item for item in rows}
     caps = [

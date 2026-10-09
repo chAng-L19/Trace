@@ -229,9 +229,11 @@ def web_configuration_checks():
                 rejects(lambda: service.control.save_provider({**profile, "max_output_tokens": value}))
             service.control.save_provider(profile)
             api = WebApi(service)
+            token = api.control.login(os.environ.get("TRACE_ADMIN_USERNAME") or "trace", os.environ.get("TRACE_ADMIN_PASSWORD") or "admin@123")
+            headers = {"Authorization": "Bearer " + token}
             environment = {"REDTEAM_AGENT_HOME": temporary, "TRACE_THINKING_TYPE": "adaptive", "TRACE_REASONING_EFFORT": "high"}
             with patch.dict(os.environ, environment, clear=True):
-                response = api.dispatch("POST", "/api/providers/active", body={"provider_id": "openai"})
+                response = api.dispatch("POST", "/api/providers/active", body={"provider_id": "openai"}, headers=headers)
                 assert response.status == 200, response.body
                 assert service.model_loop.model.reasoning_effort == ""
                 assert service.control.provider("openai")["active"]
@@ -241,16 +243,16 @@ def web_configuration_checks():
                 service.control.save_provider({**profile, "provider_id": "other"})
                 before = service.model_loop
                 with patch.object(service, "configure_model", side_effect=ValueError("fixture_configuration_failed")):
-                    response = api.dispatch("POST", "/api/providers/active", body={"provider_id": "other"})
+                    response = api.dispatch("POST", "/api/providers/active", body={"provider_id": "other"}, headers=headers)
                     assert response.status == 400
                 assert service.model_loop is before and service.control.provider("openai")["active"]
                 assert not service.control.provider("other")["active"]
                 with patch.object(service.control, "activate_provider", side_effect=ValueError("fixture_commit_failed")):
-                    response = api.dispatch("POST", "/api/providers/active", body={"provider_id": "other"})
+                    response = api.dispatch("POST", "/api/providers/active", body={"provider_id": "other"}, headers=headers)
                     assert response.status == 400
                 assert service.model_loop is before and service.control.provider("openai")["active"]
                 response = api.dispatch("POST", "/api/providers", body={**profile,
-                    "model": "updated-fixture", "api_key": "updated-fixture-key"})
+                    "model": "updated-fixture", "api_key": "updated-fixture-key"}, headers=headers)
                 assert response.status == 201
                 assert service.model_loop.model.model == "updated-fixture"
                 assert service.model_loop.model._credential() == "updated-fixture-key"
@@ -264,7 +266,7 @@ def web_configuration_checks():
                     raise ValueError("fixture_configuration_failed")
                 with patch.object(service, "configure_model", side_effect=configure_then_fail):
                     response = api.dispatch("POST", "/api/providers", body={**profile,
-                        "model": "failed-edit", "api_key": "failed-fixture-key"})
+                        "model": "failed-edit", "api_key": "failed-fixture-key"}, headers=headers)
                     assert response.status == 400
                 assert service.model_loop is before and service.control.provider("openai") == saved_before
                 assert service.control.provider_secret("openai", include_environment=False) == "updated-fixture-key"
@@ -280,7 +282,7 @@ def web_configuration_checks():
                             raise ValueError("fixture_commit_failed")
                 with patch.object(service.runtime.store, "transaction", fail_candidate_commit):
                     response = api.dispatch("POST", "/api/providers", body={**profile,
-                        "model": "failed-commit", "api_key": "uncommitted-fixture-key"})
+                        "model": "failed-commit", "api_key": "uncommitted-fixture-key"}, headers=headers)
                     assert response.status == 400
                 assert service.model_loop is before and service.control.provider("openai") == saved_before
                 assert service.control.provider_secret("openai", include_environment=False) == "updated-fixture-key"

@@ -33,7 +33,7 @@ _STATIC_FILES = {
     **{f"/{name}.css": (f"{name}.css", "text/css; charset=utf-8")
        for name in ("app", "base", "registry", "workbench", "control")},
     **{f"/{name}.js": (f"{name}.js", "text/javascript; charset=utf-8")
-       for name in ("ui", "layout", "control", "session", "app", "theme", "lucide.min")},
+       for name in ("ui", "layout", "control", "session", "profile", "app", "theme", "lucide.min")},
     "/trace-mark.png": ("trace-mark.png", "image/png"),
     "/barlow-condensed-bold.ttf": ("barlow-condensed-bold.ttf", "font/ttf"),
 }
@@ -169,6 +169,10 @@ class WebApi(ControlRoutesMixin):
         if (self.control.auth_required or self.force_auth) and segments[:2] != ["api", "auth"]:
             if not self.control.authenticated(request_headers, force=self.force_auth):
                 return self._error(401, "authentication_required")
+        if method != "GET" and segments[:2] in (["api", "providers"], ["api", "skills"], ["api", "mcp"], ["api", "system"]):
+            user = self.control.accounts.user(request_headers)
+            if user is None or user["role"] != "admin":
+                return self._error(403, "admin_required")
         if segments == ["api", "system"]:
             if method != "GET":
                 return self._error(405, "method_not_allowed")
@@ -736,9 +740,6 @@ def serve(
         is_loopback = ipaddress.ip_address(host).is_loopback
     except ValueError:
         is_loopback = host.casefold() == "localhost"
-    if not is_loopback and not (os.environ.get("TRACE_ADMIN_PASSWORD") or os.environ.get("TRACE_ADMIN_TOKEN")):
-        service.close()
-        raise ValueError("non_loopback_requires_trace_admin_credentials")
     if not is_loopback and not tls_enabled and os.environ.get("TRACE_ALLOW_INSECURE_HTTP") != "1":
         service.close()
         raise ValueError("non_loopback_requires_tls_or_explicit_insecure_http")

@@ -94,31 +94,37 @@ class ControlRoutesMixin:
             return self._internal_error(exc)
 
     def _auth(self, method: str, tail: list[str], body: Mapping[str, Any], headers: Mapping[str, str]):
-        route = tail[0] if tail else "status"
+        from .web import WebResponse
+        route = tail[0] if len(tail) == 1 else ""
+        accounts = self.control.accounts
+        user = accounts.user(headers)
         if route == "status" and method == "GET":
-            required = bool(self.control.auth_required or self.force_auth)
-            return self._ok({"required": required, "authenticated": self.control.authenticated(headers, force=self.force_auth) if required else True})
+            return self._ok({"required": True, "authenticated": user is not None, "user": user})
+        secure = "; Secure" if self.tls_enabled else ""
         if route == "login" and method == "POST":
             try:
-                token = self.control.login(
-                    str(body.get("password") or body.get("token") or ""),
-                    client_key=str(headers.get("x-trace-client") or "direct"),
-                )
+                token = self.control.login(body.get("username", ""), body.get("password", ""),
+                                           client_key=str(headers.get("x-trace-client") or "direct"))
             except ValueError:
                 return self._error(401, "invalid_credentials")
-            if (self.control.auth_required or self.force_auth) and not token:
-                return self._error(401, "invalid_credentials")
-            from .web import WebResponse
-            secure = "; Secure" if self.tls_enabled else ""
-            cookie = {"Set-Cookie": f"trace_session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200{secure}"} if token else {}
-            return WebResponse.json({"authenticated": True}, headers=cookie)
-        if route == "logout" and method == "POST":
-            self.control.logout(headers)
-            from .web import WebResponse
-            secure = "; Secure" if self.tls_enabled else ""
-            return WebResponse.json({"authenticated": False}, headers={"Set-Cookie": f"trace_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0{secure}"})
-        known = {"status", "login", "logout"}
-        return self._error(405 if route in known else 404, "method_not_allowed" if route in known else "route_not_found")
+            user = accounts.user({"authorization": "Bearer " + token})
+            return WebResponse.json({"authenticated": True, "user": user}, headers={"Set-Cookie": f"trace_session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200{secure}"})
+        if user is None:
+            return self._error(401, "authentication_required")
+        try:
+            if route == "logout" and method == "POST":
+                self.control.logout(headers)
+                return WebResponse.json({"authenticated": False}, headers={"Set-Cookie": f"trace_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0{secure}"})
+            if route == "profile" and method in {"GET", "POST"}:
+                return self._ok({"user": user if method == "GET" else accounts.update(headers, body)})
+            if route == "users" and method in {"GET", "POST"}:
+                result = accounts.users(headers, body if method == "POST" else None)
+                return self._ok({"users" if method == "GET" else "user": result})
+        except PermissionError as exc:
+            return self._error(401 if str(exc) == "authentication_required" else 403, str(exc))
+        except ValueError as exc:
+            return self._error(400, str(exc))
+        return self._error(405 if route in {"status", "login", "logout", "profile", "users"} else 404, "route_not_found")
 
     def _control_dispatch(self, method: str, domain: str, tail: list[str], body: Mapping[str, Any]):
         identifier = "/".join(tail) if domain == "skills" else (tail[0] if tail else "")
