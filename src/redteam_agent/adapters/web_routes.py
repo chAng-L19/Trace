@@ -10,6 +10,7 @@ from uuid import uuid4
 from ..application.contracts import CANONICAL_RUN_STATUSES
 from ..runtime.security import safe_error_text, SENSITIVE_KEY_RE
 from ..application.bootstrap import resolve_provider, reload_mcp
+from ..runtime.mcp_config import PUBLIC_MCP_PRESETS
 
 
 class ControlRoutesMixin:
@@ -48,12 +49,39 @@ class ControlRoutesMixin:
         """
         return "compat-" + uuid4().hex
 
-    def _activate_model(self, saved) -> None:
-        provider, sources = resolve_provider(self.control, self.service.config_paths, saved)
+    def _activate_model(self, saved, *, api_key: str | None = None) -> None:
+        provider, sources = resolve_provider(self.control, self.service.config_paths, saved,
+                                            active=saved, credential_override=api_key)
         if not saved["enabled"]:
             provider = None
         self.service.configure_model(provider, model_name=saved["model"], streaming=bool(provider and provider.capabilities().streaming))
         self.service.configuration_projection["provider_sources"] = sources
+
+    def _save_provider(self, payload: Mapping[str, Any]):
+        with self.service._model_lock, self.control._lock:
+            previous = self.service.agent_loop
+            sources = self.service.configuration_projection.get("provider_sources")
+            try:
+                return self.control.save_provider(payload, on_active=self._activate_model)
+            except BaseException:
+                self.service.agent_loop = previous
+                self.service.configuration_projection["provider_sources"] = sources
+                raise
+
+    def _select_provider(self, provider_id: str):
+        with self.service._model_lock, self.control._lock:
+            saved = self.control.provider(provider_id)
+            if not saved["enabled"]:
+                raise ValueError("provider_disabled")
+            previous = self.service.agent_loop
+            sources = self.service.configuration_projection.get("provider_sources")
+            try:
+                self._activate_model(saved)
+                return self.control.activate_provider(provider_id)
+            except BaseException:
+                self.service.agent_loop = previous
+                self.service.configuration_projection["provider_sources"] = sources
+                raise
 
     def _safe_control(self, method: str, domain: str, tail: list[str], body: Mapping[str, Any]):
         try:
@@ -98,16 +126,10 @@ class ControlRoutesMixin:
             if method == "GET" and not identifier:
                 return self._ok({"providers": self.control.providers()})
             if method == "POST" and not identifier:
-                saved = self.service.control_write(self.control.save_provider, body)
-                # Provider persistence and the active model loop must move as
-                # one control-plane operation.  Otherwise editing an active
-                # key/model silently leaves future turns on the old instance.
-                if saved["active"]:
-                    self._activate_model(saved)
+                saved = self.service.control_write(self._save_provider, body)
                 return self._ok({"provider": saved}, status=201)
             if method == "POST" and identifier == "active":
-                saved = self.service.control_write(self.control.activate_provider, str(body.get("provider_id") or ""))
-                self._activate_model(saved)
+                saved = self.service.control_write(self._select_provider, str(body.get("provider_id") or ""))
                 return self._ok({"provider": saved})
             if identifier and method == "DELETE":
                 was_active = self.control.provider(identifier)["active"]
@@ -127,6 +149,15 @@ class ControlRoutesMixin:
             if method == "GET" and not identifier:
                 statuses = self.service.runtime.broker.server_statuses()
                 items = self.control.mcp_servers()
+                configured_ids = {item["server_id"] for item in items}
+                for item in items:
+                    item["source"] = "managed"
+                items.extend(
+                    {"server_id": name, "source": "config", "enabled": status.get("status") != "disabled",
+                     "transport": status.get("transport", ""), "scope": status.get("scope", ""),
+                     "preset": status.get("preset", ""), "status": status}
+                    for name, status in statuses.items() if name not in configured_ids
+                )
                 for item in items:
                     status = dict(statuses.get(item["server_id"], item["status"]))
                     if self._mcp_restore_error:
@@ -136,7 +167,18 @@ class ControlRoutesMixin:
                         **status, "configured": True, "discovered": discovered,
                         "callable": bool(item["enabled"] and discovered and status.get("tool_count", 0)),
                     }
-                return self._ok({"servers": items, "tools": len(self.service.runtime.broker.descriptors())})
+                configured_presets = {item.get("preset") for item in items}
+                configured_ids.update(item["server_id"] for item in items)
+                items.extend(
+                    {"server_id": name, **preset, "source": "catalog", "enabled": False,
+                     "status": {"status": "available", "configured": False, "discovered": False,
+                                "callable": False, "tool_count": 0}}
+                    for name, preset in PUBLIC_MCP_PRESETS.items()
+                    if name not in configured_ids and name not in configured_presets
+                )
+                mcp_tools = sum(item.source.startswith("live-mcp")
+                                for item in self.service.runtime.broker.descriptors())
+                return self._ok({"servers": items, "tools": mcp_tools})
             if method == "POST" and not identifier:
                 saved = self.service.control_write(self.control.save_mcp, body)
                 self._reload_control_plane()

@@ -14,6 +14,7 @@ from .bounded_output import BoundedOutput
 
 
 MAX_INLINE_MODEL_STREAM_BYTES = 64 * 1024
+MAX_CREDENTIAL_PROJECTION_BYTES = 16 * 1024 * 1024
 
 
 def invoke_model_stream(loop: Any, request: ModelRequest) -> ModelResponse:
@@ -23,6 +24,7 @@ def invoke_model_stream(loop: Any, request: ModelRequest) -> ModelResponse:
     structured: Mapping[str, Any] = {}
     finish_reason = ""
     continuation: Mapping[str, Any] = {}
+    response_metadata: Mapping[str, Any] = {}
     response_id = provider = model = ""
     expected_sequence = 0
     completed = False
@@ -43,6 +45,8 @@ def invoke_model_stream(loop: Any, request: ModelRequest) -> ModelResponse:
             expected_sequence += 1
             payload = dict(event.payload)
             if event.event_type in {"text", "text_delta"}:
+                if isinstance(payload.get("metadata"), Mapping):
+                    response_metadata = {**response_metadata, **payload["metadata"]}
                 text_delta = str(payload.get("delta") or payload.get("text") or "")
                 accumulator.append(text_delta)
                 raw_delta = text_delta.encode("utf-8", errors="replace")
@@ -52,11 +56,10 @@ def invoke_model_stream(loop: Any, request: ModelRequest) -> ModelResponse:
                         "projected": True,
                         "byte_count": len(raw_delta),
                         "content_hash": hashlib.sha256(raw_delta).hexdigest(),
-                        "preview": raw_delta[:1024].decode("utf-8", errors="replace"),
                     },
                 )
             elif event.event_type == "status":
-                event = replace(event, payload={"status": str(payload.get("status") or "")[:128]})
+                event = replace(event, payload={"projected": True, "content_hash": contract_hash(payload)})
             elif event.event_type == "usage":
                 event = replace(event, payload=loop._normalize_usage(payload))
             else:
@@ -91,14 +94,18 @@ def invoke_model_stream(loop: Any, request: ModelRequest) -> ModelResponse:
                 continuation = opaque_only(payload.get("continuation") or {})
                 response_id = str(payload.get("response_id") or "")
                 provider, model = str(payload.get("provider") or ""), str(payload.get("model") or "")
+                response_metadata = dict(payload.get("metadata") or {})
         if not completed:
             raise loop._interrupted_error("model_stream_incomplete")
-        if finish_reason in {"length", "max_tokens"}:
+        if finish_reason in {"length", "max_tokens", "model_context_window_exceeded", "pause_turn"}:
             raise loop._interrupted_error(f"finish_reason:{finish_reason}")
-        if finish_reason not in {"", "stop", "tool_calls", "function_call", "end_turn", "stop_sequence"}:
+        if finish_reason == "refusal" and not response_metadata.get("refusal"):
+            raise loop._loop_error("model_refusal_marker_missing")
+        if finish_reason not in {"", "stop", "tool_calls", "tool_use", "function_call", "end_turn", "stop_sequence", "refusal"}:
             raise loop._loop_error(f"finish_reason:{finish_reason}")
     except BaseException:
         setattr(threading.current_thread(), "model_partial_usage", (request.request_id, usage))
+        setattr(threading.current_thread(), "model_partial_response", (request.request_id, response_metadata, finish_reason))
         accumulator.close()
         if accumulator.byte_count:
             setattr(threading.current_thread(), "model_partial_stream", accumulator)
@@ -118,6 +125,7 @@ def invoke_model_stream(loop: Any, request: ModelRequest) -> ModelResponse:
                     })
                 else:
                     setattr(threading.current_thread(), "model_partial_usage", (request.request_id, usage))
+                    setattr(threading.current_thread(), "model_partial_response", (request.request_id, response_metadata, finish_reason))
                     accumulator.close()
                     if accumulator.byte_count:
                         setattr(threading.current_thread(), "model_partial_stream", accumulator)
@@ -125,25 +133,32 @@ def invoke_model_stream(loop: Any, request: ModelRequest) -> ModelResponse:
                         accumulator.discard()
                     raise
     status, error = "completed", ""
-    metadata: dict[str, Any] = {}
+    metadata: dict[str, Any] = dict(response_metadata)
     try:
         if accumulator.byte_count <= MAX_INLINE_MODEL_STREAM_BYTES:
             text = accumulator.inline_text()
         else:
             accumulator.close()
+            projection_complete = accumulator.byte_count <= MAX_CREDENTIAL_PROJECTION_BYTES
+            accumulator = project_stream_file(loop, accumulator)
             artifact = loop.service.runtime.artifacts.put_file(
                 accumulator.path,
                 run_id=request.run_id,
                 artifact_type="model_stream_text",
                 media_type="text/plain; charset=utf-8",
                 preview=accumulator.preview(),
-                metadata={"request_id": request.request_id, "complete": True},
+                metadata={"request_id": request.request_id, "complete": projection_complete},
             )
             projection = loop.service.runtime.artifacts.project(artifact)
-            text = json.dumps({"complete_text_artifact": projection}, ensure_ascii=False, sort_keys=True)
-            metadata["complete_text_artifact"] = artifact.artifact_id
+            artifact_key = "complete_text_artifact" if projection_complete else "incomplete_text_artifact"
+            text = json.dumps({artifact_key: projection}, ensure_ascii=False, sort_keys=True)
+            metadata[artifact_key] = artifact.artifact_id
+            if not projection_complete:
+                metadata["text_incomplete"] = True
+                metadata["content_omitted"] = "credential_projection_size_limit"
     except BaseException:
         setattr(threading.current_thread(), "model_partial_usage", (request.request_id, usage))
+        setattr(threading.current_thread(), "model_partial_response", (request.request_id, response_metadata, finish_reason))
         raise
     finally:
         accumulator.discard()
@@ -162,3 +177,24 @@ def invoke_model_stream(loop: Any, request: ModelRequest) -> ModelResponse:
         response_id=response_id,
         continuation=continuation,
     )
+
+
+def project_stream_file(loop: Any, accumulator: BoundedOutput) -> BoundedOutput:
+    """Replace the ephemeral spool with a projected spool before promotion."""
+    projected = BoundedOutput()
+    try:
+        # ponytail: bounded whole-text projection preserves JSON/string spans
+        # across lines; oversized diagnostics retain only non-content evidence.
+        if accumulator.byte_count <= MAX_CREDENTIAL_PROJECTION_BYTES:
+            projected.append(loop.service.runtime._credential_vault.project(accumulator.inline_text()))
+        else:
+            preview = accumulator.preview()
+            projected.append(json.dumps({"content_omitted": "credential_projection_size_limit", "complete": False,
+                                         "byte_count": accumulator.byte_count,
+                                         "content_hash": preview["content_hash"]}))
+        projected.close()
+        accumulator.discard()
+        return projected
+    except BaseException:
+        projected.discard()
+        raise

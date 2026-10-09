@@ -43,7 +43,7 @@ def _load(value: Any, default: Any = None) -> Any:
 
 
 SENSITIVE_KEY_RE = re.compile(
-    r"(?:authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|password|passwd|secret|cookie|"
+    r"(?:^credential[_-]ref$|authorization|api[_-]?key|access[_-]?key[_-]?id|access[_-]?token|refresh[_-]?token|password|passwd|secret|cookie|"
     r"session[_-]?token|(?:^|[_-])token(?:$|[_-]))",
     re.IGNORECASE,
 )
@@ -78,8 +78,8 @@ SECRET_VALUE_PATTERNS = (
     ), r"\1\2[REDACTED]"),
     (re.compile(r"\bBearer\s+[A-Za-z0-9._~+/-]{16,}=*", re.IGNORECASE), "Bearer [REDACTED]"),
     (re.compile(
-        r"(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|password|passwd|secret|session[_-]?token)"
-        r"(\s*[:=]\s*)[\"']?[^\s\"',;&]+"
+        r"(?i)\b(api[_-]?key|access[_-]?key[_-]?id|secret[_-]?access[_-]?key|access[_-]?token|refresh[_-]?token|password|passwd|secret|session[_-]?token)"
+        r"([\"']?\s*[:=]\s*)[\"']?[^\s\"',;&]+"
     ), r"\1\2[REDACTED]"),
     (re.compile(r"(?i)\b(token)(\s*[:=]\s*)[\"']?[A-Za-z0-9._~+/-]{16,}=*"), r"\1\2[REDACTED]"),
     (re.compile(r"(?i)\b(cookie|set-cookie)(\s*:\s*)[^\r\n]+"), r"\1\2[REDACTED]"),
@@ -104,8 +104,8 @@ _SECRET_CAPTURE_PATTERNS = (
     ),
     re.compile(r"(?i)\bBearer\s+(?P<secret>[A-Za-z0-9._~+/-]{16,}=*)"),
     re.compile(
-        r"(?i)\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|passwd|secret|session[_-]?token)"
-        r"(?:\s*[:=]\s*)[\"']?(?P<secret>[^\s\"',;&]+)"
+        r"(?i)\b(?:api[_-]?key|access[_-]?key[_-]?id|secret[_-]?access[_-]?key|access[_-]?token|refresh[_-]?token|password|passwd|secret|session[_-]?token)"
+        r"(?:[\"']?\s*[:=]\s*)[\"']?(?P<secret>[^\s\"',;&]+)"
     ),
     re.compile(r"(?i)\btoken(?:\s*[:=]\s*)[\"']?(?P<secret>[A-Za-z0-9._~+/-]{16,}=*)"),
     re.compile(r"(?i)\b(?:cookie|set-cookie)(?:\s*:\s*)(?P<secret>[^\r\n]+)"),
@@ -125,6 +125,61 @@ def secret_reference(value: Any) -> str:
 
 def is_secret_reference(value: Any) -> bool:
     return isinstance(value, str) and SECRET_REFERENCE_RE.fullmatch(value) is not None
+
+
+def _schema_sensitive(value: Any, *, references: bool, property_name: str = "") -> tuple[Any, dict[str, str]]:
+    """Preserve schema property names; redact literal values and annotations."""
+    if isinstance(value, bool):
+        return value, EphemeralCredentialBindings()
+    if not isinstance(value, Mapping):
+        return project_sensitive(value, property_name) if references else (redact_sensitive(value, property_name), {})
+    result, bindings = {}, EphemeralCredentialBindings()
+    for key, child in value.items():
+        if key in {"properties", "$defs", "definitions", "patternProperties"} and isinstance(child, Mapping):
+            result[key] = {}
+            for name, schema in child.items():
+                label = property_name if SENSITIVE_KEY_RE.search(property_name) else str(name)
+                item, discovered = _schema_sensitive(schema, references=references, property_name=label)
+                result[key][str(name)] = item
+                bindings.update(discovered)
+        elif key in {"items", "additionalProperties", "not", "if", "then", "else"} and isinstance(child, (Mapping, bool)):
+            result[key], discovered = _schema_sensitive(child, references=references, property_name=property_name)
+            bindings.update(discovered)
+        elif key in {"allOf", "anyOf", "oneOf", "prefixItems"} and isinstance(child, (list, tuple)):
+            items = []
+            for schema in child:
+                item, discovered = _schema_sensitive(schema, references=references, property_name=property_name)
+                items.append(item)
+                bindings.update(discovered)
+            result[key] = items
+        else:
+            # Only schema structure is exempt from the sensitive property label.
+            # Annotations and unknown fields may contain actual credentials.
+            structural = {"type", "required",
+                          "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum",
+                          "multipleOf", "minLength", "maxLength", "minItems", "maxItems",
+                          "minProperties", "maxProperties", "uniqueItems", "readOnly", "writeOnly"}
+            label = str(key) if key in structural or not property_name else property_name
+            if key == "type" and property_name:
+                types = {"null", "boolean", "object", "array", "number", "string", "integer"}
+                valid_type = isinstance(child, str) and child in types
+                valid_type = valid_type or (isinstance(child, (list, tuple)) and bool(child)
+                                           and all(isinstance(item, str) and item in types for item in child))
+                if not valid_type:
+                    label = property_name
+            elif key == "required" and property_name:
+                if not isinstance(child, (list, tuple)) or not all(isinstance(item, str) for item in child):
+                    label = property_name
+            elif key in structural and key != "type" and property_name:
+                expected = bool if key in {"uniqueItems", "readOnly", "writeOnly"} else (int, float)
+                if not isinstance(child, expected) or (expected != bool and isinstance(child, bool)):
+                    label = property_name
+            if references:
+                result[key], discovered = project_sensitive(child, label)
+                bindings.update(discovered)
+            else:
+                result[key] = redact_sensitive(child, label)
+    return result, bindings
 
 
 class EphemeralCredentialBindings(dict[str, str]):
@@ -190,6 +245,8 @@ def project_sensitive(value: Any, key: str = "") -> tuple[Any, dict[str, str]]:
     """Return a durable Secret-Reference projection plus ephemeral bindings."""
 
     normalized_key = key.strip().casefold().replace("-", "_")
+    if normalized_key in {"input_schema", "response_schema", "parameters"} and isinstance(value, Mapping):
+        return _schema_sensitive(value, references=True)
     if (
         key
         and normalized_key not in NON_SECRET_TOKEN_KEYS
@@ -201,6 +258,14 @@ def project_sensitive(value: Any, key: str = "") -> tuple[Any, dict[str, str]]:
         reference = secret_reference(value)
         bindings = EphemeralCredentialBindings()
         bindings[reference] = value if isinstance(value, str) else str(value)
+        if normalized_key == "credential_ref" and isinstance(value, str):
+            try:
+                bundle = json.loads(value)
+            except ValueError:
+                bundle = None
+            if isinstance(bundle, Mapping):
+                _, components = project_sensitive(bundle)
+                bindings.update(components)
         return reference, bindings
     if isinstance(value, Mapping):
         projected: dict[str, Any] = {}
@@ -227,6 +292,17 @@ def project_sensitive(value: Any, key: str = "") -> tuple[Any, dict[str, str]]:
             bindings.update(discovered)
         return tuple(projected_items), bindings
     if isinstance(value, str):
+        # Serialized tool arguments and JSON model text retain their string
+        # shape while structural parsing handles escaped/multiline secrets.
+        if value.lstrip().startswith(("{", "[")):
+            try:
+                decoded = json.loads(value)
+            except ValueError:
+                decoded = None
+            if isinstance(decoded, (Mapping, list)):
+                projected, bindings = project_sensitive(decoded)
+                if bindings:
+                    return json.dumps(projected, ensure_ascii=False), bindings
         return _project_text(value)
     return value, EphemeralCredentialBindings()
 
@@ -269,6 +345,13 @@ class CredentialVault:
             if not is_secret_reference(reference) or secret_reference(raw) != reference:
                 raise ValueError("credential_binding_reference_mismatch")
             checked[str(reference)] = raw
+            try:
+                bundle = json.loads(raw)
+            except ValueError:
+                bundle = None
+            if isinstance(bundle, Mapping):
+                _, components = project_sensitive(bundle)
+                checked.update(components)
         with self._lock:
             self._bindings.update(checked)
 
@@ -339,6 +422,8 @@ def _redacted_digest(value: Any) -> str:
 
 def redact_sensitive(value: Any, key: str = "") -> Any:
     normalized_key = key.strip().casefold().replace("-", "_")
+    if normalized_key in {"input_schema", "response_schema", "parameters"} and isinstance(value, Mapping):
+        return _schema_sensitive(value, references=False)[0]
     if key and normalized_key not in NON_SECRET_TOKEN_KEYS and SENSITIVE_KEY_RE.search(key):
         if is_secret_reference(value):
             return value

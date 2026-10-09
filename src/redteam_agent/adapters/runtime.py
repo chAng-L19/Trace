@@ -15,6 +15,7 @@ from ..core.ports import (
     ToolResult,
 )
 from ..runtime.durable_store import StateVersionConflict
+from ..runtime.worker_store import WorkerStore
 from ..runtime.models import (
     EvidenceNode as LegacyEvidenceNode,
     GoalContract as LegacyGoalContract,
@@ -323,6 +324,10 @@ class RuntimeToolAdapter(ToolPort):
                 "runtime_output_hash": result.output_hash,
             },
         )
+        return RuntimeToolAdapter._rehash(call, projected)
+
+    @staticmethod
+    def _rehash(call: ToolCall, projected: ToolResult) -> ToolResult:
         return replace(
             projected,
             input_hash=contract_hash(call.to_dict()),
@@ -341,27 +346,81 @@ class RuntimeToolAdapter(ToolPort):
     def discover(self) -> tuple[ToolDefinition, ...]:
         return tuple(self._definition(item) for item in self.runtime.broker.descriptors())
 
+    @staticmethod
+    def _native_task(call: ToolCall):
+        from ..core import WorkerTask
+        key = contract_hash({"run_id": call.run_id,
+                             "identity": call.idempotency_key or contract_hash(call.to_dict())})
+        return WorkerTask(
+            task_id="native-http-" + key[:32], run_id=call.run_id,
+            capability="mcp.http-request", idempotency_key=key,
+            payload={"tool_name": call.tool_name, "arguments": dict(call.arguments)},
+            timeout_seconds=call.timeout_seconds,
+            metadata={**dict(call.metadata), "worker_kind": "mcp", "native_tool": True},
+        )
+
+    @staticmethod
+    def _is_native_http(call: ToolCall) -> bool:
+        return call.tool_name == "builtin:http-request" and call.metadata.get("worker_kind") != "mcp"
+
+    def _invoke_native(self, call: ToolCall) -> ToolResult:
+        from ..workers.mcp import McpWorker
+        task = self._native_task(call)
+        worker = McpWorker(tools=self, artifacts=self.runtime.artifacts,
+                           records=WorkerStore(self.runtime.store))
+        result = worker.execute(task)
+        projected = ToolResult(call.call_id, "success" if result.status == "completed" else result.status,
+                               call.tool_name, output=result.output, error=result.error,
+                               retryable=result.retryable)
+        for reference in result.artifact_refs:
+            ref = self.runtime.artifacts.get_ref(reference, run_id=call.run_id)
+            if ref is not None and ref.artifact_type == "mcp_tool_result":
+                recorded = ToolResult.from_dict(self.runtime.artifacts.read_json(reference, run_id=call.run_id))
+                projected = replace(recorded, call_id=call.call_id,
+                                    status="unknown" if result.status == "unknown" else recorded.status)
+                break
+        projected = replace(projected, metadata={**dict(projected.metadata), "worker_task_id": task.task_id,
+                                                 "outcome_unknown": result.status == "unknown"})
+        if result.status == "unknown":
+            self.runtime.pause_run(call.run_id, reason="worker_result_unknown")
+        return self._rehash(call, projected)
+
     def invoke(self, call: ToolCall) -> ToolResult:
+        if self._is_native_http(call):
+            return self._invoke_native(call)
         descriptor = self._legacy_definition(call.tool_name)
         result = self.runtime.broker.call(
             descriptor,
-            dict(call.arguments),
+            self.runtime.resolve_tool_credentials(call.run_id, dict(call.arguments)),
             timeout=call.timeout_seconds or 60.0,
             run_id=call.run_id,
             external_call_id=str(call.metadata.get("cancellation_id") or call.call_id),
+            artifact_metadata={"call_id": call.call_id, "task_id": call.call_id,
+                               "request_id": str(call.metadata.get("request_id") or ""),
+                               "worker_kind": str(call.metadata.get("worker_kind") or "model")},
         )
+        result = replace(result, output=self.runtime._credential_vault.project(result.output),
+                         error=self.runtime._credential_vault.project(result.error))
         return self._result(call, result)
 
     def reconcile(self, call: ToolCall) -> ToolResult | None:
+        if self._is_native_http(call):
+            task = self._native_task(call)
+            if WorkerStore(self.runtime.store).get_for_run(task.task_id, call.run_id) is None:
+                return None
+            return self._invoke_native(call)
         if not call.idempotency_key:
             raise ValueError("idempotency_key_required")
         descriptor = self._legacy_definition(call.tool_name)
         result = self.runtime.broker.reconcile(
             descriptor,
             idempotency_key=call.idempotency_key,
-            arguments=dict(call.arguments),
+            arguments=self.runtime.resolve_tool_credentials(call.run_id, dict(call.arguments)),
             timeout=call.timeout_seconds or 60.0,
         )
+        if result is not None:
+            result = replace(result, output=self.runtime._credential_vault.project(result.output),
+                         error=self.runtime._credential_vault.project(result.error))
         return self._result(call, result) if result is not None else None
 
     def cancel(self, call_id: str) -> bool:

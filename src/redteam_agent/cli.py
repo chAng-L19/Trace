@@ -7,6 +7,7 @@ import os
 import sys
 from pathlib import Path
 from uuid import uuid4
+from .application.bootstrap import add_model_options, model_options
 
 
 class _Parser(argparse.ArgumentParser):
@@ -30,6 +31,7 @@ def _print(payload: object) -> None:
 
 
 def _provider_arguments(parser: argparse.ArgumentParser) -> None:
+    add_model_options(parser)
     parser.add_argument("--root", type=Path, help="State directory; defaults to TRACE_HOME or REDTEAM_AGENT_HOME/operations")
     parser.add_argument("--config", action="append", default=[])
     parser.add_argument("--model", default="")
@@ -42,7 +44,7 @@ def _provider_arguments(parser: argparse.ArgumentParser) -> None:
 def _operation_command(arguments: argparse.Namespace) -> int:
     from .application.agent_service import AgentService
 
-    options = {"model": getattr(arguments, "model", ""), "base_url": getattr(arguments, "api_base_url", ""),
+    options = {**model_options(arguments), "model": getattr(arguments, "model", ""), "base_url": getattr(arguments, "api_base_url", ""),
                "api_key_env": getattr(arguments, "api_key_env", ""),
                "timeout_seconds": getattr(arguments, "api_timeout_seconds", None),
                "max_context_tokens": getattr(arguments, "model_context_tokens", None)}
@@ -119,7 +121,7 @@ def _state_command(arguments: argparse.Namespace) -> int:
 def _tools_command(arguments: argparse.Namespace) -> int:
     try:
         if arguments.command == "setup":
-            from .runtime.tool_setup import setup
+            from .runtime.tool_prepare import prepare as setup
 
             payload = setup(arguments.tools or ["chromium", "rizin"], root=arguments.tools_dir,
                             offline=arguments.offline, proxy=arguments.proxy, timeout=arguments.timeout,
@@ -330,7 +332,8 @@ def _main(argv: list[str] | None = None) -> int:
             command.add_argument("--root", type=Path)
 
     setup = subcommands.add_parser("setup", help="Explicitly install missing pinned portable tools in a user directory")
-    setup.add_argument("tools", nargs="*", choices=("chromium", "rizin"), metavar="TOOL")
+    from .runtime.tool_prepare import TOOL_NAMES
+    setup.add_argument("tools", nargs="*", choices=TOOL_NAMES, metavar="TOOL")
     setup.add_argument("--tools-dir", type=Path, help="Override TRACE_TOOLS_HOME for this command")
     setup.add_argument("--offline", action="store_true", help="Only use verified cached archives; never access the network")
     setup.add_argument("--proxy", help="HTTP(S) proxy; defaults to HTTPS_PROXY/HTTP_PROXY environment settings")

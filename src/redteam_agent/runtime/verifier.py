@@ -28,7 +28,7 @@ DERIVED_ARTIFACTS = {
     "final_report",
 }
 MAX_EVIDENCE_BYTES = 4 * 1024 * 1024
-VERIFIER_VERSION = "semantic-v2"
+VERIFIER_VERSION = "semantic-v3"
 OUTPUT_CONTRACTS: dict[str, Mapping[str, Any]] = {
     "surface_map": {"any_of": ["targets", "assets", "hosts", "routes", "services", "files", "components", "results"]},
     "hypothesis_queue": {
@@ -39,6 +39,7 @@ OUTPUT_CONTRACTS: dict[str, Mapping[str, Any]] = {
         "required": ["reproducible", "evidence_refs", "negative_controls", "side_effects"],
         "reproducible": True,
         "any_of": ["request_response", "commands", "tests", "observations", "results", "transcript"],
+        "negative_controls": "non-empty array of {observation_path, expected, actual, passed: true, evidence_refs} bound to parent evidence; alternatively source: tool_output for measurements in this executed result",
     },
     "impact_proof": {
         "required": ["evidence_refs"],
@@ -48,7 +49,8 @@ OUTPUT_CONTRACTS: dict[str, Mapping[str, Any]] = {
     "coverage_report": {
         "required": ["evidence_refs"],
         "any_of": ["checked", "coverage", "matrix", "metrics"],
-        "control_any_of": ["negative_controls", "false_positive_controls", "excluded"],
+        "control_any_of": ["negative_controls", "false_positive_controls"],
+        "negative_controls": "measured comparisons bound to scoped parent evidence; inherited reproduction controls are accepted",
     },
     "cleanup_proof": {
         "required": ["evidence_refs", "verified", "outstanding_changes"],
@@ -320,7 +322,7 @@ class SemanticVerifier:
             return passed, "impact_requires_measured_outcome" if not passed else "impact_verified"
         if verifier == "coverage_report":
             checked = self._nonempty(payload, ("checked", "coverage", "matrix", "metrics"))
-            controls = self._nonempty(payload, ("negative_controls", "false_positive_controls", "excluded"))
+            controls = self._nonempty(payload, ("negative_controls", "false_positive_controls"))
             passed = checked and controls
             return passed, "coverage_requires_checks_and_negative_controls" if not passed else "coverage_verified"
         if verifier == "cleanup_proof":
@@ -493,6 +495,12 @@ class SemanticVerifier:
                 for parent_id in parent_ids
                 for clause_id in self._payload_clause_ids(evidence_by_id[parent_id])
             }
+        if action.verifier in {"reproduction_artifact", "coverage_report"} and not EvidenceGate.negative_controls_valid(
+            payload, evidence_by_id, run_id=run_id, branch_id=branch_id,
+            target=declared_target, parent_ids=parent_ids,
+            inline_allowed=bool(result.input_hash and result.output_hash and EvidenceGate.execution_tool(result.tool)),
+        ):
+            return VerificationDecision(False, payload, confidence, "negative_control_execution_unproven")
         new_clause_ids = tuple(clause_id for clause_id in clause_ids if clause_id not in inherited_clause_ids)
         support_error = self._validate_clause_support(
             payload,

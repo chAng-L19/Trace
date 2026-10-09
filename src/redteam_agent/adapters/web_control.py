@@ -15,7 +15,8 @@ import time
 from pathlib import Path
 from typing import Any, Mapping
 
-from ..application.resources import ResourceResolver
+from ..application.resources import ResourceResolver, builtin_resource_root
+from ..providers.openai_protocol import token_limit
 
 
 def _json(value: Any) -> str:
@@ -96,6 +97,16 @@ class ControlPlane:
                     config_json TEXT NOT NULL DEFAULT '{}', updated_at TEXT NOT NULL
                 )"""
             )
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(trace_providers)")}
+            for name, declaration in {
+                "provider": "TEXT NOT NULL DEFAULT 'openai-compatible'",
+                "max_output_tokens": "INTEGER NOT NULL DEFAULT 0",
+                "reasoning_effort": "TEXT NOT NULL DEFAULT ''",
+                "thinking_type": "TEXT NOT NULL DEFAULT ''",
+                "thinking_budget_tokens": "INTEGER NOT NULL DEFAULT 0",
+            }.items():
+                if name not in columns:
+                    connection.execute(f"ALTER TABLE trace_providers ADD COLUMN {name} {declaration}")
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS trace_mcp_servers (
                     server_id TEXT PRIMARY KEY, spec_json TEXT NOT NULL,
@@ -234,6 +245,11 @@ class ControlPlane:
             "ready": bool(row["enabled"]) and (bool(secret) or _local_provider(str(row["base_url"]))),
             "timeout_seconds": float(row["timeout_seconds"]),
             "max_context_tokens": int(row["max_context_tokens"]),
+            "provider": str(row["provider"]),
+            "max_output_tokens": int(row["max_output_tokens"]),
+            "reasoning_effort": str(row["reasoning_effort"]),
+            "thinking_type": str(row["thinking_type"]),
+            "thinking_budget_tokens": int(row["thinking_budget_tokens"]),
             "enabled": bool(row["enabled"]),
             "active": bool(row["active"]),
             "updated_at": str(row["updated_at"]),
@@ -264,10 +280,11 @@ class ControlPlane:
         with self._lock:
             return environment or self._secrets.get(provider_id, "")
 
-    def save_provider(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+    def save_provider(self, payload: Mapping[str, Any], *, on_active: Any = None) -> dict[str, Any]:
         provider_id = str(payload.get("provider_id") or payload.get("id") or secrets.token_hex(8)).strip()
         name = str(payload.get("name") or provider_id).strip()
-        base_url = str(payload.get("base_url") or "https://api.openai.com/v1").strip().rstrip("/")
+        kind = str(payload.get("provider") or "openai-compatible").strip().lower()
+        base_url = str(payload.get("base_url") or ("https://api.anthropic.com/v1" if kind == "anthropic" else "https://api.openai.com/v1")).strip().rstrip("/")
         model = str(payload.get("model") or "").strip()
         api_key_env = str(payload.get("api_key_env") or "").strip()
         if not provider_id or len(provider_id) > 100 or not name or len(name) > 160:
@@ -279,22 +296,29 @@ class ControlPlane:
         try:
             timeout = float(payload.get("timeout_seconds", 120))
             context = int(payload.get("max_context_tokens", 128000))
+            maximum = token_limit(payload.get("max_output_tokens", 0))
+            thinking_budget = token_limit(payload.get("thinking_budget_tokens", 0))
         except (TypeError, ValueError, OverflowError):
             raise ValueError("provider_limits_invalid") from None
         if not 0 < timeout <= 3600 or not 1 <= context <= 10_000_000:
             raise ValueError("provider_limits_invalid")
-        from ..providers import OpenAICompatibleProvider
+        from ..application.bootstrap import resolve_provider
+        effort, thinking_type = str(payload.get("reasoning_effort") or ""), str(payload.get("thinking_type") or "")
         try:
-            OpenAICompatibleProvider(base_url, model, "", timeout_seconds=timeout, max_context_tokens=context)
+            resolve_provider(None, (), {"provider": kind, "base_url": base_url, "model": model,
+                "timeout_seconds": timeout, "max_context_tokens": context, "max_output_tokens": maximum,
+                "reasoning_effort": effort, "thinking_type": thinking_type, "thinking_budget_tokens": thinking_budget}, environ={})
         except (TypeError, ValueError) as exc:
             raise ValueError(str(exc)) from None
         secret = str(payload.get("api_key") or "")
         existing_item = next((item for item in self.providers() if item["provider_id"] == provider_id), None)
         clear_secret = bool(payload.get("clear_api_key")) or bool(existing_item and (
             existing_item["base_url"] != base_url
+            or existing_item["provider"] != kind
             or existing_item["model"] != model
             or existing_item["api_key_env"] != api_key_env
         ) and not secret)
+        candidate_secret = secret or ("" if clear_secret else self._secrets.get(provider_id, ""))
         now = self._now()
         with self.store.transaction(immediate=True) as connection:
             existing = connection.execute("SELECT created_at FROM trace_providers WHERE provider_id=?", (provider_id,)).fetchone()
@@ -306,12 +330,20 @@ class ControlPlane:
                    enabled=excluded.enabled,updated_at=excluded.updated_at""",
                 (provider_id, name, base_url, model, api_key_env, timeout, context, int(payload.get("enabled", True) is not False), 0, str(existing["created_at"]) if existing else now, now),
             )
+            connection.execute(
+                "UPDATE trace_providers SET provider=?,max_output_tokens=?,reasoning_effort=?,thinking_type=?,thinking_budget_tokens=? WHERE provider_id=?",
+                (kind, maximum, effort, thinking_type, thinking_budget, provider_id),
+            )
+            row = connection.execute("SELECT * FROM trace_providers WHERE provider_id=?", (provider_id,)).fetchone()
+            saved = self._provider_payload(row, bool(candidate_secret or (api_key_env and os.environ.get(api_key_env))))
+            if saved["active"] and on_active is not None:
+                on_active(saved, api_key=candidate_secret)
         with self._lock:
             if secret:
                 self._secrets[provider_id] = secret
             elif clear_secret:
                 self._secrets.pop(provider_id, None)
-        return self.provider(provider_id)
+        return saved
 
     def activate_provider(self, provider_id: str) -> dict[str, Any]:
         item = self.provider(provider_id)
@@ -332,7 +364,7 @@ class ControlPlane:
             self._secrets.pop(provider_id, None)
 
     def skills(self) -> list[dict[str, Any]]:
-        index = ResourceResolver().index((self.root,))
+        index = ResourceResolver().index((self.root, builtin_resource_root()))
         with self.store.connection() as connection:
             rows = {str(row["skill_id"]): row for row in connection.execute("SELECT * FROM trace_skills")}
         result = []

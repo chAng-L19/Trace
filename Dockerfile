@@ -5,12 +5,13 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1
 WORKDIR /build
 COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
-RUN python -m pip wheel --wheel-dir /wheels . \
+RUN python -m pip wheel --wheel-dir /wheels ".[tools]" \
     && python -m venv /opt/venv \
-    && /opt/venv/bin/pip install --no-index --find-links=/wheels trace-agent
+    && /opt/venv/bin/pip install --no-index --find-links=/wheels "trace-agent[tools]"
 
 FROM ${PYTHON_IMAGE} AS runtime
-ENV PATH="/opt/venv/bin:${PATH}" \
+ENV PATH="/var/cache/trace/python/bin:/opt/venv/bin:${PATH}" \
+    PIP_TARGET=/var/cache/trace/python \
     PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1 \
     TRACE_HOME=/var/lib/trace TRACE_TOOLS_HOME=/var/cache/trace/tools TRACE_BIN=/opt/venv/bin \
@@ -26,7 +27,8 @@ RUN apt-get update \
     && if [ "$TRACE_INSTALL_BROWSER" = 1 ]; then python -m playwright install chromium; fi \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 10001 --shell /usr/sbin/nologin trace \
-    && mkdir -p /var/lib/trace/artifact-store /var/lib/trace/workspaces /var/cache/trace \
+    && mkdir -p /var/lib/trace/artifact-store /var/lib/trace/workspaces /var/cache/trace/python \
+    && python -c 'import pathlib,sysconfig; pathlib.Path(sysconfig.get_path("purelib"), "trace-tools.pth").write_text("/var/cache/trace/python\n")' \
     && chown -R trace:trace /var/lib/trace /var/cache/trace
 COPY --chmod=0555 deploy/run-trace.sh /opt/trace/run-trace.sh
 COPY deploy/healthcheck.py /opt/trace/healthcheck.py

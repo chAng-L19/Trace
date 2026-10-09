@@ -49,12 +49,13 @@
     container.append(node);
   }
 
-  function renderRunList({ views, selectedId, search, onSelect }) {
+  function renderRunList({ views, selectedId, search, status, onSelect }) {
     const list = $("#run-list");
     const needle = String(search || "")
       .trim()
       .toLocaleLowerCase();
     const filtered = views.filter((view) => {
+      if (status && coreRun(view).status !== status) return false;
       if (!needle) return true;
       const run = coreRun(view);
       const text = [
@@ -71,11 +72,11 @@
     list.replaceChildren();
     $("#run-count").textContent = String(filtered.length);
     $("#summary-active").textContent =
-      `运行中 ${views.filter((view) => coreRun(view).status === "running").length}`;
+      `运行中 ${filtered.filter((view) => coreRun(view).status === "running").length}`;
     $("#summary-waiting").textContent =
-      `待处理 ${views.filter((view) => ["created", "waiting_worker", "paused_budget"].includes(coreRun(view).status)).length}`;
+      `待处理 ${filtered.filter((view) => ["created", "waiting_worker", "paused_budget"].includes(coreRun(view).status)).length}`;
     $("#summary-complete").textContent =
-      `已完成 ${views.filter((view) => coreRun(view).status === "completed").length}`;
+      `已完成 ${filtered.filter((view) => coreRun(view).status === "completed").length}`;
     $("#empty-state").hidden = views.length > 0 || Boolean(selectedId);
 
     if (!filtered.length) {
@@ -514,6 +515,7 @@
     appendEmpty,
     coreRun,
     formatStatus,
+    formatTime,
     goal,
     renderArtifactList,
     renderEventTimeline,

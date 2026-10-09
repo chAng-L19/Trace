@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import replace
+import hashlib
 from typing import Any
 
 from ..core import contract_hash
@@ -23,10 +24,12 @@ def prepare_continuation(loop: Any, request: Any) -> Any:
         return request
     bound = binding(loop, request)
     refs = []
+    selected = {message.get("source_request_id") for message in request.messages
+                if message.get("role") == "assistant"}
     for record in loop.service.journal.model_responses(request.run_id):
         ref = record.response.get("continuation")
         if record.status in {"completed", "success"} and isinstance(ref, Mapping):
-            if all(ref.get(key) == value for key, value in bound.items()):
+            if record.request_id in selected and all(ref.get(key) == value for key, value in bound.items()):
                 refs.append(dict(ref))
     return replace(request, continuation={"refs": refs, **bound} if refs else {},
                    metadata={**request.metadata, "continuation_binding": bound})
@@ -48,7 +51,12 @@ def hydrate_continuation(loop: Any, request: Any) -> Any:
                 artifact.metadata.get(key) != value for key, value in bound.items()
             ):
                 raise loop._integrity_error("model_continuation_artifact_binding_mismatch")
-            chain.append(loop.service.runtime.artifacts.read_json(artifact.artifact_id, run_id=request.run_id))
+            state = dict(loop.service.runtime.artifacts.read_json(artifact.artifact_id, run_id=request.run_id))
+            identity = artifact.metadata.get("request_id")
+            if state.get("assistant_request_id", identity) != identity:
+                raise loop._integrity_error("model_continuation_request_binding_mismatch")
+            state["assistant_request_id"] = identity
+            chain.append(state)
         except ArtifactIntegrityError as error:
             raise loop._integrity_error("model_continuation_artifact_invalid") from error
     return replace(request, continuation={"chain": chain})
@@ -64,6 +72,30 @@ def persist_continuation(loop: Any, request: Any, response: Any) -> Any:
     continuation = opaque_only(response.continuation)
     if not loop.model.capabilities().metadata.get("opaque_continuation"):
         continuation = {}
+    if continuation:
+        runtime = loop.service.runtime
+        runtime.project_model_credentials(request.run_id, response.to_dict())
+        # A credential discovered in another response field also affects text on validation.
+        projected_text = runtime.project_model_credentials(request.run_id, {"text": response.text})["text"]
+        continuation["assistant_wire_text_hash"] = hashlib.sha256(response.text.encode()).hexdigest()
+        continuation["assistant_projection_text_hash"] = hashlib.sha256(projected_text.encode()).hexdigest()
+        if continuation.get("block_layout"):
+            layout, texts, offset = [], [], 0
+            for part in continuation["block_layout"]:
+                part = dict(part)
+                if part["type"] == "text":
+                    length = int(part["length"])
+                    text = runtime.project_model_credentials(request.run_id,
+                        {"text": response.text[offset:offset + length]})["text"]
+                    offset += length
+                    part["length"] = len(text)
+                    texts.append(text)
+                layout.append(part)
+            if offset == len(response.text) and "".join(texts) == projected_text:
+                continuation["projection_block_layout"] = layout
+            else:
+                # Cross-block JSON normalization cannot preserve the provider's signed layout.
+                continuation["projection_block_layout_unavailable"] = True
     ref = {}
     if continuation and response.status in {"completed", "success"}:
         bound = dict(request.metadata.get("continuation_binding") or binding(loop, request))

@@ -1,3 +1,16 @@
+[provider]
+# Set model to enable model execution; keep credentials in the named environment variable.
+provider = "openai-compatible"
+model = ""
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+max_output_tokens = 8192
+reasoning_effort = ""
+# Native Claude: provider="anthropic", base_url="https://api.anthropic.com/v1",
+# api_key_env="ANTHROPIC_API_KEY" and your enabled model ID.
+# thinking_type = "enabled"
+# thinking_budget_tokens = 4096  # Must be lower than max_output_tokens.
+
 [automation]
 tool_priority = []
 max_actions_per_cycle = 64

@@ -9,8 +9,17 @@
     "chromium": {
       "version": "151.0.7922.34",
       "revision": "1234",
-      "commands": ["chromium", "chromium-browser", "google-chrome", "chrome"],
-      "capabilities": ["browser_automation", "dom_snapshot", "screenshot"],
+      "commands": [
+        "chromium",
+        "chromium-browser",
+        "google-chrome",
+        "chrome"
+      ],
+      "capabilities": [
+        "browser_automation",
+        "dom_snapshot",
+        "screenshot"
+      ],
       "source": "Playwright 1.62.0 browsers.json; publisher object metadata over HTTPS (2026-09-21). Upstream publishes MD5, not SHA-256. Trace records and rechecks SHA-256 for cached and installed content.",
       "platforms": {
         "windows-x86_64": {
@@ -31,8 +40,15 @@
     },
     "rizin": {
       "version": "0.9.1",
-      "commands": ["rizin", "r2", "radare2"],
-      "capabilities": ["binary_reverse", "graph_analysis"],
+      "commands": [
+        "rizin",
+        "r2",
+        "radare2"
+      ],
+      "capabilities": [
+        "binary_reverse",
+        "graph_analysis"
+      ],
       "source": "https://api.github.com/repos/rizinorg/rizin/releases/tags/v0.9.1",
       "platforms": {
         "windows-x86_64": {
@@ -48,6 +64,65 @@
           "size": 137626404,
           "format": "tar.xz",
           "executable": "bin/rizin"
+        }
+      }
+    },
+    "gcp": {
+      "version": "588.0.0",
+      "commands": [
+        "gcloud"
+      ],
+      "version_args": [
+        "--version"
+      ],
+      "capabilities": [
+        "cloud_inventory"
+      ],
+      "source": "Google Cloud versioned archive download table and rapid components-2.json, verified 2026-10-09",
+      "platforms": {
+        "windows-x86_64": {
+          "url": "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-sdk-588.0.0-windows-x86_64-bundled-python.zip",
+          "size": 103294175,
+          "sha256": "9e00e3c9b042f732e29eb7ca6095fdb44bda03938013274a148b5c5f95a6ec92",
+          "format": "zip",
+          "executable": "google-cloud-sdk/bin/gcloud.cmd"
+        },
+        "linux-x86_64": {
+          "url": "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-588.0.0-linux-x86_64.tar.gz",
+          "size": 88024908,
+          "sha256": "e38ceac43022bb5a4d94d5a4a9c9c51f90f28c910b59a018ae07011e220c4412",
+          "format": "tar.gz",
+          "executable": "google-cloud-sdk/bin/gcloud",
+          "sha256_source": "recorded_official_versioned_archive"
+        }
+      }
+    },
+    "aliyun": {
+      "version": "3.5.1",
+      "commands": [
+        "aliyun"
+      ],
+      "version_args": [
+        "version"
+      ],
+      "capabilities": [
+        "cloud_inventory"
+      ],
+      "source": "https://github.com/aliyun/aliyun-cli/releases/tag/v3.5.1 and SHASUMS256.txt, verified 2026-10-09",
+      "platforms": {
+        "windows-x86_64": {
+          "url": "https://github.com/aliyun/aliyun-cli/releases/download/v3.5.1/aliyun-cli-windows-3.5.1-amd64.zip",
+          "size": 78946743,
+          "sha256": "e35c0f66727df399c996646a4c33f64cd5b69f66eee3e33e1c4f51d41c603997",
+          "format": "zip",
+          "executable": "aliyun.exe"
+        },
+        "linux-x86_64": {
+          "url": "https://github.com/aliyun/aliyun-cli/releases/download/v3.5.1/aliyun-cli-linux-3.5.1-amd64.tgz",
+          "size": 77419794,
+          "sha256": "3a9a45b9c7899228074135612d2b7ebbf32abb97826d825787cb454cd3011bdc",
+          "format": "tar.gz",
+          "executable": "aliyun"
         }
       }
     }

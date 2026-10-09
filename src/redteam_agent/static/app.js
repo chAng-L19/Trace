@@ -114,6 +114,7 @@ function applyView(view) {
   )
     return false;
   state.view = view;
+  state.runs = state.runs.map((item) => coreRun(item).run_id === incoming.run_id ? view : item);
   return true;
 }
 
@@ -137,12 +138,6 @@ async function loadSystem() {
       `runtime / ${valueOr(result.platform, "-")}`;
     $("#api-badge").textContent =
       `API / v${valueOr(result.schema_version, "?")}`;
-    const health = $("#control-health");
-    if (health) {
-      health.classList.toggle("online", true);
-      health.classList.remove("offline");
-      health.innerHTML = `<span class="connection-dot" aria-hidden="true"></span><span>${provider.configured ? "模型连接已配置" : "等待模型配置"}</span>`;
-    }
     if (result.control_plane)
       $("#system-view").textContent = safeJson({
         ...result.control_plane,
@@ -151,17 +146,13 @@ async function loadSystem() {
       });
   } catch (error) {
     setConnection("服务连接失败", false);
-    const health = $("#control-health");
-    if (health) {
-      health.classList.remove("online");
-      health.classList.add("offline");
-      health.innerHTML = `<span class="connection-dot" aria-hidden="true"></span><span>API 连接失败</span>`;
-    }
     showNotice(error.message, true);
   }
 }
 
 function setView(view) {
+  document.body.classList.toggle("control-open", view === "control");
+  $("#workspace-title").textContent = view === "control" ? "控制面" : "运行工作台";
   state.page = view;
   $$(".top-nav .nav-button").forEach((button) => {
     const active = button.dataset.view === view;
@@ -170,7 +161,7 @@ function setView(view) {
   });
   $(".app-shell").hidden = view !== "runs";
   $("#control-plane").hidden = view !== "control";
-  if (view === "control") loadControl();
+  $$(".control-tab").forEach((button) => button.setAttribute("aria-pressed", String(view === "control" && button.classList.contains("active"))));
 }
 
 function showRunRegistry() {
@@ -184,15 +175,13 @@ function showRunRegistry() {
   renderRuns();
   renderView();
   requestAnimationFrame(() =>
-    window.scrollTo({ top: state.registryScroll, behavior: "instant" }),
+    $(".app-shell").scrollTo({ top: state.registryScroll, behavior: "instant" }),
   );
 }
 
 async function loadRuns({ keepSelection = true } = {}) {
   const epoch = state.authEpoch;
-  const filter = $("#status-filter").value;
   const query = new URLSearchParams({ limit: "200" });
-  if (filter) query.set("status", filter);
   try {
     const result = await api(`/api/runs?${query}`);
     if (
@@ -215,8 +204,9 @@ function renderRuns() {
     views: state.runs,
     selectedId: state.selectedId,
     search: state.search,
+    status: $("#status-filter").value,
     onSelect: (runId) => {
-      state.registryScroll = window.scrollY;
+      state.registryScroll = $(".app-shell").scrollTop;
       loadRun(runId);
     },
   });
@@ -231,6 +221,8 @@ async function loadRun(runId, resetEvents = true) {
   state.selectedId = runId;
   renderRuns();
   if (resetEvents) {
+    $(".tab-content").scrollTop = 0;
+    $(".app-shell").scrollTop = 0;
     closeEvents();
     state.events = [];
     state.eventCursor = 0;
@@ -283,6 +275,7 @@ async function loadRun(runId, resetEvents = true) {
 
 function renderView() {
   const view = state.view;
+  TraceLayout.renderContext(view);
   document.body.classList.toggle("run-focused", Boolean(view));
   $("#runs-index").hidden = Boolean(view);
   $("#empty-state").hidden = Boolean(view) || state.runs.length > 0;
@@ -302,7 +295,7 @@ function renderView() {
   $("#run-id").textContent = run.run_id;
   $("#run-objective").textContent = valueOr(runGoal.objective);
   $("#run-targets").textContent = runGoal.targets?.length
-    ? runGoal.targets.join(" · ")
+    ? runGoal.targets.join("\n")
     : "未绑定目标";
   $("#metric-actions").textContent =
     `${budget.actions_used || 0} / ${budget.action_limit || 0}`;
@@ -326,6 +319,9 @@ function renderView() {
   const terminal = terminalStatuses.has(run.status);
   const paused = run.status === "paused_budget";
   const waiting = run.status === "waiting_worker";
+  $('[data-command="run"]').hidden = paused;
+  $('[data-command="resume"]').hidden = !paused;
+  $('[data-command="pause"]').hidden = terminal || paused || run.status === "created" || run.status === "cancelling";
   $('[data-command="run"]').disabled =
     terminal || paused || run.status === "cancelling";
   $('[data-command="pause"]').disabled =
@@ -345,8 +341,7 @@ function renderView() {
   }
   if (state.pendingCommands.has(`${run.run_id}:budget`))
     $("#open-budget").disabled = true;
-  if (waiting) $('[data-command="run"]').textContent = "继续";
-  else $('[data-command="run"]').textContent = "运行";
+  $('[data-command="run"] span').textContent = waiting ? "继续" : "运行";
   $("#event-cursor").textContent = `序号 ${state.eventCursor}`;
 }
 
@@ -466,6 +461,7 @@ function renderEvents() {
 
 async function loadTab(tab, append = false) {
   state.activeTab = tab;
+  $("#workbench").dataset.activeTab = tab;
   const tabVersion = ++state.tabVersion;
   if (!state.selectedId || tab === "events") return;
   const runId = state.selectedId;
@@ -583,6 +579,7 @@ async function submitCreate(event) {
     });
     $("#create-dialog").close();
     form.reset();
+    setView("runs");
     const runId = result.runs?.[0]?.run?.run_id;
     await loadRuns({ keepSelection: false });
     if (runId) await loadRun(runId);
@@ -665,17 +662,18 @@ function exportReport() {
 
 function bind() {
   $$(".top-nav .nav-button, .control-tab").forEach((button) =>
-    button.setAttribute("aria-pressed", String(button.classList.contains("active"))),
+    button.setAttribute("aria-pressed", String(button.classList.contains("active") && (button.dataset.view === state.page || state.page === "control"))),
   );
   $("#login-dialog").addEventListener("cancel", (event) => event.preventDefault());
   $$("dialog").forEach((dialog) => dialog.addEventListener("close", () => {
     dialog.querySelector(".dialog-feedback")?.remove();
   }));
   $$(".top-nav .nav-button").forEach((button) =>
-    button.addEventListener("click", () => setView(button.dataset.view)),
+    button.addEventListener("click", () => { setView("runs"); showRunRegistry(); }),
   );
   $$(".control-tab").forEach((button) =>
     button.addEventListener("click", async () => {
+      setView("control");
       $$(".control-tab").forEach((item) => {
         item.classList.toggle("active", item === button);
         item.setAttribute("aria-pressed", String(item === button));
@@ -708,8 +706,6 @@ function bind() {
     showNotice("MCP 配置已重载");
   });
   $("#new-run").addEventListener("click", openCreateDialog);
-  $("#empty-new-run").addEventListener("click", openCreateDialog);
-  $("#back-to-runs").addEventListener("click", showRunRegistry);
   $("#refresh-runs").addEventListener("click", () => loadRuns());
   $("#run-search").addEventListener("input", (event) => {
     state.search = String(event.target.value || "");
@@ -761,6 +757,7 @@ function bind() {
       tabs[next].focus();
     });
     button.addEventListener("click", async () => {
+      $(".tab-content").scrollTop = 0;
       tabs.forEach((item) => {
         item.setAttribute("aria-selected", String(item === button));
         item.tabIndex = item === button ? 0 : -1;

@@ -58,6 +58,11 @@ class ToolBroker(McpBrokerMixin):
         self._health: dict[str, ToolHealthState] = {}
         self._discovery_errors: list[str] = []
         self._capability_overrides: dict[str, tuple[str, ...]] = {}
+        self._artifacts = None
+        self._capture_projector = redact_sensitive
+
+    def bind_artifacts(self, artifacts, projector=redact_sensitive) -> None:
+        self._artifacts, self._capture_projector = artifacts, projector
 
     @property
     def discovery_errors(self) -> tuple[str, ...]:
@@ -229,6 +234,17 @@ class ToolBroker(McpBrokerMixin):
             name = "builtin:binary-radare2"
             if self._adapters.get(name) is binary_radare2:
                 self._descriptors[name] = replace(self._descriptors[name], **binary_backend())
+            from .tool_prepare import adapter_dependencies, module_available
+            for qualified, descriptor in tuple(self._descriptors.items()):
+                if descriptor.server == "builtin" and descriptor.source == "registered-adapter":
+                    missing = adapter_dependencies(descriptor.name)
+                    capabilities = descriptor.capabilities
+                    if descriptor.name == "binary-analysis" or (descriptor.name == "binary-radare2" and descriptor.version == "native-binary-query-v1"):
+                        capabilities = tuple(cap for cap in capabilities if cap != "disassemble")
+                        if module_available("capstone"):
+                            capabilities = (*capabilities, "disassemble")
+                    self._descriptors[qualified] = replace(descriptor, healthy=not missing, capabilities=capabilities,
+                        metadata={**descriptor.metadata, "missing_dependencies": list(missing)})
             return tuple(sorted(self._descriptors.values(), key=lambda item: (item.priority, item.qualified_name.casefold())))
 
     @staticmethod
@@ -344,6 +360,7 @@ class ToolBroker(McpBrokerMixin):
         timeout: float = 60.0,
         run_id: str = "",
         external_call_id: str = "",
+        artifact_metadata: Mapping[str, Any] | None = None,
     ) -> ToolCallResult:
         started_at = utc_now()
         started_clock = time.monotonic()
@@ -365,6 +382,17 @@ class ToolBroker(McpBrokerMixin):
         with self._lifecycle_lock:
             self._active_calls += 1
             adapter = self._adapters.get(qualified)
+        capture = None
+        if self._artifacts is not None and run_id:
+            from .open_source_tools import http_request
+            from .tool_capture import ToolCapture
+            if adapter is http_request or (isinstance(adapter, BrowserAdapter) and adapter.operation == "screenshot"):
+                capture = ToolCapture(
+                    self._artifacts, run_id,
+                    {"tool_name": qualified, "call_id": external_call_id or call_id,
+                     "task_id": external_call_id or call_id, **dict(artifact_metadata or {})},
+                    self._capture_projector,
+                )
         try:
             if isinstance(adapter, BrowserAdapter):
                 if external_call_id and run_id:
@@ -372,7 +400,11 @@ class ToolBroker(McpBrokerMixin):
                         self._active_browser_calls[external_call_id] = run_id
                 output = self._browser_sessions.call(
                     adapter.operation, arguments, run_id=run_id,
-                    workspace=self._workspace_for(run_id), timeout=timeout,
+                    workspace=self._workspace_for(run_id), timeout=timeout, capture=capture,
+                )
+            elif capture is not None:
+                output = self._invoke_adapter(
+                    lambda args: http_request(args, capture=capture), arguments, timeout=timeout,
                 )
             elif adapter is not None:
                 output = self._invoke_adapter(adapter, arguments, timeout=timeout)
@@ -405,6 +437,8 @@ class ToolBroker(McpBrokerMixin):
                     )
                 else:
                     output = client.call_tool(descriptor.name, arguments, timeout=effective_timeout)
+            if capture is not None:
+                output = capture.project_output(output)
             if isinstance(output, Mapping) and output.get("isError") is True:
                 self._record_result(qualified, success=False, latency_ms=(time.monotonic() - started_clock) * 1000, error="mcp_tool_error")
                 return ToolCallResult(
@@ -447,6 +481,7 @@ class ToolBroker(McpBrokerMixin):
             self._record_result(qualified, success=False, latency_ms=(time.monotonic() - started_clock) * 1000, error=error)
             return ToolCallResult(
                 status="failed",
+                output=capture.summary() if capture is not None else None,
                 error=error,
                 tool=qualified,
                 started_at=started_at,
@@ -460,10 +495,11 @@ class ToolBroker(McpBrokerMixin):
             self._record_result(qualified, success=False, latency_ms=(time.monotonic() - started_clock) * 1000, error=error)
             return ToolCallResult(
                 status="failed",
+                output=capture.summary() if capture is not None else None,
                 error=error,
                 tool=qualified,
                 started_at=started_at,
-                retryable=False,
+                retryable=bool(capture is not None and capture.dispatched and descriptor.side_effecting),
                 call_id=call_id,
                 input_hash=input_hash,
                 tool_version=descriptor.version,

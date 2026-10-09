@@ -19,6 +19,8 @@ from redteam_agent.application import ToolObservationProjector  # noqa: E402
 from redteam_agent.core import ExplorationRecord, ToolResult  # noqa: E402
 from redteam_agent.runtime import ExplorationLedger  # noqa: E402
 from redteam_agent.runtime.durable_store import DurableStore  # noqa: E402
+from redteam_agent.providers import FakeModelProvider  # noqa: E402
+from evidence_quality_smoke import EnumerationTool, execute_enumeration  # noqa: E402
 
 
 SNAPSHOT_FILE = "thin_tactical_loop.json"
@@ -112,7 +114,8 @@ def _tool_projection() -> Mapping[str, Any]:
 
 def _vertical_fixture() -> Mapping[str, Any]:
     with tempfile.TemporaryDirectory(prefix="redteam-agent-phase6-run-") as directory:
-        service = AgentService(root=Path(directory) / "runtime")
+        service = AgentService(root=Path(directory) / "runtime", tool_port=EnumerationTool(),
+                               model_port=FakeModelProvider([]), load_external_configuration=False)
         run_id = service.start(
             StartRequest(
                 session_id="phase6-snapshot",
@@ -120,11 +123,7 @@ def _vertical_fixture() -> Mapping[str, Any]:
                 targets=("fixture://phase6",),
             )
         ).single.run.run_id
-        artifact = service.runtime.artifacts.put_json(
-            {"requests": 32, "matches": 0},
-            run_id=run_id,
-            artifact_type="enumeration_transcript",
-        )
+        artifact_id = execute_enumeration(service, run_id, "fixture://phase6")
         service.record_exploration(
             run_id,
             {
@@ -133,7 +132,7 @@ def _vertical_fixture() -> Mapping[str, Any]:
                 "kind": "verified_negative",
                 "status": "closed",
                 "statement": "No match in the exact tested input set",
-                "artifact_refs": [artifact.artifact_id],
+                "artifact_refs": [artifact_id],
                 "tested_domain": {"method": "GET", "entries": 32},
                 "observations": {"matches": 0},
                 "coverage": {"entries": 32, "recursive": False},
@@ -150,7 +149,7 @@ def _vertical_fixture() -> Mapping[str, Any]:
                 "kind": "lead",
                 "status": "active",
                 "statement": "Schema discovery became available",
-                "artifact_refs": [artifact.artifact_id],
+                "artifact_refs": [artifact_id],
                 "capabilities": ["schema_discovery"],
             },
         )

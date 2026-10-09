@@ -105,6 +105,21 @@ class McpServerSpec:
         )
 
 
+PUBLIC_MCP_PRESETS: dict[str, Mapping[str, Any]] = {
+    "playwright": {
+        "transport": "stdio",
+        "preset": "playwright",
+        "scope": "run",
+        "command": "npx",
+        "args": (
+            "-y", "@playwright/mcp@0.0.79", "--isolated", "--headless",
+            "--image-responses=omit", "--codegen=none", "--block-service-workers",
+            "--output-dir={workspace}/playwright-output", "--output-max-size=52428800",
+        ),
+    },
+}
+
+
 PRESET_DEFAULTS: dict[str, Mapping[str, Any]] = {
     "playwright": {
         "scope": "run",

@@ -70,12 +70,12 @@ class BrowserSessions:
 
     def call(
         self, operation: str, arguments: Mapping[str, Any], *, run_id: str = "",
-        workspace: Path | None = None, timeout: float = 60.0,
+        workspace: Path | None = None, timeout: float = 60.0, capture=None,
     ) -> Mapping[str, Any]:
         if not run_id and (arguments.get("session_id") or arguments.get("page_id")):
             raise ValueError("browser_run_id_required")
         key = run_id or f"ephemeral-{uuid4().hex}"
-        future = self._submit(self._call(key, operation, dict(arguments), workspace, ephemeral=not run_id))
+        future = self._submit(self._call(key, operation, dict(arguments), workspace, ephemeral=not run_id, capture=capture))
         try:
             return future.result(timeout=max(0.001, timeout))
         except FutureTimeout:
@@ -90,7 +90,7 @@ class BrowserSessions:
 
     async def _call(
         self, key: str, operation: str, arguments: Mapping[str, Any],
-        workspace: Path | None, *, ephemeral: bool,
+        workspace: Path | None, *, ephemeral: bool, capture=None,
     ) -> Mapping[str, Any]:
         task = asyncio.current_task()
         self._tasks[task] = key
@@ -141,7 +141,7 @@ class BrowserSessions:
                 except (TypeError, ValueError, OverflowError):
                     seconds = 30.0
                 try:
-                    result = await asyncio.wait_for(self._operate(session, operation, arguments, url, seconds), seconds)
+                    result = await asyncio.wait_for(self._operate(session, operation, arguments, url, seconds, capture=capture), seconds)
                 except asyncio.TimeoutError:
                     await self._dispose(key, lost=True)
                     raise TimeoutError("browser_timeout:outcome_unknown:session_lost") from None
@@ -199,7 +199,7 @@ class BrowserSessions:
             raise
 
     async def _operate(
-        self, session: Mapping[str, Any], operation: str, arguments: Mapping[str, Any], url: str, seconds: float,
+        self, session: Mapping[str, Any], operation: str, arguments: Mapping[str, Any], url: str, seconds: float, *, capture=None,
     ) -> Mapping[str, Any]:
         page = session["page"]
         timeout = int(seconds * 1000)
@@ -216,16 +216,21 @@ class BrowserSessions:
         elif operation == "evaluate":
             extra["value"] = await page.evaluate(str(arguments["expression"]), arguments.get("arg"))
         elif operation == "screenshot":
-            root = session["workspace"]
-            requested = Path(str(arguments.get("output_path") or "browser-screenshot.png")).expanduser()
-            output = (requested if requested.is_absolute() else root / requested).resolve()
-            try:
-                output.relative_to(root)
-            except ValueError as exc:
-                raise ValueError("browser_output_path_outside_workspace") from exc
-            output.parent.mkdir(parents=True, exist_ok=True)
-            await page.screenshot(path=str(output), full_page=bool(arguments.get("full_page", False)), timeout=timeout)
-            extra["screenshot_path"] = str(output)
+            if capture is not None:
+                pixels = await page.screenshot(full_page=bool(arguments.get("full_page", False)), timeout=timeout)
+                extra["screenshot_artifact"] = capture.screenshot(pixels)
+                extra.update(capture.summary())
+            else:
+                root = session["workspace"]
+                requested = Path(str(arguments.get("output_path") or "browser-screenshot.png")).expanduser()
+                output = (requested if requested.is_absolute() else root / requested).resolve()
+                try:
+                    output.relative_to(root)
+                except ValueError as exc:
+                    raise ValueError("browser_output_path_outside_workspace") from exc
+                output.parent.mkdir(parents=True, exist_ok=True)
+                await page.screenshot(path=str(output), full_page=bool(arguments.get("full_page", False)), timeout=timeout)
+                extra["screenshot_path"] = str(output)
         title, text, links = "", "", []
         try:
             title = await page.title()

@@ -492,16 +492,16 @@ class EvidenceGate:
         if target and finding_target != target:
             return EvidenceGateDecision(False, "finding_target_mismatch")
         groups = {
-            "reproduction_evidence_ids": "reproduction_evidence_missing",
-            "impact_evidence_ids": "impact_evidence_missing",
-            "negative_control_evidence_ids": "negative_control_evidence_missing",
-            "cleanup_evidence_ids": "cleanup_evidence_missing",
+            "reproduction_evidence_ids": {"reproduction_artifact"},
+            "impact_evidence_ids": {"impact_proof"},
+            "negative_control_evidence_ids": {"reproduction_artifact", "coverage_report", "negative_control"},
+            "cleanup_evidence_ids": {"cleanup_proof"},
         }
-        for name, reason in groups.items():
+        for name, artifact_types in groups.items():
             raw = field(name)
             refs = tuple(str(item) for item in raw if str(item)) if isinstance(raw, (list, tuple)) else ()
             if not refs:
-                return EvidenceGateDecision(False, reason)
+                return EvidenceGateDecision(False, name.removesuffix("_ids") + "_missing")
             if len(refs) != len(set(refs)):
                 return EvidenceGateDecision(False, "finding_evidence_duplicate")
             for evidence_id in refs:
@@ -514,7 +514,88 @@ class EvidenceGate:
                     max_plan_revision=max_plan_revision,
                 ):
                     return EvidenceGateDecision(False, "finding_evidence_scope_mismatch")
+                if node.artifact_type not in artifact_types:
+                    return EvidenceGateDecision(False, "finding_evidence_role_mismatch")
+                if not cls.execution_tool(node.tool):
+                    return EvidenceGateDecision(False, "finding_execution_source_unproven")
+                if name == "negative_control_evidence_ids" and not cls.negative_controls_valid(
+                    node.payload, evidence_by_id, run_id=run_id, branch_id=branch_id,
+                    target=finding_target, max_plan_revision=max_plan_revision,
+                    parent_ids=node.parent_ids, inline_allowed=bool(
+                        node.provenance and node.provenance.input_hash and node.provenance.output_hash
+                    ),
+                ):
+                    return EvidenceGateDecision(False, "finding_negative_control_unproven")
         return EvidenceGateDecision(True, "finding_evidence_valid")
+
+    @staticmethod
+    def _measurement(payload: Any, path: str) -> tuple[bool, Any]:
+        current = payload
+        for key in path.split("."):
+            if isinstance(current, Mapping) and key in current:
+                current = current[key]
+            elif isinstance(current, (list, tuple)) and key.isdecimal() and int(key) < len(current):
+                current = current[int(key)]
+            else:
+                return False, None
+        return True, current
+
+    @staticmethod
+    def execution_tool(tool: str) -> bool:
+        names = tool.removeprefix("model-loop:").split(",")
+        return bool(tool) and all(name and not name.startswith(("agent:", "host:")) for name in names)
+
+    @classmethod
+    def negative_controls_valid(
+        cls, payload: Any, evidence_by_id: Mapping[str, EvidenceNode], *,
+        run_id: str, branch_id: str, target: str, parent_ids: Sequence[str] = (),
+        max_plan_revision: int | None = None, inline_allowed: bool = False,
+    ) -> bool:
+        """Bind each control comparison to measured tool output or scoped parents."""
+        if not isinstance(payload, Mapping):
+            return False
+        controls = payload.get("negative_controls") or payload.get("false_positive_controls")
+        if not isinstance(controls, list) or not controls:
+            return False
+        parents = {evidence_id: node for evidence_id, node in evidence_by_id.items()
+                   if evidence_id in parent_ids and cls.execution_tool(node.tool) and cls.same_scope(
+                       node, run_id=run_id, branch_id=branch_id, target=target,
+                       max_plan_revision=max_plan_revision)}
+        for control in controls:
+            if (not isinstance(control, Mapping) or control.get("passed") is not True
+                    or "actual" not in control or "expected" not in control
+                    or cls.canonical_json(control["actual"]) != cls.canonical_json(control["expected"])):
+                return False
+            path = control.get("observation_path")
+            if (not isinstance(path, str) or not path.strip()
+                    or path.split(".")[0] in {"negative_controls", "false_positive_controls"}):
+                return False
+            refs = control.get("evidence_refs")
+            sources: list[Any] = []
+            if refs is not None:
+                if (not isinstance(refs, list) or not refs or len(set(map(str, refs))) != len(refs)
+                        or any(not isinstance(ref, str) or ref not in parents for ref in refs)):
+                    return False
+                sources = [parents[ref].payload for ref in refs]
+            elif control.get("source") == "tool_output":
+                if inline_allowed:
+                    sources.append(payload)
+                # Builtin coverage can carry a control already measured by its reproduction parent.
+                for node in parents.values():
+                    if not isinstance(node.payload, Mapping):
+                        continue
+                    source_controls = node.payload.get("negative_controls") or node.payload.get("false_positive_controls")
+                    if (isinstance(source_controls, list) and control in source_controls
+                            and node.provenance and node.provenance.input_hash and node.provenance.output_hash):
+                        sources.append(node.payload)
+            else:
+                return False
+            if not sources or not any(
+                found and cls.canonical_json(actual) == cls.canonical_json(control["actual"])
+                for found, actual in (cls._measurement(source, path) for source in sources)
+            ):
+                return False
+        return True
 
 
 class GateEvaluationError(ValueError):

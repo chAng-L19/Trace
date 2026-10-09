@@ -4,6 +4,7 @@ import fnmatch
 import hashlib
 import json
 import os
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -13,6 +14,10 @@ RESOURCE_SCHEMA_VERSION = 1
 DEFAULT_RESOURCE_BYTES = 64 * 1024
 DEFAULT_RESOURCE_TOKENS = 4096
 MAX_RESOURCE_FILES = 256
+
+
+def builtin_resource_root() -> Path:
+    return Path(__file__).resolve().parents[1] / "workflows" / "skills"
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +142,7 @@ class ResourceResolver:
         "context.md",
         "mcp-instructions.md",
         "mcp_instructions.md",
+        "skill.md",
     }
     _known_dirs = {
         ".trace",
@@ -178,6 +184,11 @@ class ResourceResolver:
             descriptor = self._read(path, resolved_root_paths, issues)
             if descriptor is not None:
                 descriptors.append(descriptor)
+        counts = Counter(item.resource_id for item in descriptors)
+        for item in descriptors:
+            if counts[item.resource_id] > 1:
+                issues.append(ResourceIssue(item.source, "resource_id_ambiguous:" + item.resource_id))
+        descriptors = [item for item in descriptors if counts[item.resource_id] == 1]
         descriptors.sort(key=lambda item: (-item.priority, item.source.casefold(), item.resource_id))
         index_payload = {
             "schema_version": RESOURCE_SCHEMA_VERSION,
@@ -360,5 +371,6 @@ __all__ = [
     "ResourceResolver",
     "ResourceSelection",
     "resource_context_metadata",
+    "builtin_resource_root",
     "resource_context_projection",
 ]

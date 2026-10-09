@@ -79,11 +79,6 @@ class ToolVisibilityPolicy:
         capabilities: Sequence[str] = (),
         expanded: bool = False,
     ) -> tuple[tuple[Any, ...], tuple[ToolVisibility, ...]]:
-        if expanded:
-            return tuple(tools), tuple(
-                ToolVisibility(str(item.qualified_name), True, "explicit_expand", True)
-                for item in tools
-            )
         by_server: dict[str, int] = {}
         selected: list[Any] = []
         visibility: list[ToolVisibility] = []
@@ -94,7 +89,12 @@ class ToolVisibilityPolicy:
             side_effecting = bool(getattr(tool, "side_effecting", False))
             matches = self._matches_capability(tool, capabilities)
             count = by_server.get(server, 0)
-            if matches:
+            if getattr(tool, "metadata", {}).get("healthy", True) is False:
+                visibility.append(ToolVisibility(qualified, False, "dependency_unavailable", expanded))
+                continue
+            if expanded:
+                reason = "explicit_expand"
+            elif matches:
                 reason = "capability_match"
             elif source in {"registered-adapter", "builtin", "application"}:
                 reason = "builtin_default"
@@ -104,7 +104,7 @@ class ToolVisibilityPolicy:
                 visibility.append(ToolVisibility(qualified, False, "deferred_until_expand"))
                 continue
             selected.append(tool)
-            visibility.append(ToolVisibility(qualified, True, reason))
+            visibility.append(ToolVisibility(qualified, True, reason, expanded))
             by_server[server] = count + 1
         return tuple(selected), tuple(visibility)
 

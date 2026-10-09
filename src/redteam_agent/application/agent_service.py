@@ -46,7 +46,7 @@ from .agent_tools import AgentToolAdapter
 from .asset_graph import project_asset_attack_graph
 from .model_loop import AgentLoop
 from .context import ContextSelection, ContextSelector, ConversationLedger, TraceableCompactor
-from .resources import ResourceIndex, ResourceResolver, ResourceSelection
+from .resources import ResourceIndex, ResourceResolver, ResourceSelection, builtin_resource_root
 from .transparency import TransparencyProjector
 class AgentService(ServiceExecutionMixin, WorkerServiceMixin):
     """The canonical application entry point for durable agent operations."""
@@ -123,7 +123,7 @@ class AgentService(ServiceExecutionMixin, WorkerServiceMixin):
                     "codex_handoff": lambda: CodexHandoffWorker(records=self.worker_records, workspaces=self.workspaces),
                     "docker": lambda: DockerWorkerAdapter(records=self.worker_records),
                 },
-                capabilities={"codex_handoff": ("codex.handoff",)},
+                capabilities={"codex_handoff": ("codex.handoff",), "docker": ("docker.command", "docker.process")},
                 records=self.worker_records,
             )
         self._model_lock = threading.RLock()
@@ -622,13 +622,14 @@ class AgentService(ServiceExecutionMixin, WorkerServiceMixin):
         roots = view.goal.constraints.get("resource_roots", ())
         if isinstance(roots, (str, bytes)) or not isinstance(roots, Sequence):
             roots = ()
-        return self.resources.index(roots or (self.runtime.root,))
+        return self.resources.index((*(roots or (self.runtime.root,)), builtin_resource_root()))
 
     def resource_selection(
         self,
         run_id: str,
         *,
         token_budget: int = 4096,
+        extra_requested: Sequence[str] = (),
     ) -> ResourceSelection:
         view = self.status(run_id)
         constraints = view.goal.constraints
@@ -643,6 +644,13 @@ class AgentService(ServiceExecutionMixin, WorkerServiceMixin):
         configured_requested: list[str] = []
         configured_disabled: list[str] = []
         configured_budget = max(1, int(token_budget))
+        with self.runtime.store.connection() as connection:
+            selected = connection.execute(
+                "SELECT payload_json FROM operation_events WHERE run_id=? AND event_type='resource_loaded' ORDER BY event_id",
+                (run_id,),
+            ).fetchall()
+        loaded = { (str(item["resource_id"]), str(item["content_hash"]))
+                   for row in selected if isinstance((item := json.loads(row[0])), Mapping) }
         try:
             with self.runtime.store.connection() as connection:
                 rows = connection.execute("SELECT skill_id,enabled,config_json FROM trace_skills").fetchall()
@@ -670,9 +678,15 @@ class AgentService(ServiceExecutionMixin, WorkerServiceMixin):
             if "no such table" not in str(exc).casefold():
                 raise RuntimeError("skill_state_unavailable") from exc
             configured_disabled = []
+        index = self.resource_index(run_id)
+        loaded_ids = tuple(item.resource_id for item in index.resources
+                           if (item.resource_id, item.content_hash) in loaded)
+        base_requested = (*map(str, requested_values), *configured_requested)
+        defaults = tuple(item.resource_id for item in index.resources if item.kind in {"agents", "project_context"})
         return self.resources.select(
-            self.resource_index(run_id),
-            requested=tuple(dict.fromkeys((*map(str, requested_values), *configured_requested))),
+            index,
+            requested=tuple(dict.fromkeys((*base_requested, *defaults,
+                                          *loaded_ids, *extra_requested))),
             disabled=tuple(dict.fromkeys((*map(str, disabled_values), *configured_disabled))),
             token_budget=configured_budget,
         )

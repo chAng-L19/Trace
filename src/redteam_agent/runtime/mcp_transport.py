@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
 
 from .settings import _default_config_paths, _runtime_settings
+from ..application.bootstrap import add_model_options, model_options
 
 
 def _iter_request_lines(
@@ -97,6 +98,7 @@ def main(argv: list[str] | None = None) -> int:
     from .mcp_server import RuntimeMcpServer
 
     parser = argparse.ArgumentParser(prog="trace-mcp", description="Trace durable Agent MCP runtime")
+    add_model_options(parser)
     parser.add_argument("--root", default="", help="Durable state root")
     parser.add_argument("--config", action="append", default=[], help="MCP config.toml path")
     parser.add_argument("--model", default="")
@@ -110,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
     from ..application.agent_service import AgentService
 
     service = AgentService(root=root, config_paths=arguments.config, provider_options={
+        **model_options(arguments),
         "model": arguments.model, "base_url": arguments.api_base_url,
         "api_key_env": arguments.api_key_env, "timeout_seconds": arguments.api_timeout_seconds,
         "max_context_tokens": arguments.model_context_tokens,

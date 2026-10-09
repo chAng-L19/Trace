@@ -9,21 +9,40 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from ..providers import OpenAICompatibleProvider
+from ..providers import AnthropicProvider, OpenAICompatibleProvider
+from ..providers.openai_protocol import token_limit
 from ..runtime.adaptive_planner import AdaptivePlanner
 from ..runtime.operation_runtime import OperationRuntime
 from ..runtime.settings import _default_config_paths, _runtime_settings
 from ..runtime.tool_broker import ToolBroker
 
 PROVIDER_ENV = {
+    "provider": "TRACE_PROVIDER",
     "model": "TRACE_MODEL", "base_url": "TRACE_API_BASE_URL",
     "api_key_env": "TRACE_API_KEY_ENV", "timeout_seconds": "TRACE_API_TIMEOUT_SECONDS",
     "max_context_tokens": "TRACE_MODEL_CONTEXT_TOKENS",
+    "max_output_tokens": "TRACE_MAX_OUTPUT_TOKENS", "reasoning_effort": "TRACE_REASONING_EFFORT",
+    "thinking_type": "TRACE_THINKING_TYPE", "thinking_budget_tokens": "TRACE_THINKING_BUDGET_TOKENS",
 }
 PROVIDER_DEFAULTS = {
+    "provider": "openai-compatible",
     "model": "", "base_url": "https://api.openai.com/v1", "api_key_env": "OPENAI_API_KEY",
     "timeout_seconds": 120.0, "max_context_tokens": 128000,
+    "max_output_tokens": 0, "reasoning_effort": "", "thinking_type": "", "thinking_budget_tokens": 0,
 }
+
+
+def add_model_options(parser: Any) -> None:
+    parser.add_argument("--provider", choices=("openai-compatible", "anthropic"))
+    parser.add_argument("--max-output-tokens", type=int)
+    parser.add_argument("--reasoning-effort", choices=("none", "minimal", "low", "medium", "high", "xhigh", "max"))
+    parser.add_argument("--thinking-type", choices=("enabled", "disabled", "adaptive"))
+    parser.add_argument("--thinking-budget-tokens", type=int)
+
+
+def model_options(arguments: Any) -> dict[str, Any]:
+    return {key: getattr(arguments, key, None) for key in
+            ("provider", "max_output_tokens", "reasoning_effort", "thinking_type", "thinking_budget_tokens")}
 
 
 def config_paths(paths: Sequence[Path | str] | None = None) -> list[Path]:
@@ -44,7 +63,8 @@ def build_runtime(root: Path, paths: Sequence[Path], *,
 
 def resolve_provider(control: Any, paths: Sequence[Path], options: Mapping[str, Any] | None = None,
                      environ: Mapping[str, str] | None = None,
-                     active: Mapping[str, Any] | None = None) -> tuple[Any, dict[str, str]]:
+                     active: Mapping[str, Any] | None = None,
+                     credential_override: str | None = None) -> tuple[Any, dict[str, str]]:
     values, sources = dict(PROVIDER_DEFAULTS), {key: "default" for key in PROVIDER_DEFAULTS}
     for path in reversed(paths):
         try:
@@ -55,30 +75,46 @@ def resolve_provider(control: Any, paths: Sequence[Path], options: Mapping[str, 
         if isinstance(provider, Mapping):
             for key in values.keys() & provider.keys():
                 values[key], sources[key] = provider[key], f"toml:{path}"
-    if control:
+    if control and active is None:
         active = next((item for item in control.providers() if item["active"] and item["enabled"]), None)
     if active:
-        for key in values:
+        for key in values.keys() & active.keys():
             values[key], sources[key] = active[key], "persisted:active_provider"
     env = os.environ if environ is None else environ
     for key, name in PROVIDER_ENV.items():
         if env.get(name):
             values[key], sources[key] = env[name], f"env:{name}"
     for key, value in (options or {}).items():
-        if key in values and value not in (None, ""):
+        if key in values and value is not None and (value != "" or key in {"reasoning_effort", "thinking_type"}):
             values[key], sources[key] = value, "explicit"
+    kind = str(values["provider"]).strip().lower()
+    if kind not in {"openai-compatible", "anthropic"}:
+        raise ValueError("provider_type_invalid")
+    if kind == "anthropic":
+        for key, value in {"base_url": "https://api.anthropic.com/v1", "api_key_env": "ANTHROPIC_API_KEY"}.items():
+            if sources[key] == "default":
+                values[key] = value
     if not str(values["model"]).strip():
         return None, sources
     # An endpoint override must never forward a persisted key to another host.
-    secret = control.provider_secret(active["provider_id"], include_environment=False) if control and active and values["base_url"] == active["base_url"] else ""
+    secret = credential_override
+    if secret is None:
+        secret = control.provider_secret(active["provider_id"], include_environment=False) if control and active and values["base_url"] == active["base_url"] and kind == active.get("provider", "openai-compatible") else ""
     key_name = str(values["api_key_env"])
     try:
         timeout, context = float(values["timeout_seconds"]), int(values["max_context_tokens"])
+        maximum, thinking_budget = token_limit(values["max_output_tokens"]), token_limit(values["thinking_budget_tokens"])
     except (TypeError, ValueError, OverflowError):
         raise ValueError("provider_limits_invalid") from None
-    return OpenAICompatibleProvider(
+    provider_class = AnthropicProvider if kind == "anthropic" else OpenAICompatibleProvider
+    thinking = {"thinking_type": str(values["thinking_type"]), "thinking_budget_tokens": thinking_budget}
+    if kind != "anthropic" and (thinking["thinking_type"] or thinking_budget):
+        raise ValueError("provider_thinking_requires_anthropic")
+    return provider_class(
         str(values["base_url"]), str(values["model"]), str(secret), api_key_env=key_name, environ=env,
         timeout_seconds=timeout, max_context_tokens=context,
+        max_output_tokens=maximum, reasoning_effort=str(values["reasoning_effort"]),
+        **(thinking if kind == "anthropic" else {}),
     ), sources
 
 

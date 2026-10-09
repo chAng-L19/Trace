@@ -11,6 +11,7 @@ export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$XDG_CACHE_HOME/ms-
 export PYTHONDONTWRITEBYTECODE=1
 trace_bin=${TRACE_BIN:-$prefix/current/bin}
 mkdir -p "$TRACE_HOME" "$XDG_CACHE_HOME"
+if [ -n "${PIP_TARGET:-}" ]; then mkdir -p "$PIP_TARGET"; fi
 
 # Optional mounted secret files are read only at runtime and never printed.
 if [ -n "${TRACE_ADMIN_PASSWORD_FILE:-}" ]; then

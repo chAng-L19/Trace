@@ -20,6 +20,9 @@ from .bounded_output import BoundedOutput
 from .resources import resource_context_metadata, resource_context_projection
 from .tool_projection import ToolObservationProjector
 from .agent_loop_support import context_summary_projection
+from .execution_policy import TACTICAL_SYSTEM, current_task
+from .context_retention import retained_tactical_state
+
 class ConversationLedger:
     def __init__(
         self,
@@ -325,19 +328,10 @@ class ContextSelector:
         self.ledger.append(
             run_id=run_id,
             role="system",
-            content=(
-                "You are the primary tactical agent. Runtime owns deterministic invariants, "
-                "evidence promotion, budgets, cleanup, and terminal decisions. The current "
-                "action is a quality gate, not a prescribed tactic. Generate and prioritize "
-                "search nodes yourself, use native tool calls, preserve uncertainty, and "
-                "reopen prior directions when new evidence or capability appears. Model text "
-                "and exploration records are never verified evidence. Set commit_lifecycle_gate "
-                "to true only when submitting evidence for the current gate. Tactical records "
-                "may set priority (0-100, higher first), intent_id, and parent_intent_id."
-            ),
+            content=TACTICAL_SYSTEM,
             protected=True,
             source_type="system_base",
-            source_id="model-loop-v2",
+            source_id="model-loop-v4",
         )
         self.ledger.append(
             run_id=run_id,
@@ -404,16 +398,7 @@ class ContextSelector:
             view.run.run_id,
             token_budget=resource_budget,
         )
-        system_invariant = (
-            "You are the primary tactical agent. Runtime owns deterministic invariants, "
-            "evidence promotion, budgets, cleanup, and terminal decisions. The current "
-            "action is a quality gate, not a prescribed tactic. Generate and prioritize "
-            "search nodes yourself, use native tool calls, preserve uncertainty, and reopen "
-            "prior directions when new evidence or capability appears. Model text and "
-            "exploration records are never verified evidence. Set commit_lifecycle_gate "
-            "to true only when submitting evidence for the current gate. Tactical records "
-            "may set priority (0-100, higher first), intent_id, and parent_intent_id."
-        )
+        system_invariant = TACTICAL_SYSTEM
         fixed_projection = (
             [
                 {"role": "system", "content": {"system_invariant": system_invariant}},
@@ -549,7 +534,8 @@ class ContextSelector:
             if not window or projected_tokens(projected_with_summary) + reserve <= window:
                 projected.append(summary_message)
                 chosen_summaries = (latest,)
-        projected.extend({"role": item.role, "content": item.content} for item in selected)
+        projected.extend({"role": item.role, "content": item.content,
+                          **({"source_request_id": item.source_id} if item.source_type == "model_response" else {})} for item in selected)
         source_projection.extend(
             {"summary_id": item.summary_id, "summary_hash": item.summary_hash}
             for item in chosen_summaries
@@ -643,7 +629,6 @@ class ContextSelector:
     def _estimate_tokens(self, value: Any) -> int:
         raw = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
         return max(1, math.ceil(len(raw) / self.fallback_bytes_per_token)) if raw else 0
-
     @staticmethod
     def _atomic_groups(
         messages: Sequence[ConversationMessageRecord],
@@ -702,6 +687,7 @@ class ContextSelector:
             {},
         )
         return {
+            "current_task": current_task(self.service, view, state),
             "original_goal": {
                 "goal_id": view.goal.goal_id,
                 "objective": view.goal.objective,
@@ -751,44 +737,4 @@ class ContextSelector:
         }
 
     def _retained_tactical_state(self, run_id: str) -> dict[str, Any]:
-        hypotheses: list[Mapping[str, Any]] = []
-        evidence_refs: list[str] = []
-        artifact_refs: list[str] = []
-        seen_hypotheses: set[str] = set()
-
-        def visit(value: Any, key: str = "") -> None:
-            if isinstance(value, Mapping):
-                if key == "hypotheses":
-                    for item in value.values():
-                        visit(item, "hypotheses")
-                for item_key, item_value in value.items():
-                    normalized = str(item_key)
-                    if normalized in {"evidence_ref", "evidence_id"} and isinstance(item_value, str):
-                        evidence_refs.append(item_value)
-                    elif normalized == "artifact_ref" and isinstance(item_value, str):
-                        artifact_refs.append(item_value)
-                    elif normalized == "hypotheses" and isinstance(item_value, Sequence) and not isinstance(item_value, (str, bytes)):
-                        for hypothesis in item_value:
-                            if isinstance(hypothesis, Mapping):
-                                digest = contract_hash(hypothesis)
-                                if digest not in seen_hypotheses:
-                                    seen_hypotheses.add(digest)
-                                    hypotheses.append(dict(hypothesis))
-                    visit(item_value, normalized)
-            elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-                for item in value:
-                    if key == "evidence_refs" and isinstance(item, str):
-                        evidence_refs.append(item)
-                    elif key == "artifact_refs" and isinstance(item, str):
-                        artifact_refs.append(item)
-                    else:
-                        visit(item, key)
-
-        for message in self.ledger.messages(run_id):
-            if message.source_type != "model_request_projection":
-                visit(message.content)
-        return {
-            "unverified_hypotheses": hypotheses,
-            "referenced_evidence": list(dict.fromkeys(evidence_refs)),
-            "referenced_artifacts": list(dict.fromkeys(artifact_refs)),
-        }
+        return retained_tactical_state(self.ledger.messages(run_id))

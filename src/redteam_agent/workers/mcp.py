@@ -54,9 +54,12 @@ class McpWorker:
             arguments=arguments,
             idempotency_key=task.idempotency_key,
             timeout_seconds=task.timeout_seconds,
-            metadata={"worker_kind": self.kind},
+            metadata={**dict(task.metadata), "worker_kind": self.kind},
         )
+        definition = None
+        invoking = False
         try:
+            definition = next((item for item in self.tools.discover() if item.qualified_name == tool_name), None)
             tool_result = self.tools.reconcile(call)
             if self.records.cancel_requested(task.task_id):
                 cancelled = self.records.transition(
@@ -69,11 +72,13 @@ class McpWorker:
                 unknown = self.records.mark_interrupted_unknown(task.task_id, owner="mcp-worker")
                 return unknown.result  # type: ignore[return-value]
             if tool_result is None:
+                invoking = True
                 tool_result = self.tools.invoke(call)
         except Exception as exc:
+            uncertain = bool(definition is not None and definition.side_effecting and (invoking or recovering))
             result = WorkerResult(
                 task_id=task.task_id,
-                status="failed",
+                status="unknown" if uncertain else "failed",
                 error=f"mcp_worker_error:{safe_error_text(exc)}",
                 retryable=True,
             )
@@ -81,7 +86,7 @@ class McpWorker:
             if tool_result.call_id != call.call_id or tool_result.tool_name != call.tool_name:
                 result = WorkerResult(
                     task_id=task.task_id,
-                    status="failed",
+                    status="unknown" if definition is not None and definition.side_effecting else "failed",
                     error="mcp_worker_result_identity_mismatch",
                 )
             else:
@@ -108,20 +113,31 @@ class McpWorker:
                 except Exception as exc:
                     result = WorkerResult(
                         task_id=task.task_id,
-                        status="failed",
+                        status="unknown" if definition is not None and definition.side_effecting else "failed",
                         error=f"mcp_worker_artifact_error:{safe_error_text(exc)}",
                         retryable=True,
                     )
                 else:
-                    status = "completed" if tool_result.status == "success" else "failed"
+                    uncertain = (tool_result.status != "success" and tool_result.retryable
+                                 and definition is not None and definition.side_effecting)
+                    status = "completed" if tool_result.status == "success" else "unknown" if uncertain else "failed"
+                    capture_refs = []
+                    if isinstance(tool_result.output, dict):
+                        for reference in tool_result.output.get("artifact_refs", ()):
+                            ref = self.artifacts.get_ref(str(reference), run_id=task.run_id)
+                            if (ref is not None and not ref.metadata.get("provider_private")
+                                    and ref.metadata.get("task_id") == task.task_id
+                                    and ref.metadata.get("worker_kind") == self.kind):
+                                capture_refs.append(ref.artifact_id)
                     result = WorkerResult(
                         task_id=task.task_id,
                         status=status,
                         output=self.artifacts.project(artifact),
-                        artifact_refs=(artifact.artifact_id,),
+                        artifact_refs=tuple(dict.fromkeys((artifact.artifact_id, *capture_refs))),
                         error=tool_result.error,
                         retryable=tool_result.retryable,
-                        metadata={"worker_kind": self.kind, "tool_name": tool_name},
+                        metadata={"worker_kind": self.kind, "tool_name": tool_name,
+                                  "outcome_unknown": uncertain},
                     )
         saved = self.records.transition(
             task.task_id,

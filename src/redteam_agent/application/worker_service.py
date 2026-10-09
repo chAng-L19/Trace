@@ -168,7 +168,7 @@ class WorkerServiceMixin:
         result = WorkerResult.from_dict(submission["result"])
         if result.task_id != record.task.task_id:
             raise ValueError("worker_result_task_mismatch")
-        if expected_status == "unknown" and record.worker_kind not in {"local", "mcp"}:
+        if expected_status == "unknown" and record.worker_kind not in {"local", "mcp", "docker"}:
             raise ValueError("worker_unknown_kind_invalid")
         output_hash = submission.get("output_hash", "")
         artifact_hashes = submission.get("artifact_hashes", {})

@@ -1,5 +1,6 @@
 from __future__ import annotations
 import threading
+import json
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -17,7 +18,7 @@ from ..core import (
 from ..core.contracts import json_mapping
 from ..runtime.model_common import utc_now
 from ..runtime.artifact_store import ArtifactIntegrityError
-from ..runtime.security import safe_error_text
+from ..runtime.security import redact_sensitive, safe_error_text
 from ..runtime.conversation_records import DiagnosticArtifactRecord
 from .contracts import AgentRunView
 from ..runtime.session_journal import ModelObservationRecord, ModelRequestRecord, ModelResponseRecord
@@ -30,8 +31,10 @@ from .agent_loop_support import (
 from .bounded_output import BoundedOutput
 from .model_turn import run_model_turn
 from .model_cycle import run_model_cycles
-from .model_stream import MAX_INLINE_MODEL_STREAM_BYTES, invoke_model_stream
+from .model_stream import MAX_INLINE_MODEL_STREAM_BYTES, invoke_model_stream, project_stream_file
 MAX_INLINE_MODEL_OBSERVATION_BYTES = 64 * 1024
+MAX_TOOL_CALLS_PER_TURN = 32
+MAX_PARALLEL_TOOL_CALLS = 4
 class ModelLoopError(RuntimeError):
     pass
 class ModelIntegrityError(ModelLoopError):
@@ -189,6 +192,7 @@ class AgentLoop(ModelIntegrityMixin):
         selection = self.service.context_selector.prepare_model_context(
             view,
             max_context_tokens=capabilities.max_context_tokens,
+            reserved_output_tokens=capabilities.metadata.get("max_output_tokens") or None,
             force_compaction=force_compaction,
             overflow_retry=overflow_retry,
             tools=tools,
@@ -243,7 +247,7 @@ class AgentLoop(ModelIntegrityMixin):
             ModelRequestRecord(
                 request_id=request.request_id,
                 run_id=request.run_id,
-                prompt_hash=contract_hash(self._prompt_projection(request)),
+                prompt_hash=contract_hash(redact_sensitive(self._prompt_projection(request))),
                 provider=provider,
                 model=request.model,
                 capabilities=capabilities.to_dict(),
@@ -274,10 +278,34 @@ class AgentLoop(ModelIntegrityMixin):
             for index, item in enumerate(normalized.tool_calls)
         ]
         duplicate_call_id = len(call_ids) != len(set(call_ids))
+        refused = (normalized.metadata.get("refusal") or normalized.metadata.get("refusal_text")
+                   or normalized.metadata.get("response_category") == "refusal")
+        batch_overflow = len(call_ids) > MAX_TOOL_CALLS_PER_TURN and not refused
         if claimed_hash and claimed_hash != authoritative_hash:
             status = "integrity_error"
-        if duplicate_call_id:
+        if duplicate_call_id or batch_overflow:
             status = "integrity_error"
+        # Check the provider's wire hash above, then persist and replay only
+        # the credential-reference representation with its own stable hash.
+        response_payload = normalized.to_dict()
+        projected_calls, invalid_arguments = [], []
+        for item, call_id in zip(normalized.tool_calls, call_ids):
+            arguments = item.get("arguments")
+            try:
+                arguments = json_mapping(json.loads(arguments) if isinstance(arguments, str) else arguments,
+                                         field="model_tool_call.arguments")
+            except (ValueError, TypeError):
+                invalid_arguments.append(call_id)
+            projected_calls.append({**dict(item), "arguments": arguments})
+        response_payload["tool_calls"] = projected_calls
+        if invalid_arguments:
+            status = response_payload["status"] = "integrity_error"
+            response_payload["error"] = "model_tool_arguments_invalid"
+            response_payload["metadata"] = {**response_payload["metadata"],
+                "protocol_error": "model_tool_arguments_invalid", "invalid_call_ids": invalid_arguments}
+        response_payload = self.service.runtime.project_model_credentials(request.run_id, response_payload)
+        normalized = ModelResponse.from_dict(response_payload)
+        authoritative_hash = contract_hash(self._response_projection(normalized))
         record = ModelResponseRecord(
             request_id=request.request_id,
             run_id=request.run_id,
@@ -295,6 +323,16 @@ class AgentLoop(ModelIntegrityMixin):
         # is invalid. Account usage before surfacing the integrity failure.
         self._account_response_usage(request, usage)
         if status == "integrity_error":
+            if invalid_arguments:
+                current = self.service.status(request.run_id)
+                if not current.terminal.terminal and current.run.status != "paused_budget":
+                    self.service.runtime.pause_run(request.run_id, reason="model_tool_arguments_invalid")
+                raise ModelIntegrityError("model_tool_arguments_invalid")
+            if batch_overflow:
+                current = self.service.status(request.run_id)
+                if not current.terminal.terminal and current.run.status != "paused_budget":
+                    self.service.runtime.pause_run(request.run_id, reason="model_tool_batch_limit")
+                raise ModelIntegrityError("model_tool_batch_limit")
             if duplicate_call_id:
                 raise ModelIntegrityError("model_tool_call_id_duplicate")
             raise ModelIntegrityError("model_response_hash_mismatch")
@@ -310,6 +348,11 @@ class AgentLoop(ModelIntegrityMixin):
         thread = threading.current_thread()
         accumulator = thread.__dict__.pop("model_partial_stream", None)
         partial_usage = thread.__dict__.pop("model_partial_usage", None)
+        partial_response = thread.__dict__.pop("model_partial_response", None)
+        metadata, finish_reason = {}, ""
+        if isinstance(partial_response, tuple) and partial_response[0] == request.request_id:
+            metadata = self.service.runtime._credential_vault.project(dict(partial_response[1]))
+            finish_reason = str(partial_response[2])
         usage = (
             dict(partial_usage[1])
             if isinstance(partial_usage, tuple) and partial_usage[0] == request.request_id
@@ -327,9 +370,10 @@ class AgentLoop(ModelIntegrityMixin):
                 self._account_response_usage(request, usage)
             if isinstance(accumulator, BoundedOutput):
                 if accumulator.byte_count <= MAX_INLINE_MODEL_STREAM_BYTES:
-                    partial_text = accumulator.inline_text()
+                    partial_text = self.service.runtime._credential_vault.project(accumulator.inline_text())
                 else:
                     accumulator.close()
+                    accumulator = project_stream_file(self, accumulator)
                     artifact = self.service.runtime.artifacts.put_file(
                         accumulator.path,
                         run_id=request.run_id,
@@ -343,7 +387,7 @@ class AgentLoop(ModelIntegrityMixin):
             if isinstance(accumulator, BoundedOutput):
                 accumulator.discard()
         diagnostic_id = ""
-        safe_error = safe_error_text(error)
+        safe_error = safe_error_text(self.service.runtime._credential_vault.project(str(error)))
         if partial_text or partial_artifact:
             payload = {
                 "request_id": request.request_id,
@@ -374,7 +418,8 @@ class AgentLoop(ModelIntegrityMixin):
             text="",
             error=safe_error,
             usage=usage,
-            metadata={"diagnostic_artifact_id": diagnostic_id} if diagnostic_id else {},
+            finish_reason=finish_reason,
+            metadata={**metadata, **({"diagnostic_artifact_id": diagnostic_id} if diagnostic_id else {})},
         )
         projection = response.to_dict()
         projection.pop("response_hash", None)
@@ -403,6 +448,8 @@ class AgentLoop(ModelIntegrityMixin):
     ) -> tuple[ToolResult, ...]:
         if self.tools is None:
             raise ModelLoopError("model_tool_port_required")
+        if len(response.tool_calls) > MAX_TOOL_CALLS_PER_TURN:
+            raise ModelIntegrityError("model_tool_batch_limit")
         self._ensure_executable(view.run.run_id)
         calls = tuple(self._tool_call(view, request, item, index) for index, item in enumerate(response.tool_calls))
         if len(calls) != len({call.call_id for call in calls}):
@@ -413,9 +460,11 @@ class AgentLoop(ModelIntegrityMixin):
             len(pending) > 1
             and request.allow_parallel_tools
             and self.model.capabilities().parallel_tool_calls
+            and all(not item.side_effecting for item in self.tools.discover()
+                    if item.qualified_name in {call.tool_name for call in pending})
         )
         if parallel:
-            with ThreadPoolExecutor(max_workers=len(pending), thread_name_prefix="model-tool") as pool:
+            with ThreadPoolExecutor(max_workers=min(MAX_PARALLEL_TOOL_CALLS, len(pending)), thread_name_prefix="model-tool") as pool:
                 invoked = tuple(
                     pool.map(
                         lambda call: self._invoke_tool(
@@ -428,18 +477,22 @@ class AgentLoop(ModelIntegrityMixin):
                     )
                 )
         else:
-            invoked = tuple(
-                self._invoke_tool(view, request, call, reconcile=reconcile)
-                for call in pending
-            )
+            collected = []
+            for call in pending:
+                result = self._invoke_tool(view, request, call, reconcile=reconcile)
+                collected.append(result)
+                if result.status == "unknown":
+                    break
+            invoked = tuple(collected)
         cached.update((item.call_id, item) for item in invoked)
-        return tuple(cached[call.call_id] for call in calls)
+        return tuple(cached[call.call_id] for call in calls if call.call_id in cached)
     def _ensure_executable(self, run_id: str) -> None:
         if self._is_cancelled(run_id):
             raise ModelInterruptedError("model_loop_cancelled")
         if self._is_interrupted(run_id):
             raise ModelInterruptedError("model_loop_interrupted")
-        status = self.service.status(run_id).run.status
+        with self._lock:
+            status = self.service._enforce_runtime_budget(run_id).run.status
         if status != "waiting_worker":
             raise ModelInterruptedError(f"model_loop_not_executable:{status}")
     def _tool_call(

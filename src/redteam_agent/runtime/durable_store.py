@@ -4,7 +4,7 @@ import hashlib
 import json
 import sqlite3
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Iterator, Mapping, Sequence
 
@@ -578,6 +578,7 @@ class DurableStore(
         *,
         identity_field: str,
         fingerprint_field: str = "",
+        connection: sqlite3.Connection | None = None,
     ) -> bool:
         """Append an event once for an immutable identity/fingerprint pair."""
         event = dict(payload)
@@ -585,7 +586,7 @@ class DurableStore(
         if not identity:
             raise ValueError(f"event_identity_required:{identity_field}")
         fingerprint = str(event.get(fingerprint_field) or "") if fingerprint_field else ""
-        with self.transaction(immediate=True) as connection:
+        with (self.transaction(immediate=True) if connection is None else nullcontext(connection)) as connection:
             rows = connection.execute(
                 "SELECT payload_json FROM operation_events WHERE run_id=? AND event_type=?",
                 (run_id, event_type),

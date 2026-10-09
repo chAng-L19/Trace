@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import argparse
 import base64
 import ipaddress
@@ -18,8 +17,7 @@ from uuid import uuid4
 from ..application import AgentService
 from ..application.contracts import BudgetDelta
 from ..core import ModelPort, contract_hash
-from ..providers import OpenAICompatibleProvider
-from ..application.bootstrap import resolve_provider
+from ..application.bootstrap import resolve_provider, add_model_options, model_options
 from ..runtime.store_common import ImmutableRecordError, StoreConflictError
 from .web_routes import ControlRoutesMixin
 from .web_projection import MAX_SEARCH_RECORDS, search_graph_projection, search_record_projection
@@ -32,15 +30,12 @@ _RAW_EVENT_KEYS = frozenset({"state_snapshot", "payload", "output", "response", 
 _STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/index.html": ("index.html", "text/html; charset=utf-8"),
-    "/app.css": ("app.css", "text/css; charset=utf-8"),
-    "/base.css": ("base.css", "text/css; charset=utf-8"),
-    "/registry.css": ("registry.css", "text/css; charset=utf-8"),
-    "/workbench.css": ("workbench.css", "text/css; charset=utf-8"),
-    "/control.css": ("control.css", "text/css; charset=utf-8"),
-    "/ui.js": ("ui.js", "text/javascript; charset=utf-8"),
-    "/control.js": ("control.js", "text/javascript; charset=utf-8"),
-    "/session.js": ("session.js", "text/javascript; charset=utf-8"),
-    "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+    **{f"/{name}.css": (f"{name}.css", "text/css; charset=utf-8")
+       for name in ("app", "base", "registry", "workbench", "control")},
+    **{f"/{name}.js": (f"{name}.js", "text/javascript; charset=utf-8")
+       for name in ("ui", "layout", "control", "session", "app", "theme", "lucide.min")},
+    "/trace-mark.png": ("trace-mark.png", "image/png"),
+    "/barlow-condensed-bold.ttf": ("barlow-condensed-bold.ttf", "font/ttf"),
 }
 _SECURITY_HEADERS = {
     "Content-Security-Policy": (
@@ -697,13 +692,14 @@ def model_provider_from_environment(
     api_key_env: str = "",
     timeout_seconds: float | None = None,
     max_context_tokens: int | None = None,
-) -> OpenAICompatibleProvider | None:
+    **provider_options: Any,
+) -> ModelPort | None:
     provider, _ = resolve_provider(None, (), {
         "model": model, "base_url": base_url, "api_key_env": api_key_env,
         "timeout_seconds": timeout_seconds, "max_context_tokens": max_context_tokens,
+        **provider_options,
     }, environ=environ)
     return provider
-
 def serve(
     root: Path,
     *,
@@ -716,6 +712,7 @@ def serve(
     api_timeout_seconds: float | None = None,
     model_context_tokens: int | None = None,
     config_paths: list[str] | None = None,
+    provider_options: Mapping[str, Any] | None = None,
 ) -> None:
     # Import lazily so ``python -m redteam_agent.adapters.web`` and the
     # installed ``trace-web`` entry point do not create a cycle:
@@ -734,7 +731,7 @@ def serve(
         model_streaming=model_port.capabilities().streaming if model_port is not None else False,
         config_paths=config_paths, provider_options={"model": model_name, "base_url": api_base_url,
         "api_key_env": api_key_env, "timeout_seconds": api_timeout_seconds,
-        "max_context_tokens": model_context_tokens})
+        "max_context_tokens": model_context_tokens, **(provider_options or {})})
     try:
         is_loopback = ipaddress.ip_address(host).is_loopback
     except ValueError:
@@ -765,6 +762,7 @@ def serve(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="trace-web")
+    add_model_options(parser)
     agent_home = Path(os.environ.get("REDTEAM_AGENT_HOME") or Path.home() / ".redteam-agent")
     parser.add_argument("--root", type=Path, default=Path(os.environ.get("TRACE_HOME") or agent_home / "operations"))
     parser.add_argument("--config", action="append", default=[])
@@ -779,7 +777,7 @@ def main(argv: list[str] | None = None) -> int:
     # SIGTERM (Docker/systemd) follows the same cleanup path as Ctrl+C.
     previous_sigterm = signal.signal(signal.SIGTERM, signal.default_int_handler)
     try:
-        serve(arguments.root.expanduser().resolve(), host=arguments.host, port=arguments.port, model_name=arguments.model, api_base_url=arguments.api_base_url, api_key_env=arguments.api_key_env, api_timeout_seconds=arguments.api_timeout_seconds, model_context_tokens=arguments.model_context_tokens, config_paths=arguments.config)
+        serve(arguments.root.expanduser().resolve(), host=arguments.host, port=arguments.port, model_name=arguments.model, api_base_url=arguments.api_base_url, api_key_env=arguments.api_key_env, api_timeout_seconds=arguments.api_timeout_seconds, model_context_tokens=arguments.model_context_tokens, config_paths=arguments.config, provider_options=model_options(arguments))
     finally:
         signal.signal(signal.SIGTERM, previous_sigterm)
     return 0

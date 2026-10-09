@@ -9,7 +9,11 @@ from typing import Any, TYPE_CHECKING
 from ..core import ToolCall, ToolDefinition, ToolPort, ToolResult, WorkerTask, contract_hash
 from ..runtime.security import safe_error_text
 from ..runtime.tool_broker import ToolBroker
+from ..runtime.tool_prepare import TOOL_NAMES
 from .bounded_output import BoundedOutput
+from .execution_steps import ExecutionSteps
+from .evidence_records import EvidenceRecords
+from .resource_tools import RESOURCE_TOOLS, invoke_resource_tool
 
 if TYPE_CHECKING:
     from .agent_service import AgentService
@@ -42,19 +46,48 @@ _WORKER_RESULT = {
 _RESULT_REQUIRED = ("task_id", "worker_kind", "idempotency_key", "input_hash", "result", "reason")
 
 
-def _definition(name: str, description: str, properties: dict, required=(), *, write=False):
+def _definition(name: str, description: str, properties: dict, required=(), *, write=False, capability=""):
     return ToolDefinition(
         qualified_name=f"agent:{name}", name=name, server="agent",
         description=description + " Bound to the current run; run_id is not accepted.",
         input_schema={"type": "object", "properties": properties,
                       "required": list(required), "additionalProperties": False},
-        capabilities=("worker_dispatch" if write else "agent_context",),
+        capabilities=(capability or ("worker_dispatch" if write else "agent_context"),),
         version="1", side_effecting=write, supports_reconcile=True,
         metadata={"source": "application" if write else "builtin"},
     )
 
 
 _TOOLS = (
+    _definition("prepare_tools", "Install requested supported dependencies on demand, validate results and refresh this run's tool catalog. Failed installs return diagnostics; choose only dependencies needed for the task.", {
+        "tools": {"type": "array", "minItems": 1, "items": {"type": "string", "enum": list(TOOL_NAMES)}},
+        "offline": {"type": "boolean"}, "timeout": {"type": "number", "minimum": 1, "maximum": 3600},
+    }, ("tools",), write=True, capability="tool_preparation"),
+    *RESOURCE_TOOLS,
+    _definition("search_execution_steps", "Search actual model tool calls, Runtime attempts and all workers, including failed/cancelled records. Follow read_execution_step for raw details.", {
+        **_PAGE, "query": _TEXT, "kind": {"type": "string", "enum": ["model", "attempt", "worker"]},
+        "status": _TEXT, "task_id": _TEXT,
+    }),
+    _definition("read_execution_step", "Expand a run-bound execution step with original invocation, result/artifact references and paginated lifecycle events. CAS bytes are available through read_artifact.", {
+        "step_id": _TEXT, **_PAGE,
+    }, ("step_id",)),
+    _definition("evidence_manifest", "Record/read/list immutable HTTP exchange manifests. CAS hashes validate bytes; associations remain model_declared and never bypass EvidenceGate. Each exchange must reference artifacts belonging to an existing execution step.", {
+        "mode": {"type": "string", "enum": ["record", "read", "list"]},
+        "manifest_id": _TEXT, "target": _TEXT, **_PAGE,
+        "exchanges": {"type": "array", "minItems": 1, "maxItems": 30, "items": {
+            "type": "object", "properties": {
+                "role": {"type": "string", "enum": ["baseline", "proof", "control"]},
+                "source_step_id": _TEXT, "request_artifact_id": _TEXT, "response_artifact_id": _TEXT,
+                "request_body_artifact_id": _TEXT, "response_body_artifact_id": _TEXT,
+            }, "required": ["role", "source_step_id", "request_artifact_id", "response_artifact_id"],
+            "additionalProperties": False,
+        }},
+    }, ("mode",), write=True, capability="evidence_management"),
+    _definition("report_revision", "Manage immutable report revisions: sources returns a source_hash; record requires that expected_source_hash plus a report CAS artifact. read detects stale source changes or corrupted bytes. Reports remain model_declared.", {
+        "mode": {"type": "string", "enum": ["sources", "record", "read", "list"]},
+        "report_id": _TEXT, "revision_id": _TEXT, "target": _TEXT,
+        "expected_source_hash": _TEXT, "content_artifact_id": _TEXT, **_PAGE,
+    }, ("mode",), write=True, capability="evidence_management"),
     _definition("export_session", "Read session branches and a page of journal tree nodes.", _PAGE),
     _definition("transcript", "Read a page of the active branch's conversation messages.", _PAGE),
     _definition("artifacts", "List a page of artifact metadata.", _PAGE),
@@ -91,6 +124,7 @@ class AgentToolAdapter(ToolPort):
         self.service = service
         self.delegate = delegate
         self._active: dict[str, list[tuple[str, str]]] = {}
+        self._preparing: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
 
     def discover(self) -> tuple[ToolDefinition, ...]:
@@ -124,7 +158,28 @@ class AgentToolAdapter(ToolPort):
             if len(arguments.get("required_artifacts", ())) > 100:
                 raise ValueError("worker_required_artifacts_too_many")
             name = _BY_NAME[call.tool_name].name
-            if name == "submit_worker":
+            if name == "prepare_tools":
+                from ..runtime.tool_prepare import prepare
+                if reconcile:
+                    return None
+                cancellation_id = str(call.metadata.get("cancellation_id") or call.call_id)
+                event = threading.Event()
+                with self._lock:
+                    self._preparing[cancellation_id] = event
+                try:
+                    output = prepare(arguments["tools"], offline=arguments.get("offline", False),
+                                     timeout=min(arguments.get("timeout", 600), call.timeout_seconds or 600),
+                                     cancel_event=event)
+                finally:
+                    with self._lock:
+                        self._preparing.pop(cancellation_id, None)
+                catalog = self.service.tools.catalog(call.run_id)
+                output["catalog_revision"] = catalog.revision
+                output["available_tools"] = [tool.qualified_name for tool in catalog.tools]
+                if not output["success"]:
+                    return ToolResult(call_id=call.call_id, tool_name=call.tool_name, status="failed",
+                                      error="tool_preparation_failed", output=self._bounded(call, output))
+            elif name == "submit_worker":
                 task = self._worker_task(call, arguments)
                 cancellation_id = str(call.metadata.get("cancellation_id") or call.call_id)
                 if reconcile:
@@ -159,6 +214,16 @@ class AgentToolAdapter(ToolPort):
                 "next_offset": offset + len(selected) if offset + len(selected) < len(items) else None}
 
     def _read_or_cancel(self, run_id: str, name: str, arguments: dict) -> Any:
+        if name in {tool.name for tool in RESOURCE_TOOLS}:
+            return invoke_resource_tool(self.service, run_id, name, arguments)
+        if name == "search_execution_steps":
+            return ExecutionSteps(self.service).search(run_id, **arguments)
+        if name == "read_execution_step":
+            return ExecutionSteps(self.service).read(run_id, **arguments)
+        if name in {"evidence_manifest", "report_revision"}:
+            records = EvidenceRecords(self.service)
+            operation = records.manifest if name == "evidence_manifest" else records.report
+            return self.service.control_write(operation, run_id, arguments) if arguments["mode"] == "record" else operation(run_id, arguments)
         if name == "export_session":
             exported = self.service.export_session(run_id)
             return {"session": exported["session"],
@@ -228,6 +293,10 @@ class AgentToolAdapter(ToolPort):
 
     def cancel(self, call_id: str) -> bool:
         with self._lock:
+            preparing = self._preparing.get(call_id)
+            if preparing is not None:
+                preparing.set()
+                return True
             active = tuple(set(self._active.get(call_id, ())))
         if len(active) > 1:
             return False

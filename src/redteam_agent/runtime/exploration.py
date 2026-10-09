@@ -3,10 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Any, Mapping, Sequence
 
-from ..core import ExplorationRecord, contract_hash
+from ..core import ExplorationRecord, ToolResult, contract_hash
 from ..core.contracts import bounded_int, json_mapping, required_text, unique_strings
 from .store_common import ImmutableRecordError, _dump, _load
 from .model_common import utc_now
+from .evidence_gate import EvidenceGate
+from .artifact_store import ArtifactIntegrityError
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,9 +21,13 @@ class ReconDigestRecord:
     digest: Mapping[str, Any]
     digest_hash: str
     created_at: str
+    source_context: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"digest_id": self.digest_id, "run_id": self.run_id, "source_record_ids": list(self.source_record_ids), "source_message_ids": list(self.source_message_ids), "source_hash": self.source_hash, "digest": dict(self.digest), "digest_hash": self.digest_hash, "created_at": self.created_at}
+        result = {"digest_id": self.digest_id, "run_id": self.run_id, "source_record_ids": list(self.source_record_ids), "source_message_ids": list(self.source_message_ids), "source_hash": self.source_hash, "digest": dict(self.digest), "digest_hash": self.digest_hash, "created_at": self.created_at}
+        if self.source_context:
+            result["source_context"] = dict(self.source_context)
+        return result
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "ReconDigestRecord":
@@ -34,6 +40,7 @@ class ReconDigestRecord:
             digest=json_mapping(payload.get("digest"), field="recon_digest.digest"),
             digest_hash=required_text(payload.get("digest_hash"), "recon_digest_hash"),
             created_at=required_text(payload.get("created_at"), "recon_digest_created_at"),
+            source_context=json_mapping(payload.get("source_context"), field="recon_digest.source_context"),
         )
 
 
@@ -130,7 +137,19 @@ class ExplorationStoreMixin:
             source_messages = [{"message_id": key, "content_hash": messages[key].content_hash} for key in record.source_message_ids]
         except KeyError as exc:
             raise ImmutableRecordError(f"recon_digest_source_missing:{exc.args[0]}") from exc
-        return contract_hash({"records": records, "messages": source_messages})
+        projection = {"records": records, "messages": source_messages}
+        if record.source_context:
+            context = dict(record.source_context)
+            for name, values in (("attempts", self.tactical_attempts(record.run_id)),
+                                 ("evidence", self.evidence(record.run_id))):
+                identity = "attempt_id" if name == "attempts" else "evidence_id"
+                available = {getattr(item, identity): contract_hash(item.to_dict()) for item in values}
+                expected = context.get(name)
+                if (not isinstance(expected, Mapping)
+                        or any(available.get(key) != value for key, value in expected.items())):
+                    raise ImmutableRecordError(f"recon_digest_execution_source_mismatch:{record.digest_id}")
+            projection["context"] = context
+        return contract_hash(projection)
 
     def save_tactical_attempt(self, record: TacticalAttemptRecord) -> tuple[TacticalAttemptRecord, bool]:
         serialized, attempt_hash = _dump(record.to_dict()), contract_hash(record.to_dict())
@@ -209,11 +228,13 @@ class ExplorationLedger:
         for artifact_id in record.artifact_refs:
             try:
                 self.artifacts.verify(artifact_id, run_id=record.run_id)
-            except (KeyError, ValueError) as exc:
+            except (KeyError, ValueError, ArtifactIntegrityError) as exc:
                 raise ExplorationValidationError(
                     f"exploration_artifact_invalid:{artifact_id}"
                 ) from exc
         self._validate_negative_semantics(record)
+        if record.kind == "verified_negative":
+            self._validate_negative_sources(replace(record, target=target), state, evidence_by_id)
         resolved = replace(
             record,
             target=target,
@@ -222,6 +243,91 @@ class ExplorationLedger:
         saved = self.store.save_exploration_record(resolved)
         self._auto_reopen(saved)
         return saved
+
+    def _validate_negative_sources(self, record: ExplorationRecord, state: Any,
+                                   evidence_by_id: Mapping[str, Any]) -> None:
+        self._validate_negative_semantics(record)
+        measured_sources: list[Any] = []
+        for evidence_id in record.evidence_refs:
+            node = evidence_by_id.get(evidence_id)
+            if (node is None or not EvidenceGate.same_scope(node, run_id=record.run_id,
+                    branch_id=state.branch_id, target=record.target, max_plan_revision=state.plan_revision)
+                    or not EvidenceGate.execution_tool(node.tool)
+                    or node.artifact_type in {"hypothesis_queue", "coverage_report", "final_report"}):
+                raise ExplorationValidationError("verified_negative_evidence_execution_scope_mismatch")
+            measured_sources.append(node.payload)
+        executed = self._executed_artifacts(state, record.target) if record.artifact_refs else {}
+        measured_sources.extend(executed[artifact_id] for artifact_id in record.artifact_refs if artifact_id in executed)
+        if not measured_sources:
+            raise ExplorationValidationError("verified_negative_execution_source_required")
+        paths = record.metadata.get("observation_paths", {})
+        if not isinstance(paths, Mapping) or any(
+            not isinstance(paths.get(key, key), str) or not paths.get(key, key).strip() or not any(
+                found and contract_hash(actual) == contract_hash(value)
+                for found, actual in (EvidenceGate._measurement(source, paths.get(key, key))
+                                      for source in measured_sources)
+            ) for key, value in record.observations.items()
+        ):
+            raise ExplorationValidationError("verified_negative_observation_unproven")
+
+    def _executed_artifacts(self, state: Any, target: str) -> dict[str, Any]:
+        """Accept CAS results only when a successful journaled tool call produced them."""
+        source = self.journal or self.store
+        requests = {item.request_id: item for item in source.model_requests(state.run_id)}
+        responses = {item.request_id: item for item in source.model_responses(state.run_id)}
+        observations = {(item.request_id, item.call_id): item
+                        for item in source.model_observations(state.run_id)}
+        accepted: dict[str, Any] = {}
+        for attempt in self._attempts(state.run_id):
+            request = requests.get(attempt.request_id)
+            response = responses.get(attempt.request_id)
+            observation = observations.get((attempt.request_id, attempt.call_id))
+            artifact_id = str(attempt.payload.get("raw_artifact_ref") or "")
+            if (attempt.status != "success" or not artifact_id or request is None
+                    or response is None or observation is None or observation.status != "success"
+                    or observation.action_id != attempt.lifecycle_action_id
+                    or response.status not in {"completed", "success"}):
+                continue
+            metadata = request.request.get("metadata", {})
+            revision = metadata.get("plan_revision") if isinstance(metadata, Mapping) else None
+            if (request.request.get("run_id") != state.run_id or not isinstance(metadata, Mapping)
+                    or metadata.get("branch_id") != state.branch_id
+                    or metadata.get("action_id") != attempt.lifecycle_action_id
+                    or type(revision) is not int or not 1 <= revision <= state.plan_revision):
+                continue
+            calls = response.response.get("tool_calls", ())
+            call = next((item for index, item in enumerate(calls) if isinstance(item, Mapping)
+                         and str(item.get("call_id") or item.get("id") or f"call-{index}").strip()
+                         == attempt.call_id), None)
+            if call is None:
+                continue
+            try:
+                result = ToolResult.from_dict(self.artifacts.read_json(artifact_id, run_id=state.run_id))
+            except (KeyError, ValueError, OSError, TypeError, ArtifactIntegrityError):
+                continue
+            actual_hash = contract_hash({"call_id": result.call_id, "status": result.status,
+                "tool_name": result.tool_name, "output": result.output, "error": result.error,
+                "retryable": result.retryable})
+            if (result.status != "success" or result.call_id != attempt.call_id
+                    or result.tool_name != observation.tool_name
+                    or result.tool_name != str(call.get("tool_name") or call.get("name") or call.get("tool") or "").strip()
+                    or not EvidenceGate.execution_tool(result.tool_name)
+                    or result.input_hash != observation.input_hash
+                    or result.output_hash != observation.output_hash or actual_hash != observation.output_hash
+                    or attempt.payload.get("input_hash") != result.input_hash
+                    or attempt.payload.get("output_hash") != result.output_hash):
+                continue
+            arguments = call.get("arguments", {})
+            declared = result.output.get("target") if isinstance(result.output, Mapping) else None
+            argument_target = arguments.get("target") if isinstance(arguments, Mapping) else None
+            if declared and argument_target and declared != argument_target:
+                continue
+            declared = declared or argument_target
+            if declared is None and len(state.goal.targets) == 1:
+                declared = state.goal.targets[0]
+            if declared == target:
+                accepted[artifact_id] = result.output
+        return accepted
 
     @staticmethod
     def _validate_negative_semantics(record: ExplorationRecord) -> None:
@@ -312,6 +418,8 @@ class ExplorationLedger:
         # standalone lead is still useful navigation state until a lifecycle
         # record for the same hypothesis exists.
         records = self._records(run_id)
+        state = self.store.load_operation(run_id)
+        evidence_by_id = {item.evidence_id: item for item in self.evidence_graph.list(run_id)}
         lifecycle_kinds = {"hypothesis", "reopen", "observed_miss", "verified_negative"}
         lifecycle_ids = {
             record.hypothesis_id
@@ -325,6 +433,14 @@ class ExplorationLedger:
                 record.kind == "lead" and record.hypothesis_id not in lifecycle_ids
             ):
                 continue
+            if record.kind == "verified_negative" and record.status == "closed":
+                try:
+                    self._validate_negative_sources(record, state, evidence_by_id)
+                except ExplorationValidationError as error:
+                    # Historical declarations stay immutable; only navigation loses its closed verdict.
+                    record = replace(record, kind="observed_miss", status="suspended",
+                        uncertainty=record.uncertainty or "Negative execution source needs verification",
+                        metadata={**record.metadata, "source_verification_error": str(error)})
             if record.hypothesis_id not in latest:
                 order.append(record.hypothesis_id)
             latest[record.hypothesis_id] = record
@@ -549,6 +665,15 @@ class ExplorationLedger:
                 }
                 for message_id in selected_message_ids
             ],
+            "context": {
+                "state": {"state_version": state.state_version, "run_status": state.status,
+                          "lifecycle_action_id": state.current_action_id, "targets": list(state.goal.targets),
+                          "branch_id": state.branch_id, "plan_revision": state.plan_revision},
+                "session_branch_id": self.journal.active_branch_id(run_id) if self.journal is not None else "",
+                "navigation_hash": contract_hash([item.to_dict() for item in current]),
+                "attempts": {item.attempt_id: contract_hash(item.to_dict()) for item in attempts},
+                "evidence": {item.evidence_id: contract_hash(item.to_dict()) for item in evidence},
+            },
         }
         source_hash = contract_hash(source_projection)
         digest_hash = contract_hash(digest)
@@ -570,5 +695,6 @@ class ExplorationLedger:
             digest=digest,
             digest_hash=digest_hash,
             created_at=utc_now(),
+            source_context=source_projection["context"],
         )
         return self.store.save_recon_digest(record)

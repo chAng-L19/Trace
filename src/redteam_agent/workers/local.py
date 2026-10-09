@@ -114,6 +114,8 @@ class LocalWorker:
             if env_overlay is not None and not isinstance(env_overlay, Mapping):
                 raise ValueError("local_worker_env_invalid")
             environment = self.workspaces.environment(env_overlay or {})
+            environment = self._environment(task, environment)
+            argv = self._command(task, workspace, cwd)
         except (KeyError, OSError, ValueError) as exc:
             return self._finish(
                 task,
@@ -254,6 +256,12 @@ class LocalWorker:
 
     def reconcile(self, idempotency_key: str) -> WorkerResult | None:
         return self.records.reconcile_kind(self.kind, idempotency_key)
+
+    def _command(self, task: WorkerTask, workspace: Any, cwd: Path) -> Sequence[str]:
+        return task.payload["argv"]
+
+    def _environment(self, task: WorkerTask, environment: dict[str, str]) -> dict[str, str]:
+        return environment
 
     def cancel(self, task_id: str) -> bool:
         if not self.records.request_cancel(task_id):

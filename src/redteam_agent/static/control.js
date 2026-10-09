@@ -90,6 +90,17 @@ function openProviderEditor(item = null) {
       field.value = value ?? "";
   }
   $("#provider-clear-key").checked = false;
+  form.elements.provider.onchange = () => {
+    const anthropic = form.elements.provider.value === "anthropic";
+    const url = form.elements.base_url;
+    if (["https://api.openai.com/v1", "https://api.anthropic.com/v1"].includes(url.value))
+      url.value = anthropic ? "https://api.anthropic.com/v1" : "https://api.openai.com/v1";
+    form.elements.api_key_env.placeholder = anthropic ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
+    if (!anthropic) {
+      form.elements.thinking_type.value = "";
+      form.elements.thinking_budget_tokens.value = "0";
+    }
+  };
   $("#provider-dialog").showModal();
 }
 
@@ -181,29 +192,50 @@ async function loadMcp() {
     const main = document.createElement("div");
     main.className = "setting-main";
     const title = document.createElement("strong");
-    title.textContent = item.server_id;
+    title.textContent = item.source === "catalog" && item.preset === "playwright"
+      ? "Playwright MCP" : item.server_id;
     const meta = document.createElement("code");
-    meta.textContent = `${item.transport} · ${item.status?.status || "configured"} · ${item.status?.tool_count || 0} tools`;
+    const statuses = { available: "待接入", configured: "已配置", connected: "已连接",
+      catalogued: "按运行连接", disabled: "已停用", failed: "连接失败", duplicate: "重复配置" };
+    const status = item.status?.status || "configured";
+    const source = { managed: "网页托管", config: "配置文件", catalog: "公开 MCP" }[item.source] || "网页托管";
+    meta.textContent = `${item.transport} · ${statuses[status] || status} · ${item.status?.tool_count || 0} tools · ${source}`;
     main.append(title, meta);
+    if (item.status?.error) {
+      const error = document.createElement("small");
+      error.className = "setting-detail";
+      error.textContent = item.status.error;
+      main.append(error);
+    }
     const actions = document.createElement("div");
     actions.className = "button-row";
-    const edit = document.createElement("button");
-    edit.type = "button";
-    edit.textContent = "编辑";
-    edit.addEventListener("click", () => openMcpEditor(item));
-    const remove = document.createElement("button");
-    remove.type = "button";
-    remove.className = "danger";
-    remove.textContent = "移除";
-    remove.addEventListener("click", async () => {
-      if (!confirm("确认移除 MCP 服务器？")) return;
-      await api(`/api/mcp/${encodeURIComponent(item.server_id)}`, {
-        method: "DELETE",
-        headers: commandHeaders(),
+    if (item.source === "catalog") {
+      const connect = document.createElement("button");
+      connect.type = "button";
+      connect.className = "primary";
+      connect.textContent = "配置接入";
+      connect.addEventListener("click", () => openMcpEditor(item));
+      actions.append(connect);
+    }
+    if (!item.source || item.source === "managed") {
+      const edit = document.createElement("button");
+      edit.type = "button";
+      edit.textContent = "编辑";
+      edit.addEventListener("click", () => openMcpEditor(item));
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "danger";
+      remove.textContent = "移除";
+      remove.addEventListener("click", async () => {
+        if (!confirm("确认移除 MCP 服务器？")) return;
+        await api(`/api/mcp/${encodeURIComponent(item.server_id)}`, {
+          method: "DELETE",
+          headers: commandHeaders(),
+        });
+        await loadMcp();
       });
-      await loadMcp();
-    });
-    actions.append(edit, remove);
+      actions.append(edit, remove);
+    }
     row.append(main, actions);
     return row;
   });
@@ -379,6 +411,8 @@ async function submitProvider(event) {
   const payload = Object.fromEntries(data.entries());
   payload.timeout_seconds = Number(payload.timeout_seconds);
   payload.max_context_tokens = Number(payload.max_context_tokens);
+  payload.max_output_tokens = Number(payload.max_output_tokens);
+  payload.thinking_budget_tokens = Number(payload.thinking_budget_tokens);
   payload.clear_api_key = data.get("clear_api_key") === "on";
   try {
     await api("/api/providers", {

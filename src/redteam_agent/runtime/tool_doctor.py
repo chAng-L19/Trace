@@ -60,7 +60,8 @@ def _mcp_status(configs: list[Path], root: Path) -> list[dict[str, Any]]:
                          "transport": spec.transport, "status": "disabled" if not spec.enabled else
                          "configured_unprobed" if executable or spec.transport == "http" else "missing_launcher",
                          "launcher_path": executable, "capabilities": "not_discovered",
-                         "repair": "trace mcp-doctor --config " + subprocess.list2cmdline([str(path)])})
+                         "repair": ("Install Node.js (includes npx), then " if rendered.command in {"npx", "npx.cmd"} and not executable else "")
+                                   + "trace mcp-doctor --config " + subprocess.list2cmdline([str(path)])})
     return rows
 
 
@@ -110,17 +111,24 @@ def doctor(*, root: Path | None = None, configs: list[Path] | None = None,
                            fallback_capabilities=["binary_metadata", "binary_strings", "disassembly"],
                            missing_capabilities=["graph_analysis", "radare2_commands", "decompile"])
     rows.append(reverse)
-    cloud = (
-        ("aws", "aws", 'python -m pip install "awscli>=1,<2"'),
-        ("azure", "az", 'python -m pip install "azure-cli>=2,<3"'),
-        ("gcp", "gcloud", "conda install -c conda-forge google-cloud-sdk"),
-    )
+    from .tool_prepare import CLOUD_PACKAGES
+    cloud = [(name, values[2], f"trace setup {name}") for name, values in CLOUD_PACKAGES.items()]
+    cloud.extend((("gcp", "gcloud", "trace setup gcp"), ("aliyun", "aliyun", "trace setup aliyun")))
     for name, command, repair in cloud:
+        if not command:
+            package, module, _ = CLOUD_PACKAGES[name]
+            code, _ = run_probe([sys.executable, "-c", f"import {module}"], timeout=5)
+            rows.append({"name": name, "installed": code == 0, "status": "installed" if code == 0 else "missing",
+                         "source": "python_sdk", "package": package, "runtime_validation": "passed" if code == 0 else "failed",
+                         "authentication": "not_checked", "repair": repair})
+            continue
         executable = resolve_executable(command, root=root)
-        version, validation = _version([executable, "--version"]) if executable else ("", "not_installed")
-        rows.append({"name": name, "installed": bool(executable), "status": "installed" if executable else "missing",
-                     "source": "system" if executable else "missing", "path": executable, "version": version,
-                     "checksum_status": "external_unverified" if executable else "not_installed",
+        version, validation = _version([executable, "version" if name in {"aliyun", "tencent"} else "--version"]) if executable else ("", "not_installed")
+        installed = bool(executable) and validation == "passed"
+        managed = managed_install(name, root) if name in manifest()["tools"] else {}
+        rows.append({"name": name, "installed": installed, "status": "installed" if installed else "missing",
+                     "source": "managed" if managed.get("installed") else "system" if executable else "missing", "path": executable, "version": version,
+                     "checksum_status": managed.get("checksum_status") if managed.get("installed") else "external_unverified" if executable else "not_installed",
                      "runtime_validation": validation, "authentication": "not_checked", "repair": repair})
     by_name = {item["name"]: item for item in rows}
     caps = [

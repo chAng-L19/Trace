@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Mapping
 
 from ..core import ToolResult, contract_hash
@@ -11,6 +12,89 @@ from .agent_loop_support import handle_tool_expand
 class CycleLimit(Exception):
     def __init__(self, view: AgentRunView, progress_hash: str):
         self.view, self.progress_hash = view, progress_hash
+
+
+_EXECUTION_PLAN = re.compile(
+    r"^\s*(?:I(?:\s+will|'ll|\u2019ll)\s+(?:first\s+)?(?:inspect|check|read|run|execute|test|implement|fix|use)\b|"
+    r"Next[, ]+I\s+will\s+(?:inspect|check|read|run|execute|test|implement|fix|use)\b|"
+    r"\u6211(?:\u5c06|\u4f1a)(?:\u5148)?(?:\u68c0\u67e5|\u8bfb\u53d6|\u8fd0\u884c|\u6267\u884c|\u6d4b\u8bd5|\u5b9e\u73b0|\u4fee\u590d|\u4f7f\u7528))",
+    re.IGNORECASE,
+)
+
+
+def nudge_execution_stall(loop, view, request, response):
+    """Correct a declared next action once; ordinary answers are not retries."""
+    envelope = view.goal.metadata.get("intent_envelope", {})
+    decision = str(response.structured_output.get("decision") or "")
+    if (envelope.get("execution_required") is not True or response.tool_calls
+            or response.structured_output.get("tactical_update") is not None
+            or response.metadata.get("refusal") or response.metadata.get("refusal_text")
+            or response.metadata.get("response_category") == "refusal"
+            or decision not in {"", "continue", "execute", "working"}
+            or not (decision or _EXECUTION_PLAN.search(response.text[:512]))):
+        return False
+    run_id = view.run.run_id
+    if any(item.source_type == "model_execution_stall_nudge"
+           for item in loop.service.conversation.messages(run_id)):
+        return False
+    if loop._is_cancelled(run_id) or loop._is_interrupted(run_id):
+        return False
+    current = loop.service._enforce_runtime_budget(run_id)
+    if current.terminal.terminal or current.run.status == "paused_budget":
+        return False
+    if any(item.status in {"waiting_worker", "unknown"}
+           for item in loop.service.worker_records.records(run_id)):
+        return False
+    message = loop.service.conversation.append(
+        run_id=run_id, role="user", protected=False,
+        content=("The previous turn declared a next action without executing it. "
+                 "Continue the current execution task using an available tool and retain "
+                 "its result. If blocked, return an explicit structured decision and "
+                 "the missing prerequisite; do not repeat the plan or claim completion."),
+        source_type="model_execution_stall_nudge", source_id=request.request_id,
+        metadata={"request_id": request.request_id, "attempt": 1},
+    )
+    loop.service.runtime.store.append_event(run_id, "model_execution_stall_recovery", {
+        "request_id": request.request_id, "message_id": message.message_id,
+        "attempt": 1, "limit": 1,
+    })
+    return True
+
+
+def nudge_empty_turn(loop, view, request, response):
+    """Two durable recovery messages per run, using the normal turn budget."""
+    if (response.text.strip() or response.tool_calls
+            or response.structured_output.get("decision")
+            or response.structured_output.get("tactical_update") is not None
+            or response.metadata.get("refusal") or response.metadata.get("refusal_text")
+            or response.metadata.get("response_category") == "refusal"):
+        return False
+    run_id = view.run.run_id
+    nudges = [item for item in loop.service.conversation.messages(run_id)
+              if item.source_type == "model_empty_turn_nudge"]
+    if len(nudges) >= 2:
+        return False
+    if loop._is_cancelled(run_id) or loop._is_interrupted(run_id):
+        return False
+    current = loop.service._enforce_runtime_budget(run_id)
+    if current.terminal.terminal or current.run.status == "paused_budget":
+        return False
+    if any(item.status in {"waiting_worker", "unknown"}
+           for item in loop.service.worker_records.records(run_id)):
+        return False
+    message = loop.service.conversation.append(
+        run_id=run_id, role="user", protected=False,
+        content=("The previous response was empty. Continue the current task with an "
+                 "available tool, or return a substantive response or structured decision. "
+                 "If input is required, return decision=waiting_input."),
+        source_type="model_empty_turn_nudge", source_id=request.request_id,
+        metadata={"request_id": request.request_id, "attempt": len(nudges) + 1},
+    )
+    loop.service.runtime.store.append_event(run_id, "model_empty_turn_recovery", {
+        "request_id": request.request_id, "message_id": message.message_id,
+        "attempt": len(nudges) + 1, "limit": 2,
+    })
+    return True
 
 
 def run_model_cycles(loop, run_id, *, max_actions=None, run_until_pause=True, max_cycles=32):
@@ -86,6 +170,11 @@ def run_cycle(loop, run_id: str, *, max_actions: int | None = None) -> AgentRunV
             response, request, existing = recovered
             reconcile = True
             loop.service.conversation.record_model_response(run_id, response)
+        refused = (response.metadata.get("refusal") or response.metadata.get("refusal_text")
+                   or response.metadata.get("response_category") == "refusal")
+        if refused:
+            # Consume before budget/cancel returns so restart cannot replay mixed calls.
+            loop._mark_turn_consumed(view, request, "model_refusal")
         if loop._is_cancelled(run_id):
             return loop.service.status(run_id)
         if loop._is_interrupted(run_id):
@@ -93,6 +182,18 @@ def run_cycle(loop, run_id: str, *, max_actions: int | None = None) -> AgentRunV
         current = loop.service.status(run_id)
         if current.run.status == "paused_budget":
             return current
+        pending = loop.service.worker_records.records(run_id)
+        if any(item.status == "unknown" for item in pending):
+            loop.service.runtime.pause_run(run_id, reason="worker_result_unknown")
+            return loop.service.status(run_id)
+        if any(item.status == "waiting_worker" for item in pending):
+            return current
+        if refused:
+            budget_view = loop.service._record_model_usage(run_id, request.request_id, response.usage)
+            if budget_view.run.status == "paused_budget":
+                return budget_view
+            loop.service.runtime.pause_run(run_id, reason="model_refusal")
+            return loop.service.status(run_id)
         tactical_update = loop._record_tactical_update(view, request, response)
         budget_view = loop.service._record_model_usage(
             run_id,
@@ -108,6 +209,15 @@ def run_cycle(loop, run_id: str, *, max_actions: int | None = None) -> AgentRunV
             continue
         if not response.tool_calls:
             loop._mark_turn_consumed(view, request, "model_response_no_tools")
+            if (nudge_empty_turn(loop, view, request, response)
+                    or nudge_execution_stall(loop, view, request, response)):
+                view = loop.service._resume_runtime(run_id, max_actions=max_actions, model_led=True)
+                continue
+            # A concurrent pause/cancel must not be overwritten by recovery.
+            current = loop.service.status(run_id)
+            if (loop._is_cancelled(run_id) or loop._is_interrupted(run_id)
+                    or current.terminal.terminal or current.run.status == "paused_budget"):
+                return current
             loop.service.runtime.pause_run(run_id, reason="waiting_input" if response.structured_output.get("decision") in {"waiting_input", "request_input", "need_input"} else "model_no_progress")
             return loop.service.status(run_id)
         try:
@@ -119,6 +229,15 @@ def run_cycle(loop, run_id: str, *, max_actions: int | None = None) -> AgentRunV
                 reconcile=reconcile,
             )
         except loop._interrupted_error:
+            return loop.service.status(run_id)
+        unknown = (any(item.status == "unknown" for item in results)
+                   or any(item.status == "unknown" for item in loop.service.worker_records.records(run_id)))
+        if unknown:
+            artifact_ids = loop.service.conversation.record_tool_results(request.request_id, run_id, results)
+            loop._record_tactical_attempts(view, request, response, results,
+                                          artifact_ids=artifact_ids, tactical_update=tactical_update)
+            loop._mark_turn_consumed(view, request, "worker_result_unknown")
+            loop.service.runtime.pause_run(run_id, reason="worker_result_unknown")
             return loop.service.status(run_id)
         if loop._is_cancelled(run_id):
             return loop.service.cancel(run_id, reason="model_loop_cancelled")

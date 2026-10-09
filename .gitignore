@@ -24,6 +24,8 @@ state/
 artifacts/
 playwright-output/
 test-results/
-docs/acceptance/
+/docs/
+/agent.md
+/TRACE_PROJECT_PLAN.md
 codex-redteam-mode-v2.1.0-backup/
 /INDEPENDENT_AGENT_EVOLUTION_PLAN.md

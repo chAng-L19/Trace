@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -25,11 +26,28 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 from uuid import uuid4
 
+from .security import safe_error_text
 from .managed_tools import (_read_json, asset_identity, chromium_executable, contained_path,
                             managed_install, manifest, platform_key, resolve_executable, sha256, tools_root)
 
 
+_SETUP_CONTEXT = threading.local()
+
+
+@contextlib.contextmanager
+def setup_cancellation(event):
+    previous = getattr(_SETUP_CONTEXT, "cancel_event", None)
+    _SETUP_CONTEXT.cancel_event = event
+    try:
+        yield
+    finally:
+        _SETUP_CONTEXT.cancel_event = previous
+
+
 def remaining(deadline: float) -> float:
+    event = getattr(_SETUP_CONTEXT, "cancel_event", None)
+    if event is not None and event.is_set():
+        raise InterruptedError("tool_preparation_cancelled")
     value = deadline - time.monotonic()
     if value <= 0:
         raise TimeoutError("setup_timeout")
@@ -153,8 +171,8 @@ def download(asset: dict[str, Any], root: Path, deadline: float, *, offline: boo
         return target
     except urllib.error.HTTPError as exc:
         raise RuntimeError(f"download_http_{exc.code}") from None
-    except urllib.error.URLError:
-        raise RuntimeError("download_network_error_check_proxy_or_offline_cache") from None
+    except urllib.error.URLError as exc:
+        raise RuntimeError("download_network_error:" + safe_error_text(exc.reason)) from None
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -163,6 +181,7 @@ def unpack(archive: Path, target: Path, kind: str, deadline: float) -> None:
     budget = 3 * 1024 * 1024 * 1024
     total = 0
     if kind == "zip":
+        links = []
         with zipfile.ZipFile(archive) as package:
             if len(package.infolist()) > 50000:
                 raise ValueError("archive_entry_limit")
@@ -171,7 +190,8 @@ def unpack(archive: Path, target: Path, kind: str, deadline: float) -> None:
                 output = contained_path(target, member.filename.rstrip("/"))
                 mode = member.external_attr >> 16
                 if stat.S_ISLNK(mode):
-                    raise ValueError("zip_symlink_not_supported")
+                    links.append((output, package.read(member).decode("utf-8")))
+                    continue
                 total += member.file_size
                 if total > budget:
                     raise ValueError("archive_expansion_limit")
@@ -185,9 +205,20 @@ def unpack(archive: Path, target: Path, kind: str, deadline: float) -> None:
                         destination.write(chunk)
                 if os.name != "nt":
                     output.chmod(0o755 if mode & 0o111 else 0o644)
-    elif kind == "tar.xz":
+        for output, linkname in links:
+            link = output.parent / linkname
+            if Path(linkname).is_absolute() or not link.resolve().is_relative_to(target.resolve()):
+                raise ValueError("archive_link_outside_directory")
+            output.parent.mkdir(parents=True, exist_ok=True)
+            if os.name == "nt":
+                # Official Windows SDK archives contain documentation links; materialize
+                # them without requiring Windows developer mode or elevated privileges.
+                shutil.copytree(link, output) if link.is_dir() else shutil.copy2(link, output)
+            else:
+                output.symlink_to(linkname)
+    elif kind in {"tar.xz", "tar.gz"}:
         links = []
-        with tarfile.open(archive, "r:xz") as package:
+        with tarfile.open(archive, "r:*") as package:
             for index, member in enumerate(package):
                 remaining(deadline)
                 if index >= 50000:
@@ -226,10 +257,19 @@ def run_probe(command: list[str], timeout: float = 20.0) -> tuple[int, str]:
     """Bounded local validation; terminate the entire child group on cancellation."""
     with tempfile.TemporaryFile() as output:
         process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=output,
+                                   env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
                                    stderr=output, start_new_session=os.name != "nt",
                                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         try:
-            process.wait(timeout=timeout)
+            if getattr(_SETUP_CONTEXT, "cancel_event", None) is None:
+                process.wait(timeout=timeout)
+            else:
+                deadline = time.monotonic() + timeout
+                while process.poll() is None:
+                    try:
+                        process.wait(timeout=min(0.1, remaining(deadline)))
+                    except subprocess.TimeoutExpired:
+                        continue
         except BaseException:
             if os.name == "nt":
                 subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
@@ -255,14 +295,13 @@ def validate(name: str, executable: Path, version: str, deadline: float) -> dict
         )
         command = [sys.executable, "-c", code, str(executable)]
     else:
-        command = [str(executable), "-v"]
+        command = [str(executable), *manifest()["tools"][name].get("version_args", ["-v"])]
     status, output = run_probe(command, timeout=min(30.0, remaining(deadline)))
     if status or version not in output:
         if name == "chromium" and ("error while loading shared libraries" in output
                                    or "Host system is missing dependencies" in output):
             raise RuntimeError("chromium_system_libraries_missing")
-        # Never include arbitrary child output (which may contain credentials).
-        raise RuntimeError(f"{name}_launch_validation_failed_run_trace_doctor")
+        raise RuntimeError(f"{name}_launch_validation_failed:{safe_error_text(output)}")
     return {"status": "passed", "version": version,
             "probe": "playwright_launch_and_page" if name == "chromium" else "executable_version"}
 
@@ -274,6 +313,10 @@ def install_tool(name: str, root: Path, deadline: float, *, offline: bool, proxy
     if asset is None:
         raise RuntimeError("unsupported_platform_" + platform_key())
     if name == "chromium":
+        try:
+            importlib.metadata.version("playwright")
+        except importlib.metadata.PackageNotFoundError as exc:
+            raise RuntimeError("playwright_missing_run_trace_setup_playwright") from exc
         browsers = json.loads(importlib.resources.files("playwright").joinpath(
             "driver/package/browsers.json").read_text(encoding="utf-8"))["browsers"]
         release = next(item for item in browsers if item["name"] == "chromium")
@@ -285,7 +328,7 @@ def install_tool(name: str, root: Path, deadline: float, *, offline: bool, proxy
         progress("already installed; checksums verified")
         return {**installed, "action": "unchanged"}
     external = (chromium_executable(root, include_managed=False) if name == "chromium" else
-                resolve_executable("rizin", root=root, include_managed=False))
+                resolve_executable(*definition["commands"], root=root, include_managed=False))
     if installed["checksum_status"] == "mismatch":
         external = ""
     if external:
@@ -354,8 +397,7 @@ def setup(names: list[str], *, root: Path | None = None, offline: bool = False,
                                             progress=lambda message: progress(f"{name}: {message}")))
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError,
                     ImportError, importlib.metadata.PackageNotFoundError, zipfile.BadZipFile, tarfile.TarError) as exc:
-                code = str(exc) if re.fullmatch(r"[a-z][a-z0-9_]*", str(exc)) else type(exc).__name__
-                # Fixed error codes only; socket/proxy/subprocess exception text may contain secrets.
+                code = safe_error_text(exc)
                 results.append({"name": name, "installed": False, "action": "failed", "error": code,
                                 "repair": "python -m playwright install-deps chromium" if code ==
                                 "chromium_system_libraries_missing" else f"trace setup {name}"})

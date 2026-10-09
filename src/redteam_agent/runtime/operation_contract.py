@@ -31,6 +31,32 @@ class OperationContractMixin:
             bindings.update(discovered)
         self._credential_vault.bind_many(bindings)
 
+    def tool_credential_refs(self, run_id: str) -> set[str]:
+        state = self.store.load_operation(run_id)
+        if state is None:
+            raise KeyError(f"operation_not_found:{run_id}")
+        references = set(state.credential_refs)
+        for record in self.store.model_responses(run_id):
+            if record.status in {"completed", "success"}:
+                references.update(find_secret_references(record.response.get("tool_calls", ())))
+        return references
+
+    def project_model_credentials(self, run_id: str, value: Any) -> Any:
+        # Existing references must belong to this run before the response can
+        # confer scope on newly captured raw material.
+        calls = value.get("tool_calls", ()) if isinstance(value, Mapping) else ()
+        if set(find_secret_references(calls)) - self.tool_credential_refs(run_id):
+            raise ValueError("credential_reference_out_of_scope")
+        return self._credential_vault.project(value)
+
+    def resolve_tool_credentials(self, run_id: str, value: Any) -> Any:
+        references = set(find_secret_references(value))
+        if references - self.tool_credential_refs(run_id):
+            raise ValueError("credential_reference_out_of_scope")
+        if self._credential_vault.missing(references):
+            raise ValueError("credential_reference_unbound")
+        return self._credential_vault.resolve(value)
+
     def missing_credential_refs(self, state: OperationState) -> tuple[str, ...]:
         return self._credential_vault.missing(state.credential_refs)
 
@@ -40,12 +66,12 @@ class OperationContractMixin:
         state = self.store.load_operation(run_id)
         if state is None:
             raise KeyError(f"operation_not_found:{run_id}")
-        required = set(state.credential_refs)
+        required = self.tool_credential_refs(run_id)
         supplied = {str(reference): value for reference, value in bindings.items()}
         if any(reference not in required for reference in supplied):
             raise ValueError("credential_binding_reference_unknown")
         self._credential_vault.bind_many(supplied)
-        return self.missing_credential_refs(state)
+        return self._credential_vault.missing(required)
 
     @staticmethod
     def _credential_dependency(missing: Sequence[str]) -> dict[str, Any]:
@@ -139,6 +165,7 @@ class OperationContractMixin:
                 source_representation=str(representation),
                 original_source_sha256=original_sha256,
                 original_source_bytes=original_bytes,
+                rewrite_version=str(envelope.get("version") or ""),
             )
         except (TypeError, ValueError):
             return "prompt_rewrite_source_invalid"

@@ -4,32 +4,43 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light" />
-    <meta name="theme-color" content="#f4f5f6" />
+    <meta name="theme-color" content="#e9ecea" />
     <title>Trace Workbench</title>
     <link rel="icon" href="data:," />
     <link rel="stylesheet" href="/app.css" />
+    <script src="/lucide.min.js" defer></script>
     <script src="/ui.js" defer></script>
+    <script src="/layout.js" defer></script>
     <script src="/control.js" defer></script>
     <script src="/session.js" defer></script>
     <script src="/app.js" defer></script>
+    <script src="/theme.js" defer></script>
   </head>
   <body>
-    <header class="app-header">
-      <a class="brand" href="/" aria-label="Trace 工作台">
-        <span class="brand-word">Trace</span>
-        <span class="brand-rule" aria-hidden="true"></span>
+    <aside class="lab-rail" aria-label="工作台导航">
+      <a class="rail-brand" href="/" aria-label="Trace 工作台">
+        <img src="/trace-mark.png" alt="" width="512" height="512" />
+        <span class="rail-title">TRACE</span>
+        <span class="rail-label">安全研究工作台</span>
       </a>
-
       <nav class="top-nav" aria-label="主导航">
         <button class="nav-button active" data-view="runs" type="button">
-          运行
-        </button>
-          <button class="nav-button" data-view="control" type="button">
-          设置
+          <i data-lucide="layers" aria-hidden="true"></i>所有运行
         </button>
       </nav>
-
+      <nav class="rail-shortcuts" aria-label="资源与配置">
+        <p class="rail-section-label">资源与配置</p>
+        <button class="control-tab active" type="button" data-control-tab="providers"><i data-lucide="cpu" aria-hidden="true"></i>模型与 API</button>
+        <button class="control-tab" type="button" data-control-tab="skills"><i data-lucide="blocks" aria-hidden="true"></i>Skills</button>
+        <button class="control-tab" type="button" data-control-tab="mcp"><i data-lucide="plug" aria-hidden="true"></i>MCP 接入</button>
+        <button class="control-tab" type="button" data-control-tab="conversations"><i data-lucide="messages-square" aria-hidden="true"></i>对话管理</button>
+        <button class="control-tab" type="button" data-control-tab="system"><i data-lucide="server" aria-hidden="true"></i>运行环境</button>
+      </nav>
+    </aside>
+    <header class="app-header">
+      <div class="header-label"><strong id="workspace-title">运行工作台</strong></div>
       <div class="header-tools">
+        <button class="primary small" id="new-run" type="button" title="新建运行" aria-label="新建运行"><i data-lucide="plus" aria-hidden="true"></i>新建运行</button>
         <div class="connection" id="connection" role="status">
           <span class="connection-dot" aria-hidden="true"></span>
           <span id="connection-text">正在连接</span>
@@ -46,24 +57,13 @@
       <section class="runs-index" id="runs-index" aria-labelledby="runs-title">
         <header class="page-heading">
           <div>
-            <p class="kicker">运行空间</p>
             <div class="heading-line">
               <h1 id="runs-title">所有运行</h1>
               <span class="run-count" id="run-count">0</span>
             </div>
-            <p class="page-description">
-              检索任务，读取当前状态，然后进入一条运行继续工作。
-            </p>
           </div>
-          <button class="primary" id="new-run" type="button">新建</button>
+          <section class="run-summary" id="run-summary" aria-label="当前列表状态"><strong id="summary-active">运行中 0</strong><strong id="summary-waiting">待处理 0</strong><strong id="summary-complete">已完成 0</strong></section>
         </header>
-
-        <section class="run-summary" id="run-summary" aria-label="当前列表状态">
-          <span>当前列表</span>
-          <strong id="summary-active">运行中 0</strong>
-          <strong id="summary-waiting">待处理 0</strong>
-          <strong id="summary-complete">已完成 0</strong>
-        </section>
 
         <section class="run-toolbar" aria-label="筛选运行">
           <label class="search-field" for="run-search">
@@ -84,8 +84,8 @@
               <option value="cancelled">已取消</option>
             </select>
           </label>
-          <button class="secondary toolbar-button" id="refresh-runs" type="button">
-            刷新
+          <button class="secondary toolbar-button icon-only" id="refresh-runs" type="button" title="刷新运行" aria-label="刷新运行">
+            <i data-lucide="rotate-cw" aria-hidden="true"></i>
           </button>
         </section>
 
@@ -95,70 +95,48 @@
         <div class="run-list" id="run-list" aria-live="polite"></div>
 
         <div class="runs-empty" id="empty-state" hidden>
-          <span class="empty-rule" aria-hidden="true"></span>
+          <img class="empty-symbol" src="/trace-mark.png" alt="" width="512" height="512" />
           <h2>还没有运行</h2>
-          <p>创建第一个目标，Trace 会在持久运行中记录计划、事件和可信证据。</p>
-          <button class="primary" id="empty-new-run" type="button">
-            新建运行
-          </button>
         </div>
       </section>
 
       <section class="workbench" id="workbench" aria-label="运行详情" hidden>
-        <button class="back-button" id="back-to-runs" type="button">
-          <span aria-hidden="true">←</span> 返回运行
-        </button>
-
         <header class="dossier-header">
           <div class="dossier-meta">
-            <p class="kicker">当前运行</p>
             <div class="identity-line">
               <span class="status-badge" id="run-status">-</span>
               <code id="run-id">-</code>
             </div>
           </div>
-          <h1 id="run-objective">-</h1>
-          <p class="run-targets" id="run-targets">-</p>
+          <div class="dossier-task">
+            <h1 id="run-objective">-</h1>
+            <p class="run-targets" id="run-targets">-</p>
+          </div>
           <div class="run-actions" aria-label="运行控制">
+            <div class="execution-actions">
             <button class="primary" data-command="run" type="button">
-              运行
+              <i data-lucide="play" aria-hidden="true"></i><span>运行</span>
             </button>
-          <button class="secondary" data-command="pause" type="button">
-              暂停
+          <button class="secondary icon-only" data-command="pause" type="button" title="暂停" aria-label="暂停">
+              <i data-lucide="pause" aria-hidden="true"></i>
             </button>
-          <button class="secondary" data-command="resume" type="button">
-              恢复
+          <button class="primary" data-command="resume" type="button">
+              <i data-lucide="step-forward" aria-hidden="true"></i>恢复运行
             </button>
-          <button class="secondary" data-command="observation" type="button">
-              提交观察
+            </div>
+            <div class="inspection-actions">
+          <button class="secondary icon-only" data-command="observation" type="button" title="提交观察" aria-label="提交观察">
+              <i data-lucide="scan-eye" aria-hidden="true"></i>
             </button>
-          <button class="secondary" id="open-budget" type="button">
-              预算
+          <button class="secondary icon-only" id="open-budget" type="button" title="预算" aria-label="预算">
+              <i data-lucide="sliders-horizontal" aria-hidden="true"></i>
             </button>
-          <button class="danger" data-command="cancel" type="button">
-              取消
+          <button class="danger icon-only" data-command="cancel" type="button" title="取消运行" aria-label="取消运行">
+              <i data-lucide="square" aria-hidden="true"></i>
             </button>
+            </div>
           </div>
         </header>
-
-        <section class="metrics" aria-label="运行指标">
-          <div class="metric">
-            <span>动作预算</span>
-            <strong id="metric-actions">0 / 0</strong>
-            <progress id="actions-progress" aria-label="动作预算用量" max="1" value="0"></progress>
-          </div>
-          <div class="metric">
-            <span>Token 用量</span>
-            <strong id="metric-tokens">未设置</strong>
-            <progress id="tokens-progress" aria-label="Token 预算用量" max="1"></progress>
-          </div>
-          <div class="metric metric-action">
-            <span>下一动作</span><strong id="metric-next">-</strong>
-          </div>
-          <div class="metric">
-            <span>状态版本</span><strong id="metric-version">0</strong>
-          </div>
-        </section>
 
         <nav class="tabs" role="tablist" aria-label="运行详情">
           <button role="tab" aria-selected="true" data-tab="events" type="button">
@@ -190,6 +168,7 @@
           </button>
         </nav>
 
+        <div class="detail-workspace">
         <div class="tab-content">
           <section class="tab-panel" role="tabpanel" data-panel="events">
             <div class="panel-heading">
@@ -197,8 +176,8 @@
                 <h2>事件脊线</h2>
                 <p id="event-cursor">序号 0</p>
               </div>
-              <button class="text-button" id="clear-events" type="button">
-                清空视图
+              <button class="text-button icon-only" id="clear-events" type="button" title="清空事件视图" aria-label="清空事件视图">
+                <i data-lucide="list-x" aria-hidden="true"></i>
               </button>
             </div>
             <ol class="event-list" id="event-list"></ol>
@@ -207,15 +186,11 @@
             <div class="panel-heading">
               <div>
                 <h2>探索空间</h2>
-                <p>由模型生成的方向、假设、尝试与重开路径；仅用于导航，不等同于证据。</p>
               </div>
               <span class="graph-count" id="search-count">0 条记录</span>
             </div>
             <div class="search-workspace" id="search-view">
               <div class="search-canvas">
-                <div class="search-origin" aria-hidden="true">
-                  <span>ORIGIN</span><i></i><span>SEARCH SPACE</span>
-                </div>
                 <div class="search-map" id="search-map" aria-label="探索记录图"></div>
               </div>
               <aside class="search-inspector" id="search-inspector" aria-live="polite">
@@ -276,7 +251,6 @@
             <div class="panel-heading">
               <div>
                 <h2>资产与攻击路径</h2>
-                <p>经 Core contract 验证的资产、发现和路径</p>
               </div>
             </div>
             <pre class="json-view" id="attack-view"></pre>
@@ -285,7 +259,6 @@
             <div class="panel-heading">
               <div>
                 <h2>运行透明度</h2>
-                <p>上下文、模型回合、预算和事件投影</p>
               </div>
             </div>
             <pre class="json-view" id="transparency-view"></pre>
@@ -294,55 +267,44 @@
             <div class="panel-heading">
               <div>
                 <h2>运行报告</h2>
-                <p>终态、证据与产物投影</p>
               </div>
               <button class="secondary" id="export-report" type="button">
-                导出 JSON
+                <i data-lucide="download" aria-hidden="true"></i>导出 JSON
               </button>
             </div>
             <pre class="json-view" id="report-view"></pre>
           </section>
         </div>
+        <details class="run-context" id="run-context" open>
+          <summary>运行信息<i data-lucide="chevron-down" aria-hidden="true"></i></summary>
+          <div class="context-body">
+            <section class="context-section">
+              <dl class="context-fields"><dt>会话</dt><dd id="context-session">-</dd><dt>工作流</dt><dd id="context-workflow">-</dd><dt>更新</dt><dd id="context-updated">-</dd></dl>
+            </section>
+            <section class="context-section">
+              <p class="kicker">预算与用量</p>
+              <div class="metrics" aria-label="运行指标">
+                <div class="metric"><span>动作预算</span><strong id="metric-actions">0 / 0</strong><progress id="actions-progress" aria-label="动作预算用量" max="1" value="0"></progress></div>
+                <div class="metric"><span>Token 用量</span><strong id="metric-tokens">未设置</strong><progress id="tokens-progress" aria-label="Token 预算用量" max="1"></progress></div>
+                <div class="metric metric-action"><span>下一动作</span><strong id="metric-next">-</strong></div>
+                <div class="metric"><span>状态版本</span><strong id="metric-version">0</strong></div>
+              </div>
+            </section>
+          </div>
+        </details>
+        </div>
       </section>
     </main>
 
     <main class="control-plane" id="control-plane" hidden>
-      <header class="control-heading">
-        <div>
-          <p class="kicker">工作台设置</p>
-          <h1>控制面</h1>
-          <p>管理模型连接、能力资源、外部工具和持久会话。</p>
-        </div>
-        <div class="control-health" id="control-health">
-          <span class="connection-dot" aria-hidden="true"></span><span>正在读取系统状态</span>
-        </div>
-      </header>
-      <nav class="control-tabs" aria-label="设置分类">
-        <button class="control-tab active" data-control-tab="providers" type="button">
-          模型与 API
-        </button>
-          <button class="control-tab" data-control-tab="skills" type="button">
-          Skills
-        </button>
-          <button class="control-tab" data-control-tab="mcp" type="button">
-          MCP 接入
-        </button>
-          <button class="control-tab" data-control-tab="conversations" type="button">
-          对话管理
-        </button>
-          <button class="control-tab" data-control-tab="system" type="button">
-          运行环境
-        </button>
-      </nav>
       <div class="control-content">
         <section class="control-section" data-control-panel="providers">
           <div class="panel-heading">
             <div>
-              <h2>模型与 API</h2>
-              <p>切换 Provider 会作用于后续 Agent 回合，密钥仅显示绑定状态。</p>
+              <h1>模型与 API</h1>
             </div>
             <button class="primary" id="add-provider" type="button">
-              添加 Provider
+              <i data-lucide="plus" aria-hidden="true"></i>添加 Provider
             </button>
           </div>
           <div class="settings-list" id="provider-list"></div>
@@ -350,11 +312,10 @@
         <section class="control-section" data-control-panel="skills" hidden>
           <div class="panel-heading">
             <div>
-              <h2>Skills</h2>
-              <p>能力资源来自当前 Trace 根目录，启用状态会持久保存。</p>
+              <h1>Skills</h1>
             </div>
             <button class="secondary" id="refresh-skills" type="button">
-              刷新索引
+              <i data-lucide="rotate-cw" aria-hidden="true"></i>刷新索引
             </button>
           </div>
           <div class="settings-list" id="skill-list"></div>
@@ -362,14 +323,13 @@
         <section class="control-section" data-control-panel="mcp" hidden>
           <div class="panel-heading">
             <div>
-              <h2>MCP 接入</h2>
-              <p>检查每个服务器的连接状态、作用域和工具数量。</p>
+              <h1>MCP 接入</h1>
             </div>
             <div class="button-row">
               <button class="secondary" id="refresh-mcp" type="button">
-                刷新</button>
+                <i data-lucide="rotate-cw" aria-hidden="true"></i>刷新</button>
           <button class="primary" id="add-mcp" type="button">
-                添加服务器
+                <i data-lucide="plus" aria-hidden="true"></i>添加服务器
               </button>
             </div>
           </div>
@@ -378,11 +338,10 @@
         <section class="control-section" data-control-panel="conversations" hidden>
           <div class="panel-heading">
             <div>
-              <h2>对话管理</h2>
-              <p>查看模型 transcript 与会话分支树。</p>
+              <h1>对话管理</h1>
             </div>
             <button class="secondary" id="refresh-conversations" type="button">
-              刷新
+              <i data-lucide="rotate-cw" aria-hidden="true"></i>刷新
             </button>
           </div>
           <div class="settings-list" id="conversation-list"></div>
@@ -390,11 +349,10 @@
         <section class="control-section" data-control-panel="system" hidden>
           <div class="panel-heading">
             <div>
-              <h2>运行环境</h2>
-              <p>平台、Python、工作区和托管配置路径。</p>
+              <h1>运行环境</h1>
             </div>
             <button class="secondary" id="reload-system" type="button">
-              重载 MCP
+              <i data-lucide="rotate-cw" aria-hidden="true"></i>重载 MCP
             </button>
           </div>
           <pre class="json-view" id="system-view"></pre>
@@ -406,7 +364,6 @@
       <form id="create-form" method="dialog">
         <div class="dialog-heading">
           <div>
-            <p class="kicker">任务配置</p>
             <h2 id="create-title">新建运行</h2>
           </div>
           <button class="icon-button" value="cancel" aria-label="关闭" type="submit" formnovalidate>
@@ -447,7 +404,6 @@
       <form id="budget-form" method="dialog">
         <div class="dialog-heading">
           <div>
-            <p class="kicker">运行资源</p>
             <h2 id="budget-title">增加预算</h2>
           </div>
           <button class="icon-button" value="cancel" aria-label="关闭" type="submit" formnovalidate>
@@ -481,7 +437,6 @@
       <form id="provider-form" method="dialog">
         <div class="dialog-heading">
           <div>
-            <p class="kicker">模型连接</p>
             <h2 id="provider-title">Provider 配置</h2>
           </div>
           <button class="icon-button" value="cancel" aria-label="关闭" type="submit" formnovalidate>
@@ -493,6 +448,9 @@
         </label>
         <label>名称
           <input name="name" required maxlength="160" />
+        </label>
+        <label>协议
+          <select name="provider"><option value="openai-compatible">OpenAI Compatible</option><option value="anthropic">Anthropic Messages</option></select>
         </label>
         <label>Base URL
           <input name="base_url" type="url" value="https://api.openai.com/v1" required />
@@ -515,6 +473,18 @@
         <label>上下文 Token
           <input name="max_context_tokens" type="number" min="1" value="128000" />
         </label>
+        <label>输出 Token 上限，0 使用运行时预留
+          <input name="max_output_tokens" type="number" min="0" value="0" />
+        </label>
+        <label>推理力度
+          <select name="reasoning_effort"><option value="">模型默认</option><option>none</option><option>minimal</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select>
+        </label>
+        <label>Anthropic Thinking
+          <select name="thinking_type"><option value="">模型默认</option><option>disabled</option><option>enabled</option><option>adaptive</option></select>
+        </label>
+        <label>Thinking Token 预算，仅 enabled
+          <input name="thinking_budget_tokens" type="number" min="0" value="0" />
+        </label>
         </div>
         <div class="dialog-actions">
           <button class="secondary" value="cancel" type="submit" formnovalidate>
@@ -530,7 +500,6 @@
       <form id="skill-form" method="dialog">
         <div class="dialog-heading">
           <div>
-            <p class="kicker">能力配置</p>
             <h2 id="skill-title">Skill 配置</h2>
           </div>
           <button class="icon-button" value="cancel" aria-label="关闭" type="submit" formnovalidate>
@@ -556,7 +525,6 @@
       <form id="mcp-form" method="dialog">
         <div class="dialog-heading">
           <div>
-            <p class="kicker">外部工具</p>
             <h2 id="mcp-title">MCP 服务器</h2>
           </div>
           <button class="icon-button" value="cancel" aria-label="关闭" type="submit" formnovalidate>
@@ -610,7 +578,6 @@
       <form id="fork-form" method="dialog">
         <div class="dialog-heading">
           <div>
-            <p class="kicker">持久会话</p>
             <h2 id="fork-title">创建会话分支</h2>
           </div>
           <button class="icon-button" value="cancel" aria-label="关闭" type="submit" formnovalidate>
@@ -637,7 +604,6 @@
       <form id="observation-form" method="dialog">
         <div class="dialog-heading">
           <div>
-            <p class="kicker">Worker 输入</p>
             <h2 id="observation-title">提交观察</h2>
           </div>
           <button class="icon-button" value="cancel" aria-label="关闭" type="submit" formnovalidate>
@@ -663,7 +629,7 @@
     <dialog id="login-dialog" class="login-dialog" aria-labelledby="login-title">
       <form id="login-form" method="dialog">
         <div class="login-brand">
-          <span class="brand-word">Trace</span><span class="brand-rule" aria-hidden="true"></span>
+          <span class="brand-word">TRACE</span><span class="brand-rule" aria-hidden="true"></span>
         </div>
         <div class="login-copy">
           <p class="kicker">工作台访问</p>

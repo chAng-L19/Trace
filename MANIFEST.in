@@ -1,5 +1,5 @@
 include Dockerfile docker-compose.yml .dockerignore .gitattributes config.toml.example
 recursive-include deploy *
-include scripts/release_smoke.py scripts/cli_state_smoke.py
+include scripts/release_smoke.py scripts/cli_state_smoke.py scripts/mcp_host_smoke.py
 prune tests
 global-exclude *.py[cod]

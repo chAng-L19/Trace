@@ -7,6 +7,7 @@ import json
 import os
 import platform
 import shutil
+import sysconfig
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
@@ -107,7 +108,7 @@ def managed_install(name: str, root: Path | None = None, *, verify: bool = False
                 "path": str(executable) if valid else "", "directory": str(directory),
                 "checksum_status": "verified" if valid and verify else "recorded" if valid else "mismatch",
                 "archive_sha256": receipt.get("archive_sha256", ""),
-                "source_verification": "publisher_sha256" if asset.get("sha256") else "playwright_release_metadata_and_publisher_md5",
+                "source_verification": asset.get("sha256_source", "publisher_sha256") if asset.get("sha256") else "playwright_release_metadata_and_publisher_md5",
                 "validation": receipt.get("validation", {})}
     except (OSError, ValueError, TypeError, KeyError):
         return {**result, "checksum_status": "mismatch"}
@@ -121,7 +122,8 @@ def resolve_executable(*names: str, root: Path | None = None, path: str | None =
             managed = managed_install(tool, root, allow_previous=True)
             if managed["installed"]:
                 return str(managed["path"])
-    return next((found for name in names if (found := shutil.which(name, path=path))), "")
+    search_path = path if path is not None else os.pathsep.join((sysconfig.get_path("scripts"), os.environ.get("PATH", "")))
+    return next((found for name in names if (found := shutil.which(name, path=search_path))), "")
 
 
 def chromium_executable(root: Path | None = None, *, include_managed: bool = True) -> str:

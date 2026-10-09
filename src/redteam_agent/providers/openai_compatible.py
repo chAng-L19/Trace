@@ -13,13 +13,16 @@ import threading
 import time
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from contextlib import contextmanager
 from typing import Any
 from urllib.parse import urlsplit
 
 from ..core import ModelCapabilities, ModelRequest, ModelResponse, ModelStreamEvent
 from .opaque import chat_continuation
-from .openai_protocol import request_payload, responses_response, stream_events
+from .openai_protocol import request_payload, responses_response, stream_events, token_limit
+from ..runtime.model_common import _utc_datetime
 
 
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
@@ -28,10 +31,33 @@ _TOOL_NAME = re.compile(r"[^A-Za-z0-9_-]")
 
 
 class ProviderHTTPError(RuntimeError):
-    def __init__(self, status: int, code: str, message: str) -> None:
+    def __init__(self, status: int, code: str, message: str, *, retry_after: float = 0.0) -> None:
         self.status = int(status)
         self.code = str(code)
+        self.retry_after = retry_after
         super().__init__(f"provider_http_error:{self.status}:{self.code}:{message}")
+
+
+def retry_after_seconds(response: Any) -> float:
+    """Accept numeric delays or HTTP dates; the recovery policy bounds waiting."""
+    for name, scale in (("retry-after-ms", 0.001), ("retry-after", 1.0)):
+        raw = response.getheader(name)
+        if raw is None:
+            continue
+        try:
+            delay = float(raw) * scale
+        except (TypeError, ValueError):
+            if scale != 1.0:
+                continue
+            try:
+                when = parsedate_to_datetime(raw)
+                when = when if when.tzinfo else when.replace(tzinfo=timezone.utc)
+                delay = (when - datetime.now(timezone.utc)).total_seconds()
+            except (TypeError, ValueError, OverflowError):
+                continue
+        if math.isfinite(delay) and delay >= 0:
+            return delay
+    return 0.0
 
 
 @dataclass
@@ -117,6 +143,8 @@ class OpenAICompatibleProvider:
         max_context_tokens: int = 128_000,
         api_key_env: str = "",
         environ: Mapping[str, str] | None = None,
+        max_output_tokens: int = 0,
+        reasoning_effort: str = "",
     ) -> None:
         parsed = urlsplit(str(base_url).strip().rstrip("/"))
         if (
@@ -134,6 +162,9 @@ class OpenAICompatibleProvider:
             raise ValueError("provider_timeout_must_be_positive")
         if int(max_context_tokens) <= 0:
             raise ValueError("provider_context_tokens_must_be_positive")
+        max_output_tokens = token_limit(max_output_tokens)
+        if reasoning_effort not in {"", "none", "minimal", "low", "medium", "high", "xhigh", "max"}:
+            raise ValueError("provider_reasoning_effort_invalid")
         self._scheme = parsed.scheme
         self._host = parsed.hostname
         self._port = parsed.port
@@ -145,6 +176,8 @@ class OpenAICompatibleProvider:
             else f"{base_path}/chat/completions"
         ) or "/chat/completions"
         self.model = str(model).strip()
+        self.max_output_tokens = int(max_output_tokens)
+        self.reasoning_effort = reasoning_effort
         self._api_key = str(api_key)
         self._api_key_env = str(api_key_env)
         self._environ = os.environ if environ is None else environ
@@ -163,7 +196,7 @@ class OpenAICompatibleProvider:
             usage_reporting=True,
             max_context_tokens=int(max_context_tokens),
             metadata={"provider": "openai-compatible", "model": self.model,
-                      "opaque_continuation": True},
+                      "opaque_continuation": True, "max_output_tokens": self.max_output_tokens},
         )
         self._active: dict[str, _ActiveRequest] = {}
         self._lock = threading.RLock()
@@ -212,15 +245,22 @@ class OpenAICompatibleProvider:
         connection = self._connection()
         active = _ActiveRequest(connection)
         deadline = time.monotonic() + self._timeout
+        runtime_deadline = _utc_datetime(request.metadata.get("runtime_deadline"))
+        if "runtime_deadline" in request.metadata and runtime_deadline is None:
+            raise ValueError("provider_runtime_deadline_invalid")
+        if runtime_deadline is not None:
+            remaining = (runtime_deadline - datetime.now(timezone.utc)).total_seconds()
+            if remaining <= 0:
+                raise TimeoutError("provider_runtime_deadline_exhausted")
+            deadline = min(deadline, time.monotonic() + remaining)
+            connection.timeout = min(self._timeout, remaining)
         response: http.client.HTTPResponse | None = None
         with self._lock:
             if request.request_id in self._active:
                 raise ValueError("provider_request_already_active")
             self._active[request.request_id] = active
         try:
-            headers = {"Content-Type": "application/json", "Accept": "text/event-stream" if payload.get("stream") else "application/json"}
-            if credential:
-                headers["Authorization"] = f"Bearer {credential}"
+            headers = self._headers(credential, streaming=bool(payload.get("stream")))
             if active.cancelled.is_set():
                 raise RuntimeError("provider_request_cancelled")
             self._connect(connection, active, deadline)
@@ -238,7 +278,8 @@ class OpenAICompatibleProvider:
                 except RuntimeError:
                     error_document = {}
                 code, message = self._error(error_document, raw, credential=credential)
-                raise ProviderHTTPError(response.status, code, message)
+                raise ProviderHTTPError(response.status, code, message,
+                                        retry_after=retry_after_seconds(response))
             yield response
             if active.cancelled.is_set():
                 raise RuntimeError("provider_request_cancelled")
@@ -253,6 +294,12 @@ class OpenAICompatibleProvider:
             with self._lock:
                 if self._active.get(request.request_id) is active:
                     self._active.pop(request.request_id, None)
+
+    def _headers(self, credential: str, *, streaming: bool) -> dict[str, str]:
+        headers = {"Content-Type": "application/json", "Accept": "text/event-stream" if streaming else "application/json"}
+        if credential:
+            headers["Authorization"] = f"Bearer {credential}"
+        return headers
 
     def cancel(self, request_id: str) -> bool:
         with self._lock:
@@ -494,9 +541,10 @@ class OpenAICompatibleProvider:
         message = choice.get("message")
         if not isinstance(message, Mapping):
             raise RuntimeError("provider_response_message_missing")
-        text = cls._text(message.get("content"))
+        refusal = cls._text(message.get("refusal"))
+        text = cls._text(message.get("content")) or refusal
         structured: Mapping[str, Any] = {}
-        if text:
+        if text and not refusal:
             try:
                 parsed = json.loads(text)
             except json.JSONDecodeError:
@@ -523,7 +571,9 @@ class OpenAICompatibleProvider:
             usage=usage,
             finish_reason=finish_reason,
             error=error,
-            metadata={"provider_response_id": str(document.get("id") or "")},
+            metadata={"provider_response_id": str(document.get("id") or ""),
+                      **({"refusal": True, "refusal_text": refusal,
+                          "response_category": "refusal"} if refusal else {})},
             response_id=str(document.get("id") or ""),
             continuation={"assistant": opaque, "assistant_text_hash": hashlib.sha256(text.encode()).hexdigest(),
                           "assistant_call_ids": [str(call.get("id") or "") for call in message.get("tool_calls") or ()]}
@@ -576,8 +626,10 @@ class OpenAICompatibleProvider:
 
     @staticmethod
     def _usage(value: Any) -> Mapping[str, Any]:
-        if not isinstance(value, Mapping):
+        if value is None:
             return {}
+        if not isinstance(value, Mapping):
+            raise RuntimeError("provider_usage_invalid")
         usage: dict[str, Any] = {}
         aliases = {
             "prompt_tokens": "input_tokens",
@@ -585,19 +637,20 @@ class OpenAICompatibleProvider:
             "total_tokens": "total_tokens",
         }
         for source, target in aliases.items():
-            number = value.get(source)
-            if isinstance(number, int) and not isinstance(number, bool) and number >= 0:
-                usage[target] = number
-        prompt_details = value.get("prompt_tokens_details")
-        if isinstance(prompt_details, Mapping):
-            cached = prompt_details.get("cached_tokens")
-            if isinstance(cached, int) and not isinstance(cached, bool) and cached >= 0:
-                usage["cache_read_tokens"] = cached
-        completion_details = value.get("completion_tokens_details")
-        if isinstance(completion_details, Mapping):
-            reasoning = completion_details.get("reasoning_tokens")
-            if isinstance(reasoning, int) and not isinstance(reasoning, bool) and reasoning >= 0:
-                usage["reasoning_tokens"] = reasoning
+            if source in value:
+                usage[target] = value[source]
+        for field, source, target in (("prompt_tokens_details", "cached_tokens", "cache_read_tokens"),
+                                      ("completion_tokens_details", "reasoning_tokens", "reasoning_tokens")):
+            details = value.get(field)
+            if details is None:
+                continue
+            if not isinstance(details, Mapping):
+                raise RuntimeError("provider_usage_invalid")
+            if source in details:
+                usage[target] = details[source]
+        for number in usage.values():
+            if isinstance(number, bool) or not isinstance(number, int) or not 0 <= number <= 2**63 - 1:
+                raise RuntimeError("provider_usage_invalid")
         return usage
 
 

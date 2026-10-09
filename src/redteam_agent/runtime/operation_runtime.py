@@ -74,6 +74,7 @@ class OperationRuntime(
         self.action_timeout_cap = max(0.1, float(action_timeout_cap)) if action_timeout_cap is not None else None
         self.owner = f"runtime-{uuid4().hex}"
         self._credential_vault = CredentialVault()
+        self.broker.bind_artifacts(self.artifacts, self._credential_vault.project)
         # Receipt secrets are deliberately process-local. Durable storage only
         # contains their hashes, so a restart rotates a receipt while repeated
         # resume calls from this runtime keep the valid receipt stable.

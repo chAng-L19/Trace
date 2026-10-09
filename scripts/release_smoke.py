@@ -53,6 +53,7 @@ def audit_wheel(path: Path) -> None:
             ):
                 bad.append(name)
         _require(not bad, f"wheel_contains_build_residue:{bad[:10]}")
+        _require("redteam_agent/workflows/skills/api-recon/SKILL.md" in names, "wheel_builtin_skill_missing")
 
         metadata_names = [name for name in names if name.endswith(".dist-info/METADATA")]
         entry_names = [name for name in names if name.endswith(".dist-info/entry_points.txt")]
@@ -78,6 +79,8 @@ def _executable(name: str) -> str:
 
 
 def _run(command: list[str], *, cwd: Path, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
+    from mcp_host_smoke import host_environment
+
     result = subprocess.run(
         command,
         cwd=cwd,
@@ -86,28 +89,21 @@ def _run(command: list[str], *, cwd: Path, input_text: str | None = None) -> sub
         capture_output=True,
         timeout=90,
         check=False,
+        env=host_environment(cwd),
     )
     _require(result.returncode == 0, f"command_failed:{command[0]}:{result.stderr[-2000:]}")
     return result
 
 
 def _mcp_smoke(command: str, *, cwd: Path, root: Path) -> None:
-    requests = (
-        json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
-        + "\n"
-        + json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
-        + "\n"
-    )
-    result = _run([command, "--root", str(root)], cwd=cwd, input_text=requests)
-    responses = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
-    by_id = {item.get("id"): item.get("result") for item in responses}
-    _require(by_id.get(1, {}).get("serverInfo", {}).get("name") == "trace-agent-runtime", "mcp_identity_mismatch")
-    tools = by_id.get(2, {}).get("tools", [])
-    names = {str(item.get("name") or "") for item in tools}
-    _require(names == PUBLIC_TOOLS, f"mcp_tools_mismatch:{sorted(names)}")
+    from mcp_host_smoke import exercise
+
+    exercise(command, root=root)
 
 
 def _web_smoke(command: str, *, cwd: Path) -> None:
+    from mcp_host_smoke import host_environment
+
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
@@ -116,6 +112,7 @@ def _web_smoke(command: str, *, cwd: Path) -> None:
         process = subprocess.Popen(
             [command, "--root", str(cwd / "web-state"), "--port", str(port)],
             cwd=cwd, stdout=log, stderr=log,
+            env=host_environment(cwd),
         )
         try:
             deadline = time.monotonic() + 30
@@ -146,6 +143,8 @@ def _web_smoke(command: str, *, cwd: Path) -> None:
 
 
 def _mcp_shutdown_smoke(command: str, *, cwd: Path) -> None:
+    from mcp_host_smoke import host_environment
+
     if os.name == "nt":
         return  # Windows TerminateProcess is not POSIX SIGTERM.
     output = cwd / "mcp-shutdown.jsonl"
@@ -153,6 +152,7 @@ def _mcp_shutdown_smoke(command: str, *, cwd: Path) -> None:
         process = subprocess.Popen(
             [command, "--root", str(cwd / "mcp-shutdown-state")],
             stdin=subprocess.PIPE, stdout=log, stderr=log, text=True, cwd=cwd,
+            env=host_environment(cwd),
         )
         try:
             process.stdin.write('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n')

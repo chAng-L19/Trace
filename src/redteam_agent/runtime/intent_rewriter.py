@@ -8,7 +8,8 @@ from dataclasses import dataclass, fields
 from typing import Sequence
 
 
-REWRITE_VERSION = "lossless-execution-v2"
+REWRITE_VERSION = "lossless-execution-v3"
+LEGACY_REWRITE_VERSION = "lossless-execution-v2"
 
 # Boundaries are intentionally syntax-only.  Rewriting must never rely on a
 # model or a lossy natural-language transformation: each derived field remains
@@ -104,6 +105,12 @@ _PLAN_ONLY_MARKERS = (
     "\u7ed9\u6211\u65b9\u6848\u5373\u53ef", "\u65b9\u6848\u5373\u53ef", "\u6682\u4e0d\u4fee\u6539", "\u6682\u4e0d\u6539\u52a8",
     "\u5148\u4e0d\u8981\u4fee\u6539", "\u5148\u522b\u6539", "\u5148\u4e0d\u8981\u52a8",
 )
+_ANALYSIS_ONLY_MARKERS = (
+    "analysis only", "only analyze", "only analyse", "only review", "only audit",
+    "read-only analysis", "explain", "compare", "\u53ea\u5206\u6790", "\u4ec5\u5206\u6790",
+    "\u53ea\u5ba1\u67e5", "\u53ea\u5ba1\u8ba1", "\u53ea\u8bfb\u5ba1\u67e5", "\u89e3\u91ca", "\u5bf9\u6bd4",
+)
+_V3_NEGATIONS = ("\u4e0d", "\u4e0d\u80fd")
 _EXECUTION_MARKERS = tuple(marker for name, markers in _VERBS if name != "report" for marker in markers)
 _NEGATION_MARKERS = (
     "do not", "don't", "without", "need not", "no need to", "never", "avoid",
@@ -133,19 +140,22 @@ class _MarkerIndex:
         self.names_by_marker = {marker: tuple(names) for marker, names in names_by_marker.items()}
         self.pattern = re.compile("|".join(_marker_expression(marker) for marker in ordered_markers))
 
-    def classify(self, text: str, *, requested: bool = False) -> tuple[str, ...]:
+    def classify(self, text: str, *, requested: bool = False, additional_negations: Sequence[str] = ()) -> tuple[str, ...]:
         folded = text.casefold()
         found: set[str] = set()
         for match in self.pattern.finditer(folded):
-            if requested and _execution_occurrence_is_negated(folded, match.start(), folded=True):
+            if requested and _execution_occurrence_is_negated(
+                folded, match.start(), folded=True, additional_negations=additional_negations,
+            ):
                 continue
             found.update(self.names_by_marker[match.group(0)])
         return tuple(name for name in self.order if name in found)
 
-    def has_requested(self, text: str) -> bool:
+    def has_requested(self, text: str, *, additional_negations: Sequence[str] = ()) -> bool:
         folded = text.casefold()
         return any(
-            not _execution_occurrence_is_negated(folded, match.start(), folded=True)
+            not _execution_occurrence_is_negated(folded, match.start(), folded=True,
+                                                 additional_negations=additional_negations)
             for match in self.pattern.finditer(folded)
         )
 
@@ -225,6 +235,7 @@ _VERB_INDEX = _MarkerIndex(_VERBS)
 _DELIVERABLE_INDEX = _MarkerIndex(_DELIVERABLES)
 _CONSTRAINT_INDEX = _MarkerIndex((("constraint", _CONSTRAINT_MARKERS),))
 _PLAN_ONLY_INDEX = _MarkerIndex((("plan", _PLAN_ONLY_MARKERS),))
+_ANALYSIS_ONLY_INDEX = _MarkerIndex((("analysis", _ANALYSIS_ONLY_MARKERS),))
 _NEGATED_ENGLISH = re.compile(
     r"(?:do\s+not|don't|without|not\s+to|need\s+not|no\s+need\s+to|never|avoid)"
     r"(?:\s+[a-z0-9_+-]+){0,8}\s*$"
@@ -304,22 +315,28 @@ def _marker_positions(text: str, marker: str) -> tuple[int, ...]:
     return tuple(match.start() for match in re.finditer(rf"(?<![a-z0-9_]){re.escape(needle)}(?![a-z0-9_])", lowered))
 
 
-def _execution_occurrence_is_negated(text: str, position: int, *, folded: bool = False) -> bool:
+def _execution_occurrence_is_negated(text: str, position: int, *, folded: bool = False,
+                                    additional_negations: Sequence[str] = ()) -> bool:
     normalized = text if folded else text.casefold()
     prefix = normalized[max(0, position - 96):position].rstrip()
-    if any(prefix.endswith(marker.casefold()) for marker in _NEGATION_MARKERS):
+    if any(prefix.endswith(marker.casefold()) for marker in (*_NEGATION_MARKERS, *additional_negations)):
         return True
     return bool(_NEGATED_ENGLISH.search(prefix) or _NEGATED_CHINESE.search(prefix))
 
 
-def _classify_requested(text: str, table: Sequence[tuple[str, Sequence[str]]]) -> tuple[str, ...]:
+def _requested_v3(text: str, table: Sequence[tuple[str, Sequence[str]]]) -> tuple[str, ...]:
+    return _classify_requested(text, table, additional_negations=_V3_NEGATIONS)
+
+
+def _classify_requested(text: str, table: Sequence[tuple[str, Sequence[str]]], *,
+                        additional_negations: Sequence[str] = ()) -> tuple[str, ...]:
     """Classify requested work while leaving negated words as constraints."""
 
     if table is _VERBS:
-        return _VERB_INDEX.classify(text, requested=True)
+        return _VERB_INDEX.classify(text, requested=True, additional_negations=additional_negations)
     if table is _DELIVERABLES:
-        return _DELIVERABLE_INDEX.classify(text, requested=True)
-    return _MarkerIndex(table).classify(text, requested=True)
+        return _DELIVERABLE_INDEX.classify(text, requested=True, additional_negations=additional_negations)
+    return _MarkerIndex(table).classify(text, requested=True, additional_negations=additional_negations)
 
 
 def _has_positive_execution(verbs: Sequence[str]) -> bool:
@@ -336,15 +353,20 @@ def _clause_contract(
     *,
     targets: Sequence[str],
     execution_required: bool,
+    informational: bool = False,
+    legacy: bool = False,
 ) -> dict[str, object]:
     analysis_clause = _mask_explicit_targets(clause, targets)
-    actions = _classify_requested(analysis_clause, _VERBS)
-    deliverables = _classify_requested(analysis_clause, _DELIVERABLES)
+    requested = _classify_requested if legacy else _requested_v3
+    actions = requested(analysis_clause, _VERBS)
+    deliverables = requested(analysis_clause, _DELIVERABLES)
     required = {
         artifact
         for name in (*actions, *deliverables)
         for artifact in (*_ACTION_ARTIFACTS.get(name, ()), *_DELIVERABLE_ARTIFACTS.get(name, ()))
     }
+    if informational:
+        required.intersection_update({"surface_map", "hypothesis_queue", "final_report"})
     if not required:
         required.add("reproduction_artifact" if execution_required else "hypothesis_queue")
     return {
@@ -417,9 +439,12 @@ def rewrite_objective(
     source_representation: str = "original-source",
     original_source_sha256: str = "",
     original_source_bytes: int | None = None,
+    rewrite_version: str = REWRITE_VERSION,
 ) -> PromptRewrite:
     if not isinstance(objective, str) or not objective.strip():
         raise ValueError("objective_required")
+    if rewrite_version not in {REWRITE_VERSION, LEGACY_REWRITE_VERSION}:
+        raise ValueError("prompt_rewrite_version_unsupported")
     if action_kind_override not in {None, "control"}:
         raise ValueError("action_kind_override_invalid")
     if execution_required_override is not None and (
@@ -430,9 +455,19 @@ def rewrite_objective(
     resolved_targets = tuple(dict.fromkeys(str(target) for target in targets if str(target)))
     analysis_source = _mask_explicit_targets(source, resolved_targets)
     clauses = split_clauses(source, protected_literals=resolved_targets)
-    verbs = _classify_requested(analysis_source, _VERBS)
-    deliverables = _classify_requested(analysis_source, _DELIVERABLES)
-    plan_only = _has_affirmative_plan_only_marker(analysis_source) and not _has_positive_execution(verbs)
+    requested = _classify_requested if rewrite_version == LEGACY_REWRITE_VERSION else _requested_v3
+    verbs = requested(analysis_source, _VERBS)
+    deliverables = requested(analysis_source, _DELIVERABLES)
+    if rewrite_version == LEGACY_REWRITE_VERSION:
+        plan_only = _has_affirmative_plan_only_marker(analysis_source) and not _has_positive_execution(verbs)
+    else:
+        # Reading and reasoning support informational tasks without requiring
+        # vulnerability reproduction, impact, or cleanup lifecycle gates.
+        active_work = any(verb not in {"inspect", "acquire", "report"} for verb in verbs)
+        plan_only = (
+            _PLAN_ONLY_INDEX.has_requested(analysis_source, additional_negations=_V3_NEGATIONS)
+            or _ANALYSIS_ONLY_INDEX.has_requested(analysis_source, additional_negations=_V3_NEGATIONS)
+        ) and not active_work
     action_kind = action_kind_override or ("plan" if plan_only else "execute")
     execution_required = (
         bool(execution_required_override)
@@ -458,6 +493,8 @@ def rewrite_objective(
             clause,
             targets=bound_targets,
             execution_required=execution_required,
+            informational=plan_only and rewrite_version == REWRITE_VERSION,
+            legacy=rewrite_version == LEGACY_REWRITE_VERSION,
         )
         for clause_id, clause, bound_targets in zip(clause_ids, clauses, clause_targets)
     )
@@ -499,7 +536,7 @@ def rewrite_objective(
         if any(artifact in contract["required_artifacts"] for contract in clause_contracts)
     )
     lines = (
-        f"[prompt-rewrite:{REWRITE_VERSION}]",
+        f"[prompt-rewrite:{rewrite_version}]",
         authority,
         f"Source projection: sha256={source_sha256} bytes={source_bytes} representation={source_representation}",
         f"Original source identity: sha256={original_sha256} bytes={original_bytes}",
@@ -516,7 +553,7 @@ def rewrite_objective(
         "Completion: each clause must have target-bound evidence or an explicit durable unresolved dependency.",
     )
     return PromptRewrite(
-        version=REWRITE_VERSION,
+        version=rewrite_version,
         source_text=source,
         source_sha256=source_sha256,
         source_bytes=source_bytes,

@@ -19,7 +19,11 @@ def project_asset_attack_graph(
     service.status(run_id)
     bounded = max(1, min(10000, int(limit)))
     start = max(0, int(offset))
-    all_nodes = service.runtime.evidence_graph.list(run_id)
+    state = service.runtime.store.load_operation(run_id)
+    all_nodes = EvidenceGate.eligible_evidence(
+        service.runtime.evidence_graph.list(run_id), run_id=run_id,
+        branch_id=state.branch_id, max_plan_revision=state.plan_revision,
+    )
     nodes = all_nodes[start : start + bounded]
     trusted = {node.evidence_id: node for node in all_nodes}
     assets: dict[str, Asset] = {}
