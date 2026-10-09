@@ -33,7 +33,7 @@ def main() -> None:
 
         def cli(*arguments, success=True, stdin=None):
             result = subprocess.run([sys.executable, "-B", "-m", "redteam_agent", *map(str, arguments)],
-                input=stdin, capture_output=True, text=True, env=env, cwd=base, timeout=90)
+                input=stdin, capture_output=True, text=True, encoding="utf-8", env=env, cwd=base, timeout=90)
             assert (result.returncode in (0, 1) if success is None else (result.returncode == 0) == success), (
                 arguments[:2], result.returncode, result.stderr, result.stdout[:500])
             assert "SENTINEL_CREDENTIAL_DO_NOT_PRINT" not in result.stdout + result.stderr

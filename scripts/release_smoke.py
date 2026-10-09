@@ -86,6 +86,7 @@ def _run(command: list[str], *, cwd: Path, input_text: str | None = None) -> sub
         cwd=cwd,
         input=input_text,
         text=True,
+        encoding="utf-8",
         capture_output=True,
         timeout=90,
         check=False,
