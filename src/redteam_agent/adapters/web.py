@@ -36,6 +36,9 @@ _STATIC_FILES = {
        for name in ("ui", "layout", "control", "session", "profile", "app", "theme", "lucide.min")},
     "/trace-mark.png": ("trace-mark.png", "image/png"),
     "/barlow-condensed-bold.ttf": ("barlow-condensed-bold.ttf", "font/ttf"),
+    **{f"/{name}.ttf": (f"{name}.ttf", "font/ttf")
+       for name in ("inter-regular", "inter-medium", "inter-semibold", "inter-bold",
+                    "jetbrains-mono-regular", "jetbrains-mono-medium", "jetbrains-mono-semibold")},
 }
 _SECURITY_HEADERS = {
     "Content-Security-Policy": (

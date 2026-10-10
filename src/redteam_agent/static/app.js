@@ -154,7 +154,9 @@ async function loadSystem() {
 
 function setView(view) {
   document.body.classList.toggle("control-open", view === "control");
-  $("#workspace-title").textContent = view === "control" ? "控制面" : "运行工作台";
+  $("#workspace-title").textContent = view === "control"
+    ? $$(".control-tab").find((button) => button.classList.contains("active"))?.textContent.trim() || "控制面"
+    : "所有运行";
   state.page = view;
   $$(".top-nav .nav-button").forEach((button) => {
     const active = button.dataset.view === view;
@@ -683,6 +685,7 @@ function bind() {
       $$("[data-control-panel]").forEach((panel) => {
         panel.hidden = panel.dataset.controlPanel !== button.dataset.controlTab;
       });
+      $("#workspace-title").textContent = button.textContent.trim();
       await loadControl();
     }),
   );
@@ -693,6 +696,7 @@ function bind() {
   $("#user-form").addEventListener("submit", submitUser);
   $("#add-user").addEventListener("click", () => { $("#user-form").reset(); $("#user-dialog").showModal(); });
   $("#add-provider").addEventListener("click", () => openProviderEditor());
+  $("#configure-provider").addEventListener("click", () => openProviderEditor());
   $("#provider-form").addEventListener("submit", submitProvider);
   $("#skill-form").addEventListener("submit", submitSkill);
   $("#add-mcp").addEventListener("click", () => openMcpEditor());

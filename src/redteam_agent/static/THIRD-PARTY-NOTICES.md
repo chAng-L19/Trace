@@ -1,5 +1,15 @@
 # Frontend Assets
 
+## Inter and JetBrains Mono
+
+Inter (400, 500, 600, 700) and JetBrains Mono (400, 500, 600) are served
+locally, matching the user-provided HTML references without external font requests.
+
+Sources: https://fonts.google.com/specimen/Inter and
+https://fonts.google.com/specimen/JetBrains+Mono
+
+Licenses: `inter-OFL.txt`, `jetbrains-mono-OFL.txt` (SIL Open Font License 1.1).
+
 ## Rhine Lab Theme
 
 Visual reference: https://github.com/QingXia-Ela/Rhine-Lab-Theme-Index-Page

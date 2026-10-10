@@ -12,6 +12,7 @@ function handleAuthExpired() {
   clearSessionView();
   state.authenticated = false;
   setAuthLocked(true);
+  $("#gate-state").textContent = "GATE_STATE: SESSION_EXPIRED";
   $("#logout").hidden = true;
   const dialog = $("#login-dialog");
   if (!dialog.open) dialog.showModal();
@@ -42,14 +43,23 @@ async function login(event) {
   const password = String(data.get("password") || "");
   const errorNode = $("#login-error");
   const submit = $("#login-submit");
+  const label = $("#login-label");
   errorNode.hidden = true;
   submit.disabled = true;
-  submit.textContent = "正在进入";
+  label.textContent = "VERIFYING CREDENTIALS...";
+  form.classList.add("is-verifying");
+  $("#gate-state").textContent = "GATE_STATE: VERIFYING";
   try {
     const result = await api("/api/auth/login", {
       method: "POST",
       body: JSON.stringify({ username, password }),
     });
+    form.classList.add("is-authenticated");
+    $("#gate-state").textContent = "GATE_STATE: AUTHENTICATED";
+    await form.animate([{ opacity: 1 }, { opacity: 0, transform: "scale(.98)" }], {
+      duration: matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 150,
+      easing: "ease",
+    }).finished;
     $("#login-dialog").close();
     form.reset();
     state.authenticated = true;
@@ -66,9 +76,11 @@ async function login(event) {
       ? "用户名或密码不正确，请重试。"
       : "登录未完成，请检查服务连接后重试。";
     errorNode.hidden = false;
+    $("#gate-state").textContent = "GATE_STATE: ACCESS_DENIED";
   } finally {
     submit.disabled = false;
-    submit.textContent = "进入工作台";
+    label.textContent = "确认接入终端";
+    form.classList.remove("is-verifying", "is-authenticated");
   }
 }
 
@@ -82,6 +94,7 @@ async function logout() {
     state.authEpoch += 1;
     setView("runs");
     setAuthLocked(true);
+    $("#gate-state").textContent = "GATE_STATE: STANDBY";
     $("#logout").hidden = true;
     const dialog = $("#login-dialog");
     if (!dialog.open) dialog.showModal();

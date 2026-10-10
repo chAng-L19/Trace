@@ -6,7 +6,7 @@
 .identity-line code { max-width: 260px; min-width: 0; overflow: hidden; color: var(--ink-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .status-badge { flex: 0 0 auto; color: var(--ink-secondary); font-size: 12px; font-weight: 500; white-space: nowrap; }
 .status-badge::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 7px; background: var(--line-strong); vertical-align: 1px; }
-.status-badge[data-status="running"]::before, .status-badge[data-status="waiting_worker"]::before { background: var(--focus); }
+.status-badge[data-status="running"]::before, .status-badge[data-status="waiting_worker"]::before { background: var(--accent); }
 .status-badge[data-status="failed"], .status-badge[data-status="cancelled"] { color: var(--danger); }
 .status-badge[data-status="failed"]::before, .status-badge[data-status="cancelled"]::before { background: var(--danger); }
 .dossier-header h1 { max-height: 140px; overflow: auto; margin: 0; font-size: 22px; font-weight: 600; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -25,11 +25,6 @@
 .detail-workspace { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) 280px; min-width: 0; min-height: 0; overflow: hidden; }
 .tab-content { min-width: 0; min-height: 0; padding: 22px 24px 24px 0; overflow-y: auto; scrollbar-width: thin; }
 .tab-panel { min-width: 0; padding: 0 0 24px; }
-.panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-bottom: 18px; }
-.panel-heading h2, .panel-heading p { margin: 0; }
-.panel-heading h2 { font-size: 16px; font-weight: 600; }
-.panel-heading p { max-width: 78ch; margin-top: 4px; color: var(--ink-muted); font-size: 12px; }
-.panel-heading button { min-height: 36px; font-size: 12px; }
 .run-context { min-width: 0; max-height: 100%; border-left: 1px solid var(--line); overflow-y: auto; scrollbar-width: thin; background: var(--canvas); }
 .run-context > summary { display: flex; justify-content: space-between; align-items: center; padding: 18px; list-style: none; font-size: 12px; font-weight: 600; cursor: pointer; }
 .run-context > summary::-webkit-details-marker { display: none; }
@@ -49,16 +44,13 @@
 .metric-action > strong { font-size: 12px; }
 progress { width: 100%; height: 2px; margin-top: 8px; overflow: hidden; border: 0; border-radius: 0; background: var(--line); }
 progress::-webkit-progress-bar { background: var(--line); }
-progress::-webkit-progress-value { background: var(--focus); }
-progress::-moz-progress-bar { background: var(--focus); }
+progress::-webkit-progress-value { background: var(--accent); }
+progress::-moz-progress-bar { background: var(--accent); }
 .workbench[data-active-tab="search"] .detail-workspace { grid-template-columns: minmax(0, 1fr); }
 .workbench[data-active-tab="search"] .run-context { display: none; }
 
-@media (min-width: 993px) {
-  .dossier-header { padding: 20px 28px; }
-  .tabs { padding-inline: 28px; }
-  .tab-content { padding: 24px 28px; }
-}
+.dossier-header { padding: 0 0 18px; }
+.tab-content { padding: 24px 24px 24px 0; }
 
 .event-list {
   margin: 0;
@@ -107,7 +99,7 @@ progress::-moz-progress-bar { background: var(--focus); }
 }
 
 .event-name {
-  color: var(--focus);
+  color: var(--ink-secondary);
   overflow-wrap: anywhere;
 }
 
@@ -154,8 +146,7 @@ progress::-moz-progress-bar { background: var(--focus); }
 .search-canvas {
   min-width: 0;
   padding: 22px 30px 32px 0;
-  background-image: radial-gradient(var(--line) 0.7px, transparent 0.7px);
-  background-size: 16px 16px;
+  background: var(--surface);
 }
 
 
@@ -237,7 +228,7 @@ progress::-moz-progress-bar { background: var(--focus); }
 }
 
 .search-node.selected {
-  box-shadow: inset 3px 0 0 var(--accent);
+  border-left: 3px solid var(--accent);
 }
 
 .search-node.selected::before,
@@ -290,7 +281,7 @@ progress::-moz-progress-bar { background: var(--focus); }
 }
 
 .inspector-heading > span {
-  color: var(--focus);
+  color: var(--ink-secondary);
   font: 10px/1.5 var(--font-mono);
 }
 
@@ -344,7 +335,7 @@ progress::-moz-progress-bar { background: var(--focus); }
   margin: 12px 0 0;
   padding: 13px;
   overflow: auto;
-  background: #f8f9f9;
+    background: var(--surface-subtle);
   color: var(--ink-secondary);
   font: 10px/1.65 var(--font-mono);
   white-space: pre-wrap;
@@ -391,14 +382,14 @@ progress::-moz-progress-bar { background: var(--focus); }
 .record p {
   margin: 10px 0 0;
   padding: 14px;
-  background: #f8f9f9;
+  background: var(--surface-subtle);
   font: 12px/1.65 var(--font-mono);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .record a {
-  color: var(--focus);
+  color: var(--ink-secondary);
   text-underline-offset: 3px;
 }
 
@@ -409,7 +400,7 @@ progress::-moz-progress-bar { background: var(--focus); }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--focus);
+  color: var(--ink-secondary);
   font-size: 11px;
   font-weight: 720;
 }
@@ -456,7 +447,7 @@ progress::-moz-progress-bar { background: var(--focus); }
   max-width: 980px;
   padding-right: 16px;
   padding-left: 16px;
-  background: #f8f9f9;
+  background: var(--surface-subtle);
 }
 
 .transcript-system .transcript-role {
@@ -484,71 +475,12 @@ progress::-moz-progress-bar { background: var(--focus); }
   margin-top: 11px;
 }
 
-@media (max-width: 960px) {
-  .search-workspace {
-    grid-template-columns: 1fr;
-  }
 
-  .search-canvas {
-    padding-right: 0;
-  }
-
-  .search-inspector {
-    position: static;
-    max-height: none;
-    overflow: visible;
-    padding: 24px 0 8px;
-    border-top: 1px solid var(--line);
-    border-left: 0;
-  }
-
-  .inspector-back { display: inline-block; margin-top: 16px; }
-
-  .inspector-empty {
-    max-width: 50ch;
-  }
-}
-
-@media (max-width: 600px) {
-  .search-lane {
-    grid-template-columns: 1fr;
-  }
-
-  .search-lane > header {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    padding: 14px 0 9px;
-  }
-
-  .search-lane > header span {
-    display: inline;
-    margin: 0;
-  }
-
-  .search-nodes {
-    border-left: 0;
-  }
-
-  .search-node {
-    padding-left: 18px;
-  }
-
-  .search-node::before {
-    left: 0;
-  }
-
-  .message-heading {
-    display: block;
-  }
-
-  .message-heading > span:last-child {
-    display: block;
-    margin-top: 3px;
-    text-align: left;
-  }
-}
 
 .load-more {
   margin-top: var(--space-5);
 }
+
+.event-list .event-item { position: relative; }
+.event-list .event-item[data-kind="tool_call"]::before,
+.event-list .event-item[data-kind="tool_result"]::before { content: ""; position: absolute; left: -12px; top: 18px; width: 5px; height: 5px; background: var(--accent); }

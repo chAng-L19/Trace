@@ -35,17 +35,40 @@ async function loadProviders() {
   const result = await api("/api/providers");
   if (epoch !== state.authEpoch || (state.authRequired && !state.authenticated))
     return;
-  renderSettingsList($("#provider-list"), result.providers || [], (item) => {
-    const row = document.createElement("article");
-    row.className = `setting-row${item.active ? " is-active" : ""}`;
-    const main = document.createElement("div");
-    main.className = "setting-main";
-    const title = document.createElement("strong");
-    title.textContent = `${item.name} · ${item.model}`;
-    const meta = document.createElement("code");
-    meta.textContent = `${item.base_url} · key ${item.api_key_set ? "已绑定" : "未绑定"}`;
-    main.append(title, meta);
-    if (state.user?.role !== "admin") { row.append(main); return row; }
+  const list = $("#provider-list");
+  const providers = result.providers || [];
+  list.replaceChildren();
+  list.setAttribute("aria-busy", "false");
+  $("#provider-empty").hidden = providers.length > 0;
+  providers.forEach((item, index) => {
+    const row = document.createElement("tr");
+    const cell = (className, text) => {
+      const node = document.createElement("td");
+      node.className = className;
+      node.textContent = text;
+      row.append(node);
+      return node;
+    };
+    cell("provider-number", String(index + 1).padStart(2, "0"));
+    const identity = cell("provider-identity", item.name || item.provider_id);
+    if (item.name && item.name !== item.provider_id) {
+      const id = document.createElement("small");
+      id.textContent = item.provider_id;
+      identity.append(id);
+    }
+    cell("provider-endpoint", item.base_url);
+    const model = document.createElement("span");
+    model.className = "model-tag";
+    model.textContent = item.model;
+    cell("", "").append(model);
+    const status = document.createElement("span");
+    status.className = `provider-state${item.active ? " active" : ""}`;
+    status.textContent = item.active ? "ACTIVE_STANDBY" : "STANDBY";
+    const key = document.createElement("small");
+    key.className = "provider-key";
+    key.textContent = item.api_key_set ? "KEY: BOUND" : "KEY: UNBOUND";
+    cell("", "").append(status, key);
+    if (state.user?.role !== "admin") { list.append(row); return; }
     const actions = document.createElement("div");
     actions.className = "button-row";
     const edit = document.createElement("button");
@@ -79,8 +102,8 @@ async function loadProviders() {
       await loadProviders();
     });
     actions.append(edit, activate, remove);
-    row.append(main, actions);
-    return row;
+    cell("provider-actions", "").append(actions);
+    list.append(row);
   });
 }
 
@@ -203,8 +226,15 @@ async function loadMcp() {
       catalogued: "按运行连接", disabled: "已停用", failed: "连接失败", duplicate: "重复配置" };
     const status = item.status?.status || "configured";
     const source = { managed: "网页托管", config: "配置文件", catalog: "公开 MCP" }[item.source] || "网页托管";
-    meta.textContent = `${item.transport} · ${statuses[status] || status} · ${item.status?.tool_count || 0} tools · ${source}`;
+    const toolCount = Number(item.status?.tool_count || 0);
+    meta.textContent = `${item.transport || "-"} · ${statuses[status] || status} · ${toolCount} tools · ${source}`;
     main.append(title, meta);
+    const detail = document.createElement("small");
+    detail.className = `setting-detail mcp-state mcp-state-${status}`;
+    detail.textContent = item.enabled
+      ? (item.status?.callable ? `运行中，可调用 ${toolCount} 个工具` : "已开启，等待连接")
+      : "已停用，不会注入运行";
+    main.append(detail);
     if (item.status?.error) {
       const error = document.createElement("small");
       error.className = "setting-detail";
@@ -222,6 +252,35 @@ async function loadMcp() {
       actions.append(connect);
     }
     if ((!item.source || item.source === "managed") && state.user?.role === "admin") {
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = item.enabled ? "secondary" : "primary";
+      toggle.textContent = item.enabled ? "停用" : "启用";
+      toggle.addEventListener("click", async () => {
+        toggle.disabled = true;
+        try {
+          await api("/api/mcp", {
+            method: "POST",
+            headers: commandHeaders(),
+            body: JSON.stringify({
+              server_id: item.server_id,
+              transport: item.transport,
+              command: item.command,
+              args: item.args || [],
+              cwd: item.cwd,
+              url: item.url,
+              preset: item.preset,
+              scope: item.scope,
+              enabled: !item.enabled,
+            }),
+          });
+          await loadMcp();
+          showNotice(item.enabled ? "MCP 已停用" : "MCP 已启用");
+        } catch (error) {
+          toggle.disabled = false;
+          showNotice(error.message, true);
+        }
+      });
       const edit = document.createElement("button");
       edit.type = "button";
       edit.textContent = "编辑";
@@ -238,7 +297,14 @@ async function loadMcp() {
         });
         await loadMcp();
       });
-      actions.append(edit, remove);
+      const inspect = document.createElement("button");
+      inspect.type = "button";
+      inspect.textContent = "查看工具";
+      inspect.disabled = !toolCount;
+      inspect.addEventListener("click", () => {
+        showNotice(`${title.textContent} 已发现 ${toolCount} 个工具；启动运行后可在“工具”页查看可见目录。`);
+      });
+      actions.append(toggle, inspect, edit, remove);
     }
     row.append(main, actions);
     return row;

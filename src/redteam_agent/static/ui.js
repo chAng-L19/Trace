@@ -43,8 +43,9 @@
   }
 
   function appendEmpty(container, text) {
-    const node = document.createElement("p");
-    node.className = "run-empty";
+    const node = document.createElement("div");
+    node.className = "run-empty rl-reticle-box";
+    node.setAttribute("role", "status");
     node.textContent = text;
     container.append(node);
   }
@@ -96,7 +97,7 @@
 
       const button = document.createElement("button");
       button.type = "button";
-      button.className = `run-item${run.run_id === selectedId ? " selected" : ""}`;
+      button.className = `run-item rhine-row${run.run_id === selectedId ? " selected" : ""}`;
       button.dataset.runId = run.run_id;
       button.title = valueOr(runGoal.objective, run.session_id);
 
@@ -157,6 +158,23 @@
       summary.textContent = compactPayload(event.payload);
       item.append(sequence, name, summary);
       container.append(item);
+    }
+    const terminal = $("#terminal-events");
+    terminal.replaceChildren();
+    $("#terminal-message").parentElement.hidden = events.length > 0;
+    for (const event of events.slice(-30)) {
+      const line = document.createElement("div");
+      line.className = "terminal-line";
+      const time = document.createElement("span");
+      time.textContent = event.created_at
+        ? new Date(event.created_at).toLocaleTimeString("zh-CN", { hour12: false })
+        : "--:--:--";
+      const sequence = document.createElement("b");
+      sequence.textContent = `#${event.sequence}`;
+      const message = document.createElement("em");
+      message.textContent = `${event.event_type} ${compactPayload(event.payload)}`;
+      line.append(time, sequence, message);
+      terminal.append(line);
     }
   }
 
@@ -393,7 +411,7 @@
           ? `来自 ${record.parent_record_ids.join(" · ")}`
           : explorationId(record);
         button.append(meta, statement, relation);
-        const select = (navigate = false) => {
+        const select = () => {
           map.dataset.selectedRecord = explorationId(record);
           for (const item of buttons) {
             item.classList.toggle("selected", item === button);
@@ -403,12 +421,8 @@
             button.focus({ preventScroll: true });
             button.scrollIntoView({ block: "center" });
           });
-          if (navigate && matchMedia("(max-width: 960px)").matches) {
-            inspector.scrollIntoView({ block: "start" });
-            inspector.querySelector("h3").focus({ preventScroll: true });
-          }
         };
-        button.addEventListener("click", () => select(true));
+        button.addEventListener("click", select);
         buttons.push(button);
         nodes.append(button);
         if (explorationId(record) === selectedId) button.restoreSelection = select;

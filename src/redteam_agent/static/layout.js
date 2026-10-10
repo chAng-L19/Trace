@@ -2,12 +2,6 @@
 
 globalThis.TraceLayout = (() => {
   const { coreRun, formatTime } = globalThis.TraceUI;
-  const context = document.querySelector("#run-context");
-  const compact = matchMedia("(max-width: 992px)");
-  const syncContext = () => { context.open = !compact.matches; };
-  compact.addEventListener("change", syncContext);
-  syncContext();
-
   function renderContext(view) {
     if (!view) return;
     const run = coreRun(view);

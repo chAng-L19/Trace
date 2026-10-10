@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="light">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light" />
-    <meta name="theme-color" content="#e9ecea" />
+    <meta name="theme-color" content="#F7F7F5" />
     <title>Trace Workbench</title>
     <link rel="icon" href="data:," />
     <link rel="stylesheet" href="/app.css" />
@@ -18,57 +18,63 @@
     <script src="/theme.js" defer></script>
   </head>
   <body>
-    <aside class="lab-rail" aria-label="工作台导航">
+    <aside class="lab-rail" id="workspace-nav" aria-label="工作台导航">
       <a class="rail-brand" href="/" aria-label="Trace 工作台">
-        <img src="/trace-mark.png" alt="" width="512" height="512" />
+        <span class="brand-logo" aria-hidden="true"></span>
         <span class="rail-title">TRACE</span>
-        <span class="rail-label">安全研究工作台</span>
+        <span class="brand-version">V0.1</span>
       </a>
-      <nav class="top-nav" aria-label="主导航">
-        <button class="nav-button active" data-view="runs" type="button">
-          <i data-lucide="layers" aria-hidden="true"></i>所有运行
+      <div class="rail-navigation">
+      <nav class="top-nav" aria-label="控制面">
+        <p class="rail-section-label">[01] 控制面</p>
+        <button class="nav-button btn btn-ghost active" data-view="runs" type="button">
+          所有运行
         </button>
+        <button class="control-tab" type="button" data-control-tab="conversations">对话管理</button>
       </nav>
       <nav class="rail-shortcuts" aria-label="资源与配置">
-        <p class="rail-section-label">资源与配置</p>
-        <button class="control-tab active" type="button" data-control-tab="providers"><i data-lucide="cpu" aria-hidden="true"></i>模型与 API</button>
-        <button class="control-tab" type="button" data-control-tab="skills"><i data-lucide="blocks" aria-hidden="true"></i>Skills</button>
-        <button class="control-tab" type="button" data-control-tab="mcp"><i data-lucide="plug" aria-hidden="true"></i>MCP 接入</button>
-        <button class="control-tab" type="button" data-control-tab="conversations"><i data-lucide="messages-square" aria-hidden="true"></i>对话管理</button>
-        <button class="control-tab" type="button" data-control-tab="system"><i data-lucide="server" aria-hidden="true"></i>运行环境</button>
+        <p class="rail-section-label">[02] 资源与配置</p>
+        <button class="control-tab active" type="button" data-control-tab="providers">模型与 API</button>
+        <button class="control-tab" type="button" data-control-tab="skills">Skills 模组</button>
+        <button class="control-tab" type="button" data-control-tab="mcp">MCP 节点</button>
+        <button class="control-tab" type="button" data-control-tab="system">运行环境</button>
+      </nav>
+      </div>
+      <div class="rail-account">
         <button class="control-tab" type="button" data-control-tab="profile"><i data-lucide="user-round" aria-hidden="true"></i>个人资料</button>
         <button class="control-tab" type="button" data-control-tab="users" data-admin-only hidden><i data-lucide="users" aria-hidden="true"></i>用户管理</button>
-      </nav>
+        <div class="operator-bar">
+          <span class="operator-name">OPERATOR: <span id="current-user" class="account-name"></span></span>
+          <button class="secondary icon-only theme-toggle" id="theme-toggle" data-theme-toggle type="button" aria-label="切换深色模式" title="切换深色模式"><i data-lucide="moon" aria-hidden="true"></i></button>
+          <button class="text-button icon-only" id="logout" type="button" aria-label="退出登录" title="退出登录" hidden><i data-lucide="log-out" aria-hidden="true"></i></button>
+        </div>
+      </div>
     </aside>
     <header class="app-header">
-      <div class="header-label"><strong id="workspace-title">运行工作台</strong></div>
+      <div class="header-label"><span class="path-mono">TRACE_SYS //</span><strong id="workspace-title">所有运行</strong></div>
       <div class="header-tools">
-        <button class="primary small" id="new-run" type="button" title="新建运行" aria-label="新建运行"><i data-lucide="plus" aria-hidden="true"></i>新建运行</button>
-        <div class="connection" id="connection" role="status">
-          <span class="connection-dot" aria-hidden="true"></span>
-          <span id="connection-text">正在连接</span>
+        <div class="rl-badge connection" id="connection" role="status">
+          <span class="pulse-dot connection-dot" aria-hidden="true"></span>
+          <span id="connection-text" class="font-mono">正在连接</span>
         </div>
-        <span class="runtime-badge" id="runtime-badge">runtime / --</span>
-        <span class="api-badge" id="api-badge">API / --</span>
-        <span id="current-user" class="account-name"></span>
-        <button class="text-button small" id="logout" type="button" hidden>
-          退出
-        </button>
+        <button class="primary small" id="new-run" type="button" title="新建运行" aria-label="新建运行"><i data-lucide="plus" aria-hidden="true"></i><span>新建运行</span></button>
       </div>
     </header>
 
     <main class="app-shell">
       <section class="runs-index" id="runs-index" aria-labelledby="runs-title">
-        <header class="page-heading">
+        <header class="rl-card-header page-heading">
           <div>
             <div class="heading-line">
-              <h1 id="runs-title">所有运行</h1>
-              <span class="run-count" id="run-count">0</span>
+              <span class="rl-sys-tag">// SUB_MODULE: RUN_REGISTRY</span>
+              <h1 class="rl-card-title" id="runs-title">所有运行</h1>
+              <span class="run-count font-mono" id="run-count">0</span>
             </div>
           </div>
           <section class="run-summary" id="run-summary" aria-label="当前列表状态"><strong id="summary-active">运行中 0</strong><strong id="summary-waiting">待处理 0</strong><strong id="summary-complete">已完成 0</strong></section>
         </header>
 
+        <div class="rl-card-body">
         <section class="run-toolbar" aria-label="筛选运行">
           <label class="search-field" for="run-search">
             <span>搜索运行</span>
@@ -88,19 +94,23 @@
               <option value="cancelled">已取消</option>
             </select>
           </label>
-          <button class="secondary toolbar-button icon-only" id="refresh-runs" type="button" title="刷新运行" aria-label="刷新运行">
+          <button class="btn btn-secondary secondary toolbar-button icon-only" id="refresh-runs" type="button" title="刷新运行" aria-label="刷新运行">
             <i data-lucide="rotate-cw" aria-hidden="true"></i>
           </button>
         </section>
 
+        <div class="run-table rl-reticle-box" role="group" aria-label="运行列表">
         <div class="run-list-heading" aria-hidden="true">
           <span>状态</span><span>任务目标</span><span>动作预算</span><span>运行标识</span>
         </div>
         <div class="run-list" id="run-list" aria-live="polite"></div>
+        </div>
 
-        <div class="runs-empty" id="empty-state" hidden>
+        <div class="runs-empty rl-reticle-box" id="empty-state" hidden>
           <img class="empty-symbol" src="/trace-mark.png" alt="" width="512" height="512" />
+          <span class="archive-label">// STATUS: RUN_REGISTRY_EMPTY</span>
           <h2>还没有运行</h2>
+        </div>
         </div>
       </section>
 
@@ -305,18 +315,32 @@
         <section class="control-section" data-control-panel="providers">
           <div class="panel-heading">
             <div>
-              <h1>模型与 API</h1>
+              <h1>已挂载 Provider 列表</h1>
+              <span class="archive-label">// SUB_MODULE: PROVIDER_REGISTRY</span>
             </div>
             <button class="primary" id="add-provider" type="button" data-admin-only>
               <i data-lucide="plus" aria-hidden="true"></i>添加 Provider
             </button>
           </div>
-          <div class="settings-list" id="provider-list"></div>
+          <div class="provider-registry rl-reticle-box">
+            <div class="table-scroll">
+              <table class="provider-table" aria-label="Provider 列表">
+                <thead><tr><th scope="col">#</th><th scope="col">PROVIDER 标识</th><th scope="col">BASE URL 端点</th><th scope="col">挂载模型</th><th scope="col">遥测状态</th><th scope="col" data-admin-only>操作</th></tr></thead>
+                <tbody id="provider-list"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="provider-empty rl-reticle-box" id="provider-empty" hidden>
+            <span class="archive-label">// STATUS: PROVIDER_REGISTRY_EMPTY</span>
+            <h2>尚未挂载模型端点</h2>
+            <button class="secondary" id="configure-provider" type="button" data-admin-only><i data-lucide="plug" aria-hidden="true"></i>配置模型端点</button>
+          </div>
         </section>
         <section class="control-section" data-control-panel="skills" hidden>
           <div class="panel-heading">
             <div>
-              <h1>Skills</h1>
+              <h1>Skills 模组</h1>
+              <span class="archive-label">// SUB_MODULE: SKILL_REGISTRY</span>
             </div>
             <button class="secondary" id="refresh-skills" type="button">
               <i data-lucide="rotate-cw" aria-hidden="true"></i>刷新索引
@@ -327,7 +351,8 @@
         <section class="control-section" data-control-panel="mcp" hidden>
           <div class="panel-heading">
             <div>
-              <h1>MCP 接入</h1>
+              <h1>MCP 节点</h1>
+              <span class="archive-label">// SUB_MODULE: MCP_CONNECTOR</span>
             </div>
             <div class="button-row">
               <button class="secondary" id="refresh-mcp" type="button">
@@ -343,6 +368,7 @@
           <div class="panel-heading">
             <div>
               <h1>对话管理</h1>
+              <span class="archive-label">// SUB_MODULE: CONVERSATION_REGISTRY</span>
             </div>
             <button class="secondary" id="refresh-conversations" type="button">
               <i data-lucide="rotate-cw" aria-hidden="true"></i>刷新
@@ -354,6 +380,7 @@
           <div class="panel-heading">
             <div>
               <h1>运行环境</h1>
+              <span class="archive-label">// SUB_MODULE: RUNTIME_STATUS</span>
             </div>
             <button class="secondary" id="reload-system" type="button" data-admin-only>
               <i data-lucide="rotate-cw" aria-hidden="true"></i>重载 MCP
@@ -362,7 +389,7 @@
           <pre class="json-view" id="system-view"></pre>
         </section>
         <section class="control-section" data-control-panel="profile" hidden>
-          <div class="panel-heading"><h1>个人资料</h1><span id="profile-role" class="status-badge"></span></div>
+          <div class="panel-heading"><div><span class="archive-label">// SUB_MODULE: OPERATOR_PROFILE</span><h1>个人资料</h1></div><span id="profile-role" class="status-badge"></span></div>
           <div class="profile-layout">
             <form id="profile-form" class="account-form">
               <h2>账户信息</h2>
@@ -381,13 +408,13 @@
           </div>
         </section>
         <section class="control-section" data-control-panel="users" hidden>
-          <div class="panel-heading"><h1>用户管理</h1><button class="primary" id="add-user" type="button"><i data-lucide="user-plus" aria-hidden="true"></i>添加用户</button></div>
+          <div class="panel-heading"><div><span class="archive-label">// SUB_MODULE: OPERATOR_REGISTRY</span><h1>用户管理</h1></div><button class="primary" id="add-user" type="button"><i data-lucide="user-plus" aria-hidden="true"></i>添加用户</button></div>
           <div class="settings-list" id="user-list"></div>
         </section>
       </div>
     </main>
 
-    <dialog id="create-dialog" aria-labelledby="create-title">
+    <dialog id="create-dialog" class="rl-reticle-box" aria-labelledby="create-title">
       <form id="create-form" method="dialog">
         <div class="dialog-heading">
           <div>
@@ -427,7 +454,7 @@
       </form>
     </dialog>
 
-    <dialog id="budget-dialog" aria-labelledby="budget-title">
+    <dialog id="budget-dialog" class="rl-reticle-box" aria-labelledby="budget-title">
       <form id="budget-form" method="dialog">
         <div class="dialog-heading">
           <div>
@@ -460,7 +487,7 @@
       </form>
     </dialog>
 
-    <dialog id="provider-dialog" aria-labelledby="provider-title">
+    <dialog id="provider-dialog" class="rl-reticle-box" aria-labelledby="provider-title">
       <form id="provider-form" method="dialog">
         <div class="dialog-heading">
           <div>
@@ -523,7 +550,7 @@
       </form>
     </dialog>
 
-    <dialog id="skill-dialog" aria-labelledby="skill-title">
+    <dialog id="skill-dialog" class="rl-reticle-box" aria-labelledby="skill-title">
       <form id="skill-form" method="dialog">
         <div class="dialog-heading">
           <div>
@@ -548,7 +575,7 @@
       </form>
     </dialog>
 
-    <dialog id="mcp-dialog" aria-labelledby="mcp-title">
+    <dialog id="mcp-dialog" class="rl-reticle-box" aria-labelledby="mcp-title">
       <form id="mcp-form" method="dialog">
         <div class="dialog-heading">
           <div>
@@ -601,7 +628,7 @@
       </form>
     </dialog>
 
-    <dialog id="fork-dialog" aria-labelledby="fork-title">
+    <dialog id="fork-dialog" class="rl-reticle-box" aria-labelledby="fork-title">
       <form id="fork-form" method="dialog">
         <div class="dialog-heading">
           <div>
@@ -627,7 +654,7 @@
       </form>
     </dialog>
 
-    <dialog id="observation-dialog" aria-labelledby="observation-title">
+    <dialog id="observation-dialog" class="rl-reticle-box" aria-labelledby="observation-title">
       <form id="observation-form" method="dialog">
         <div class="dialog-heading">
           <div>
@@ -654,29 +681,32 @@
     </dialog>
 
     <dialog id="login-dialog" class="login-dialog" aria-labelledby="login-title">
-      <form id="login-form" method="dialog">
-        <div class="login-brand">
-          <span class="brand-word">TRACE</span><span class="brand-rule" aria-hidden="true"></span>
-        </div>
-        <div class="login-copy">
-          <p class="kicker">工作台访问</p>
-          <h2 id="login-title">进入 Trace</h2>
-        </div>
-        <label for="login-username">用户名
-          <input id="login-username" name="username" autocomplete="username" required />
-        </label>
-        <label for="login-password">密码
-          <input id="login-password" name="password" type="password" autocomplete="current-password" required />
-        </label>
-        <p class="form-error" id="login-error" role="alert" hidden></p>
-        <button class="primary login-submit" id="login-submit" value="default" type="submit">
-          进入工作台
-        </button>
-        <p class="login-note">会话将在当前浏览器中保持。</p>
-      </form>
+      <header class="telemetry-header">
+        <span>// NODE_CLASSIFICATION: RED_TEAM_RESEARCH</span>
+        <span id="gate-state">GATE_STATE: STANDBY</span>
+        <button class="secondary icon-only" data-theme-toggle type="button" aria-label="切换深色模式" title="切换深色模式"><i data-lucide="moon" aria-hidden="true"></i></button>
+      </header>
+      <div class="auth-stage">
+        <form id="login-form" class="auth-card" method="dialog">
+          <span class="reticle reticle-tl" aria-hidden="true"></span><span class="reticle reticle-tr" aria-hidden="true"></span>
+          <span class="reticle reticle-bl" aria-hidden="true"></span><span class="reticle reticle-br" aria-hidden="true"></span>
+          <div class="progress-track" aria-hidden="true"><div class="auth-progress"></div></div>
+          <div class="card-meta"><span>SYS_GATE: TRACE_AUTH_01</span><span>TRACE / V0.1</span></div>
+          <h2 id="login-title" class="card-title"><span class="title-marker" aria-hidden="true"></span>安全研究工作台接入</h2>
+          <label for="login-username">OPERATOR IDENTIFIER
+            <input id="login-username" name="username" placeholder="输入研究员账号" autocomplete="username" required />
+          </label>
+          <label for="login-password">SECURITY ACCESS / PASSWORD
+            <input id="login-password" name="password" type="password" placeholder="输入访问密码" autocomplete="current-password" required />
+          </label>
+          <p class="form-error" id="login-error" role="alert" hidden></p>
+          <button class="primary login-submit" id="login-submit" value="default" type="submit"><span class="auth-dot" aria-hidden="true"></span><span id="login-label">确认接入终端</span></button>
+        </form>
+      </div>
+      <footer class="telemetry-footer"><span>TERMINAL: TRACE // AGENT_RUNTIME</span><span>ACCESS: OPERATOR_SESSION</span></footer>
     </dialog>
 
-    <dialog id="user-dialog" aria-labelledby="user-title">
+    <dialog id="user-dialog" class="rl-reticle-box" aria-labelledby="user-title">
       <form id="user-form" method="dialog">
         <div class="dialog-heading"><h2 id="user-title">添加用户</h2><button class="icon-only" value="cancel" type="submit" formnovalidate aria-label="关闭" title="关闭"><i data-lucide="x" aria-hidden="true"></i></button></div>
         <label>用户名<input name="username" required maxlength="80" autocomplete="off" /></label>
@@ -686,6 +716,18 @@
         <div class="dialog-actions"><button class="secondary" value="cancel" type="submit" formnovalidate>取消</button><button class="primary" type="submit" value="default">创建用户</button></div>
       </form>
     </dialog>
+
+    <section class="trace-terminal" id="trace-terminal" aria-label="Trace 控制台">
+      <button class="terminal-bar" id="terminal-toggle" type="button" aria-expanded="false">
+        <span><i data-lucide="terminal" aria-hidden="true"></i>DIAGNOSTIC MONITOR // 实时推演流</span>
+        <span class="terminal-state"><span id="terminal-state">展开</span><i data-lucide="chevron-up" aria-hidden="true"></i></span>
+      </button>
+      <div class="terminal-body" id="terminal-body" hidden>
+        <div class="terminal-line"><span>--:--:--</span><b>SYS</b><em id="terminal-message">等待运行事件</em></div>
+        <div id="terminal-events"></div>
+        <div class="terminal-meta"><span id="runtime-badge">runtime / --</span><span id="api-badge">API / --</span></div>
+      </div>
+    </section>
 
     <div class="notice" id="notice" role="status" aria-live="polite" hidden></div>
   </body>
