@@ -119,9 +119,10 @@
       const budgetCell = document.createElement("span");
       budgetCell.className = "run-budget";
       const budgetText = document.createElement("span");
-      budgetText.textContent = `${used} / ${limit || "-"}`;
+      budgetText.textContent = `${used} / ${budget.action_limit === 0 ? "无上限" : limit || "-"}`;
       const line = document.createElement("span");
       line.className = "budget-line";
+      line.hidden = budget.action_limit === 0;
       line.style.setProperty("--budget-percent", `${percent}%`);
       line.append(document.createElement("span"));
       budgetCell.append(budgetText, line);
@@ -179,46 +180,11 @@
   }
 
   function renderRecordList(container, records, idKey, typeKey) {
-    container.replaceChildren();
-    if (!records.length) return appendEmpty(container, "暂无记录");
-    for (const value of records) {
-      const record = document.createElement("article");
-      record.className = "record";
-      const head = document.createElement("div");
-      head.className = "record-head";
-      const title = document.createElement("strong");
-      title.textContent = valueOr(value[typeKey], "记录");
-      const id = document.createElement("code");
-      id.textContent = valueOr(value[idKey]);
-      const body = document.createElement("p");
-      body.textContent = safeJson(value);
-      head.append(title, id);
-      record.append(head, body);
-      container.append(record);
-    }
+    global.TracePresentation.renderEvidence(container, records);
   }
 
   function renderArtifactList(container, artifacts, runId) {
-    container.replaceChildren();
-    if (!artifacts.length) return appendEmpty(container, "暂无产物");
-    for (const artifact of artifacts) {
-      const record = document.createElement("article");
-      record.className = "record";
-      const head = document.createElement("div");
-      head.className = "record-head";
-      const title = document.createElement("strong");
-      title.textContent = valueOr(artifact.artifact_type, "artifact");
-      const link = document.createElement("a");
-      const artifactId = artifact.artifact_id || artifact.artifact_ref;
-      link.href = `/api/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactId)}/content`;
-      link.download = artifactId;
-      link.textContent = "下载";
-      const detail = document.createElement("p");
-      detail.textContent = safeJson(artifact);
-      head.append(title, link);
-      record.append(head, detail);
-      container.append(record);
-    }
+    global.TracePresentation.renderArtifacts(container, artifacts, runId);
   }
 
   const explorationKindLabels = {
@@ -262,7 +228,7 @@
     const term = document.createElement("dt");
     term.textContent = label;
     const detail = document.createElement("dd");
-    detail.textContent = Array.isArray(value) ? value.join(" · ") : String(value);
+    detail.append(global.TracePresentation.readableValue(value));
     list.append(term, detail);
   }
 
@@ -291,22 +257,19 @@
     appendInspectorField(fields, "能力", record.capabilities);
     appendInspectorField(fields, "重开条件", record.reopen_triggers);
     appendInspectorField(fields, "不确定性", record.uncertainty);
-    if (Number(record.confidence) > 0)
+    if (record.confidence !== null && record.confidence !== undefined)
       appendInspectorField(
         fields,
         "置信度",
         `${Math.round(Number(record.confidence) * 100)}%`,
       );
 
-    const raw = document.createElement("details");
-    raw.className = "inspector-raw";
-    const summary = document.createElement("summary");
-    summary.textContent = "查看记录结构";
-    const pre = document.createElement("pre");
-    const { lane, superseded, ...source } = record;
-    pre.textContent = safeJson(source);
-    raw.append(summary, pre);
-    container.append(header, fields, raw);
+    container.append(header, fields);
+    global.TracePresentation.details(container, "已测试范围", record.tested_domain);
+    global.TracePresentation.details(container, "实测观察", record.observations);
+    global.TracePresentation.details(container, "覆盖情况", record.coverage);
+    global.TracePresentation.details(container, "尝试内容", record.payload);
+    global.TracePresentation.details(container, "补充信息", record.metadata);
     if (onReturn) {
       const back = document.createElement("button");
       back.type = "button";
@@ -358,10 +321,10 @@
     const selectedId = map.dataset.selectedRecord || "";
     const restoreFocus = map.contains(document.activeElement);
     const inspectorFocused = inspector.contains(document.activeElement);
-    const rawWasOpen = inspector.querySelector("details")?.open;
     map.replaceChildren();
     inspector.replaceChildren();
-    raw.textContent = safeJson(payload || {});
+    raw.replaceChildren();
+    raw.hidden = true;
     const total = Number(projection.record_count ?? records.length);
     $("#search-count").textContent = payload?.records_truncated
       ? `最近 ${records.length} / 共 ${total} 条记录`
@@ -434,7 +397,6 @@
     const selected = buttons.find((button) => button.restoreSelection);
     if (selected) {
       selected.restoreSelection();
-      inspector.querySelector("details").open = Boolean(rawWasOpen);
       if (restoreFocus) selected.focus({ preventScroll: true });
       if (inspectorFocused) inspector.querySelector("h3").focus({ preventScroll: true });
       return;
@@ -454,37 +416,10 @@
       : "other";
   }
 
-  function appendStructuredMessage(record, content) {
-    const previewValue =
-      content?.projection?.structured_summary ||
-      content?.structured_summary ||
-      content?.output?.projection?.structured_summary ||
-      content?.output ||
-      content;
-    const previewLines = safeJson(previewValue).split("\n");
-    const preview = document.createElement("pre");
-    preview.className = "message-preview";
-    preview.textContent = previewLines.slice(0, 8).join("\n");
-    record.append(preview);
-    if (previewLines.length > 8) {
-      const remaining = document.createElement("span");
-      remaining.className = "message-remaining";
-      remaining.textContent = `另有 ${previewLines.length - 8} 行`;
-      record.append(remaining);
-    }
-    const details = document.createElement("details");
-    details.className = "message-raw";
-    const summary = document.createElement("summary");
-    summary.textContent = "展开完整结构";
-    const raw = document.createElement("pre");
-    raw.textContent = safeJson(content);
-    details.append(summary, raw);
-    record.append(details);
-  }
-
   function renderTranscriptList(container, messages) {
-    const expanded = new Set([...container.querySelectorAll(".transcript-message")]
-      .filter((node) => node.querySelector("details")?.open).map((node) => node.dataset.messageId));
+    const expanded = new Map([...container.querySelectorAll(".transcript-message")]
+      .map((item) => [item.dataset.messageId, [...item.querySelectorAll("details")]
+        .map((detail, index) => detail.open ? index : -1).filter((index) => index >= 0)]));
     container.replaceChildren();
     if (!messages.length) return appendEmpty(container, "暂无会话");
     for (const message of messages) {
@@ -501,8 +436,12 @@
           roleName
         ] || valueOr(message.role, "记录");
       const meta = document.createElement("span");
+      const sources = { original_goal: "任务目标", model_response: "模型回复",
+        model_request_projection: "模型上下文", tool_result: "执行结果", system_base: "系统指令",
+        action_prompt: "本轮任务", model_execution_stall_nudge: "执行提醒", model_empty_turn_nudge: "空回复提醒" };
       meta.textContent = [
-        message.source_type,
+        sources[message.source_type] || message.source_type,
+        message.metadata?.model,
         message.sequence ? `#${message.sequence}` : "",
         formatTime(message.created_at),
       ]
@@ -510,14 +449,10 @@
         .join(" · ");
       header.append(role, meta);
       record.append(header);
-      if (typeof message.content === "string") {
-        const body = document.createElement("div");
-        body.className = "message-copy";
-        body.textContent = message.content;
-        record.append(body);
-      } else {
-        appendStructuredMessage(record, message.content);
-        if (expanded.has(record.dataset.messageId)) record.querySelector("details").open = true;
+      global.TracePresentation.appendMessage(record, message.content, message);
+      for (const index of expanded.get(record.dataset.messageId) || []) {
+        const detail = record.querySelectorAll("details")[index];
+        if (detail) detail.open = true;
       }
       container.append(record);
     }

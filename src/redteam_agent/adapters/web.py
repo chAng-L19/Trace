@@ -33,7 +33,7 @@ _STATIC_FILES = {
     **{f"/{name}.css": (f"{name}.css", "text/css; charset=utf-8")
        for name in ("app", "base", "registry", "workbench", "control")},
     **{f"/{name}.js": (f"{name}.js", "text/javascript; charset=utf-8")
-       for name in ("ui", "layout", "control", "session", "profile", "app", "theme", "lucide.min")},
+       for name in ("ui", "presentation", "layout", "control", "session", "profile", "app", "theme", "lucide.min")},
     "/trace-mark.png": ("trace-mark.png", "image/png"),
     "/barlow-condensed-bold.ttf": ("barlow-condensed-bold.ttf", "font/ttf"),
     **{f"/{name}.ttf": (f"{name}.ttf", "font/ttf")
@@ -289,6 +289,7 @@ class WebApi(ControlRoutesMixin):
     def _get(self, tail: list[str], query: Mapping[str, str]) -> WebResponse:
         if not tail:
             views = self.service.list_runs(
+                summary_only=True,
                 limit=self._int_query(query, "limit", 100, 1, 1000),
                 offset=self._int_query(query, "offset", 0, 0, 1000000),
                 status=str(query.get("status") or ""),
@@ -381,9 +382,8 @@ class WebApi(ControlRoutesMixin):
                 return self._error(404, "resource_not_found")
             offset = self._int_query(query, "offset", 0, 0, 1_000_000)
             limit = self._int_query(query, "limit", 200, 1, 1000)
-            messages = self.service.transcript(run_id)
-            page = messages[offset : offset + limit]
-            return self._ok({"run_id": run_id, "messages": [_jsonable(item) for item in page], "truncated": offset + limit < len(messages)})
+            messages = self.service.transcript(run_id, limit=limit + 1, offset=offset)
+            return self._ok({"run_id": run_id, "messages": [_jsonable(item) for item in messages[:limit]], "truncated": len(messages) > limit})
         if resource == "artifacts":
             if len(tail) == 2:
                 offset = self._int_query(query, "offset", 0, 0, 1_000_000)
@@ -534,6 +534,7 @@ class WebApi(ControlRoutesMixin):
             resolved = BudgetDelta.from_value(delta)
             fields = {
                 "actions": resolved.actions,
+                "action_limit": resolved.action_limit,
                 "tokens": resolved.tokens,
                 "time_seconds": resolved.time_seconds,
                 "deadline": resolved.deadline,
@@ -787,8 +788,6 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 __all__ = ["DEFAULT_EVENT_LIMIT", "MAX_JSON_RESPONSE_BYTES", "MAX_REQUEST_BYTES", "WEB_SCHEMA_VERSION", "TraceHTTPServer", "WebApi", "WebResponse", "main", "model_provider_from_environment", "serve"]
-
-
 def __getattr__(name: str) -> Any:
     """Lazily expose the HTTP server while keeping the adapter importable."""
     if name == "TraceHTTPServer":

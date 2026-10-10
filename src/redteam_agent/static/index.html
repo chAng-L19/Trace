@@ -10,6 +10,7 @@
     <link rel="stylesheet" href="/app.css" />
     <script src="/lucide.min.js" defer></script>
     <script src="/ui.js" defer></script>
+    <script src="/presentation.js" defer></script>
     <script src="/layout.js" defer></script>
     <script src="/control.js" defer></script>
     <script src="/session.js" defer></script>
@@ -211,10 +212,7 @@
                 <p class="inspector-empty">选择一条探索记录以查看状态、来源与引用。</p>
               </aside>
             </div>
-            <details class="raw-projection">
-              <summary>原始 SearchGraph 投影</summary>
-              <pre class="json-view" id="search-raw"></pre>
-            </details>
+            <div id="search-raw" hidden></div>
           </section>
           <section class="tab-panel" role="tabpanel" data-panel="evidence" hidden>
             <div class="panel-heading">
@@ -244,7 +242,6 @@
             <div class="panel-heading">
               <div>
                 <h2>会话记录</h2>
-                <p>模型与工具的完整 transcript</p>
               </div>
             </div>
             <div class="transcript" id="transcript-list"></div>
@@ -259,7 +256,7 @@
                 <p>当前运行可发现与可调用的工具目录</p>
               </div>
             </div>
-            <pre class="json-view" id="tools-view"></pre>
+            <div class="readable-view" id="tools-view"></div>
           </section>
           <section class="tab-panel" role="tabpanel" data-panel="attack" hidden>
             <div class="panel-heading">
@@ -267,7 +264,7 @@
                 <h2>资产与攻击路径</h2>
               </div>
             </div>
-            <pre class="json-view" id="attack-view"></pre>
+            <div class="readable-view" id="attack-view"></div>
           </section>
           <section class="tab-panel" role="tabpanel" data-panel="transparency" hidden>
             <div class="panel-heading">
@@ -275,7 +272,7 @@
                 <h2>运行透明度</h2>
               </div>
             </div>
-            <pre class="json-view" id="transparency-view"></pre>
+            <div class="readable-view" id="transparency-view"></div>
           </section>
           <section class="tab-panel" role="tabpanel" data-panel="report" hidden>
             <div class="panel-heading">
@@ -286,7 +283,7 @@
                 <i data-lucide="download" aria-hidden="true"></i>导出 JSON
               </button>
             </div>
-            <pre class="json-view" id="report-view"></pre>
+            <div class="readable-view" id="report-view"></div>
           </section>
         </div>
         <details class="run-context" id="run-context" open>
@@ -342,9 +339,10 @@
               <h1>Skills 模组</h1>
               <span class="archive-label">// SUB_MODULE: SKILL_REGISTRY</span>
             </div>
-            <button class="secondary" id="refresh-skills" type="button">
+            <div class="button-row"><button class="secondary" id="refresh-skills" type="button">
               <i data-lucide="rotate-cw" aria-hidden="true"></i>刷新索引
             </button>
+            <button class="primary" id="add-skill" type="button" data-admin-only><i data-lucide="plus" aria-hidden="true"></i>新增 Skill</button></div>
           </div>
           <div class="settings-list" id="skill-list"></div>
         </section>
@@ -386,7 +384,7 @@
               <i data-lucide="rotate-cw" aria-hidden="true"></i>重载 MCP
             </button>
           </div>
-          <pre class="json-view" id="system-view"></pre>
+          <div class="readable-view" id="system-view"></div>
         </section>
         <section class="control-section" data-control-panel="profile" hidden>
           <div class="panel-heading"><div><span class="archive-label">// SUB_MODULE: OPERATOR_PROFILE</span><h1>个人资料</h1></div><span id="profile-role" class="status-badge"></span></div>
@@ -444,6 +442,7 @@
           <input name="time_limit_seconds" type="number" min="1" step="1" placeholder="可选" />
         </label>
         </div>
+        <label class="check"><input name="unlimited_actions" type="checkbox" />动作无上限</label>
         <div class="dialog-actions">
           <button class="secondary" value="cancel" type="submit" formnovalidate>
             取消</button>
@@ -477,6 +476,7 @@
         </div>
         <label class="check">
           <input name="acknowledge_missing_usage" type="checkbox" />确认模型缺失的 Token 用量</label>
+        <label class="check"><input name="unlimited_actions" type="checkbox" />动作无上限</label>
         <div class="dialog-actions">
           <button class="secondary" value="cancel" type="submit" formnovalidate>
             取消</button>
@@ -560,8 +560,9 @@
             ×
           </button>
         </div>
-        <input id="skill-id" name="skill_id" type="hidden" />
+        <label>Skill 标识<input id="skill-id" name="skill_id" required /></label>
         <p class="dialog-copy" id="skill-name"></p>
+        <label>内容（Markdown）<textarea id="skill-content" name="content" rows="10" spellcheck="false" required></textarea></label>
         <label>配置 JSON
           <textarea id="skill-config" name="config" rows="10" spellcheck="false" placeholder="{}"></textarea>
         </label>
@@ -618,6 +619,7 @@
         <label>请求头 JSON
           <textarea name="headers" rows="2" placeholder='{"Authorization":"Bearer ${MCP_TOKEN}"}'></textarea>
         </label>
+        <label class="check"><input name="enabled" type="checkbox" checked />启用</label>
         <div class="dialog-actions">
           <button class="secondary" value="cancel" type="submit" formnovalidate>
             取消</button>

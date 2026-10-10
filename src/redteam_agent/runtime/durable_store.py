@@ -62,6 +62,7 @@ class ServiceStoreMixin:
         acknowledge_missing_usage: bool,
         idempotency_key: str,
         lease_token: LeaseToken,
+        action_limit: int | None = None,
     ) -> OperationState:
         client_key = idempotency_key.strip()
         if not client_key:
@@ -69,6 +70,8 @@ class ServiceStoreMixin:
         if (lease_token.run_id, lease_token.action_id) != (run_id, "__operation__"):
             raise LeaseLostError(f"lease_identity_mismatch:{run_id}:__operation__")
         request = {"actions": int(actions), "tokens": int(tokens), "time_seconds": float(time_seconds), "deadline": str(deadline or ""), "acknowledge_missing_usage": bool(acknowledge_missing_usage)}
+        if action_limit is not None:
+            request["action_limit"] = int(action_limit)
         request_hash = hashlib.sha256(json.dumps(request, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
         durable_key = hashlib.sha256(f"agent-service-budget\0{run_id}\0{client_key}".encode("utf-8")).hexdigest()
         with self.transaction(immediate=True) as connection:
@@ -125,6 +128,7 @@ class StoreSchemaMixin:
     def _initialize(self) -> None:
         with self.transaction(immediate=True) as connection:
             self._migration_report = apply_migrations(self, connection)
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_operations_updated ON operations(updated_at DESC,run_id DESC)")
 
     @property
     def migration_report(self) -> MigrationReport:
@@ -388,6 +392,7 @@ class DurableStore(
         time_seconds: float = 0.0,
         deadline: str = "",
         acknowledge_missing_usage: bool = False,
+        action_limit: int | None = None,
     ) -> tuple[OperationState, ...]:
         """Apply one budget delta to every run in a single SQLite transaction."""
 
@@ -430,6 +435,7 @@ class DurableStore(
                 operator_pause = state.status == "paused_budget" and previous_pause_reason not in BUDGET_PAUSE_REASONS
                 changed = state.budget.apply_delta(
                     actions=actions,
+                    action_limit=action_limit,
                     tokens=tokens,
                     time_seconds=time_seconds,
                     deadline=deadline,
@@ -475,6 +481,7 @@ class DurableStore(
                     "budget_delta_applied",
                     {
                         "actions": actions,
+                        "action_limit": action_limit,
                         "tokens": tokens,
                         "time_seconds": time_seconds,
                         "deadline": deadline,
@@ -501,6 +508,16 @@ class DurableStore(
             state = OperationState.from_dict(snapshot)
             state.state_version = max(1, int(row["version"]))
             return state
+
+    def delete_operation(self, run_id: str) -> None:
+        with self.transaction(immediate=True) as connection:
+            # Heads and journal parent references must go before the run cascade.
+            connection.execute("DELETE FROM session_journal_heads WHERE run_id=?", (run_id,))
+            connection.execute("DELETE FROM session_journal_entries WHERE run_id=?", (run_id,))
+            connection.execute("DELETE FROM session_bindings WHERE run_id=?", (run_id,))
+            cursor = connection.execute("DELETE FROM operations WHERE run_id=?", (run_id,))
+            if cursor.rowcount != 1:
+                raise KeyError(f"operation_not_found:{run_id}")
 
     def latest_operation(self, session_id: str, *, include_terminal: bool = True) -> OperationState | None:
         query = "SELECT * FROM operations WHERE session_id=?"

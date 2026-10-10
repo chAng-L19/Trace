@@ -212,7 +212,7 @@ def stream_events(provider: Any, request: ModelRequest, response: Any, name_map:
             response_id = str(document.get("id") or response_id)
             model = str(document.get("model") or model)
             if document.get("usage") is not None:
-                usage = provider._usage(document["usage"])
+                usage.update(provider._usage(document["usage"]))
                 events.append(("usage", dict(usage)))
             for choice in document.get("choices") or ():
                 if choice.get("index", 0) != 0:

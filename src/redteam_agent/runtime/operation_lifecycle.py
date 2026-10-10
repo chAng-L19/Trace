@@ -246,6 +246,7 @@ class OperationLifecycleMixin:
         time_seconds: float = 0.0,
         deadline: str = "",
         acknowledge_missing_usage: bool = False,
+        action_limit: int | None = None,
     ) -> OperationResult:
         if actions < 0 or tokens < 0 or time_seconds < 0:
             raise ValueError("budget_delta_must_be_nonnegative")
@@ -265,6 +266,7 @@ class OperationLifecycleMixin:
             operator_pause = state.status == "paused_budget" and previous_pause_reason not in BUDGET_PAUSE_REASONS
             if state.budget.apply_delta(
                 actions=actions,
+                action_limit=action_limit,
                 tokens=tokens,
                 time_seconds=time_seconds,
                 deadline=deadline,
@@ -285,6 +287,7 @@ class OperationLifecycleMixin:
                     event_type="budget_delta_applied",
                     event={
                         "actions": actions,
+                        "action_limit": action_limit,
                         "tokens": tokens,
                         "time_seconds": time_seconds,
                         "deadline": deadline,
@@ -305,6 +308,7 @@ class OperationLifecycleMixin:
         time_seconds: float = 0.0,
         deadline: str = "",
         acknowledge_missing_usage: bool = False,
+        action_limit: int | None = None,
     ) -> OperationResult:
         if actions < 0 or tokens < 0 or time_seconds < 0:
             raise ValueError("budget_delta_must_be_nonnegative")
@@ -322,6 +326,7 @@ class OperationLifecycleMixin:
         try:
             state = self.store.apply_budget_delta_once(
                 run_id,
+                **({"action_limit": action_limit} if action_limit is not None else {}),
                 actions=actions,
                 tokens=tokens,
                 time_seconds=time_seconds,
@@ -343,6 +348,7 @@ class OperationLifecycleMixin:
         time_seconds: float = 0.0,
         deadline: str = "",
         acknowledge_missing_usage: bool = False,
+        action_limit: int | None = None,
     ) -> tuple[OperationState, ...]:
         """Acquire every operation fence before atomically changing a batch."""
 
@@ -365,6 +371,7 @@ class OperationLifecycleMixin:
                 leases[run_id] = lease
             return self.store.apply_budget_delta_batch(
                 ordered,
+                **({"action_limit": action_limit} if action_limit is not None else {}),
                 lease_tokens=leases,
                 actions=actions,
                 tokens=tokens,

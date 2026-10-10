@@ -2,6 +2,8 @@
 .settings-list { counter-reset: setting; border-top: 1px solid var(--line); background: var(--surface); }
 .button-row { min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .button-row > * { max-width: 100%; }
+.resource-toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-secondary); font-size: 11px; white-space: nowrap; }
+.resource-toggle input { width: 14px; height: 14px; accent-color: var(--accent); }
 .setting-row { position: relative; display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; align-items: center; gap: 16px; min-height: 72px; padding: 12px 16px; border-bottom: 1px solid var(--line); counter-increment: setting; }
 .setting-row::before { content: counter(setting, decimal-leading-zero); color: var(--ink-muted); font: 11px/1.5 var(--font-mono); }
 .setting-row:hover { background: var(--surface-hover); }

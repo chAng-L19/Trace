@@ -167,6 +167,7 @@ class ServiceExecutionMixin:
         if delta.changes_budget:
             arguments = {
                 "actions": delta.actions,
+                "action_limit": delta.action_limit,
                 "tokens": delta.tokens,
                 "time_seconds": delta.time_seconds,
                 "deadline": delta.deadline,

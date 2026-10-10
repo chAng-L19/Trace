@@ -63,10 +63,11 @@ def _operation_command(arguments: argparse.Namespace) -> int:
                 request["max_actions"] = arguments.max_actions
             payload = service.start(request).to_dict()
         elif command in {"run", "resume"}:
-            if arguments.max_cycles < 1 or (arguments.max_actions is not None and arguments.max_actions < 1):
-                raise ValueError("execution_limit_must_be_positive")
+            if arguments.max_cycles < 1 or (arguments.max_actions is not None and arguments.max_actions < 0):
+                raise ValueError("max_cycles_must_be_positive_and_max_actions_nonnegative")
             method = service.resume if command == "resume" else service.run
             view = method(arguments.run_id, {"actions": arguments.add_actions, "tokens": arguments.add_tokens,
+                "action_limit": arguments.action_limit,
                 "time_seconds": arguments.add_time_seconds, "deadline": arguments.deadline,
                 "idempotency_key": arguments.idempotency_key,
                 "acknowledge_missing_usage": arguments.acknowledge_missing_usage},
@@ -289,7 +290,7 @@ def _main(argv: list[str] | None = None) -> int:
         command.add_argument("--json", action="store_true", help="JSON is the default output")
         if name in {"start", "run", "resume"}:
             _provider_arguments(command)
-            command.add_argument("--max-actions", type=int)
+            command.add_argument("--max-actions", type=int, help="Action limit (0 = unlimited; start default: 64)")
             command.add_argument("--deadline", default="")
         else:
             command.add_argument("--root", type=Path)
@@ -308,6 +309,7 @@ def _main(argv: list[str] | None = None) -> int:
             command.add_argument("--single-cycle", action="store_true", help="Stop after one model cycle")
             command.add_argument("--max-cycles", type=int, default=32)
             command.add_argument("--add-actions", type=int, default=0)
+            command.add_argument("--action-limit", type=int, help="Set the run action limit (0 = unlimited)")
             command.add_argument("--add-tokens", type=int, default=0)
             command.add_argument("--add-time-seconds", type=float, default=0)
             command.add_argument("--idempotency-key", default="")

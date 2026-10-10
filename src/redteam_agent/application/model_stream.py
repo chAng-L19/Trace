@@ -73,7 +73,7 @@ def invoke_model_stream(loop: Any, request: ModelRequest) -> ModelResponse:
             if event.event_type == "tool_call":
                 tool_calls.append(payload)
             elif event.event_type == "usage":
-                usage = loop._normalize_usage(payload)
+                usage = {**usage, **loop._normalize_usage(payload)}
             elif event.event_type == "completed":
                 completed = True
                 final_text = payload.get("text")
@@ -87,7 +87,7 @@ def invoke_model_stream(loop: Any, request: ModelRequest) -> ModelResponse:
                         dict(item) for item in payload["tool_calls"] if isinstance(item, Mapping)
                     )
                 if isinstance(payload.get("usage"), Mapping):
-                    usage = loop._normalize_usage(payload["usage"])
+                    usage = {**usage, **loop._normalize_usage(payload["usage"])}
                 if isinstance(payload.get("structured_output"), Mapping):
                     structured = dict(payload["structured_output"])
                 finish_reason = str(payload.get("finish_reason") or "stop")

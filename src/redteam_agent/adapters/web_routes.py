@@ -11,6 +11,7 @@ from ..application.contracts import CANONICAL_RUN_STATUSES
 from ..runtime.security import safe_error_text, SENSITIVE_KEY_RE
 from ..application.bootstrap import resolve_provider, reload_mcp
 from ..runtime.mcp_config import PUBLIC_MCP_PRESETS
+from ..runtime.durable_store import StoreConflictError
 
 
 class ControlRoutesMixin:
@@ -88,6 +89,8 @@ class ControlRoutesMixin:
             return self._control_dispatch(method, domain, tail, body)
         except KeyError as exc:
             return self._error(404, str(exc))
+        except StoreConflictError as exc:
+            return self._error(409, str(exc))
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             return self._error(400, str(exc))
         except Exception as exc:  # pragma: no cover
@@ -148,22 +151,35 @@ class ControlRoutesMixin:
         if domain == "skills":
             if method == "GET" and not identifier:
                 return self._ok({"skills": self.control.skills()})
+            if method == "GET" and identifier:
+                return self._ok({"skill": self.control.skill(identifier)})
+            if method == "POST" and not identifier:
+                return self._ok({"skill": self.service.control_write(self.control.save_skill, body)}, status=201)
             if method == "POST" and identifier:
-                config = body.get("config") if isinstance(body.get("config"), Mapping) else {}
+                if "content" in body:
+                    return self._ok({"skill": self.service.control_write(self.control.save_skill,
+                        {**body, "resource_id": identifier})})
+                config = body.get("config") if isinstance(body.get("config"), Mapping) else None
                 return self._ok({"skill": self.service.control_write(self.control.set_skill, identifier, enabled=bool(body.get("enabled", True)), config=config)})
+            if method == "DELETE" and identifier:
+                self.service.control_write(self.control.delete_skill, identifier)
+                return self._ok({"deleted": identifier})
         if domain == "mcp":
             if method == "GET" and not identifier:
                 statuses = self.service.runtime.broker.server_statuses()
                 items = self.control.mcp_servers()
+                deleted_ids = self.control.deleted_mcp_ids()
                 configured_ids = {item["server_id"] for item in items}
                 for item in items:
                     item["source"] = "managed"
-                items.extend(
-                    {"server_id": name, "source": "config", "enabled": status.get("status") != "disabled",
-                     "transport": status.get("transport", ""), "scope": status.get("scope", ""),
-                     "preset": status.get("preset", ""), "status": status}
-                    for name, status in statuses.items() if name not in configured_ids
-                )
+                for name, status in statuses.items():
+                    if name in configured_ids or name in deleted_ids:
+                        continue
+                    spec = self.control.mcp_source_spec(name, self.service.config_paths)
+                    spec.pop("env", None)
+                    spec.pop("headers", None)
+                    items.append({**spec, "server_id": name, "source": "config",
+                        "enabled": status.get("status") != "disabled", "status": status})
                 for item in items:
                     status = dict(statuses.get(item["server_id"], item["status"]))
                     if self._mcp_restore_error:
@@ -180,35 +196,42 @@ class ControlRoutesMixin:
                      "status": {"status": "available", "configured": False, "discovered": False,
                                 "callable": False, "tool_count": 0}}
                     for name, preset in PUBLIC_MCP_PRESETS.items()
-                    if name not in configured_ids and name not in configured_presets
+                    if name not in configured_ids and name not in configured_presets and name not in deleted_ids
                 )
                 mcp_tools = sum(item.source.startswith("live-mcp")
                                 for item in self.service.runtime.broker.descriptors())
                 return self._ok({"servers": items, "tools": mcp_tools})
             if method == "POST" and not identifier:
-                saved = self.service.control_write(self.control.save_mcp, body)
+                server_id = str(body.get("server_id") or "")
+                payload = body
+                if (server_id in self.service.runtime.broker.server_statuses()
+                        and not any(item["server_id"] == server_id for item in self.control.mcp_servers())):
+                    payload = {**self.control.mcp_source_spec(server_id, self.service.config_paths), **body}
+                saved = self.service.control_write(self.control.save_mcp, payload)
                 self._reload_control_plane()
                 return self._ok({"server": saved}, status=201)
             if method == "POST" and identifier == "refresh":
                 return self._ok(self._reload_control_plane())
+            if method == "POST" and identifier:
+                saved = self.service.control_write(self.control.set_mcp, identifier,
+                    enabled=bool(body.get("enabled", True)), paths=self.service.config_paths)
+                self._reload_control_plane()
+                return self._ok({"server": saved})
             if method == "DELETE" and identifier:
-                self.service.control_write(self.control.delete_mcp, identifier)
+                managed = any(item["server_id"] == identifier for item in self.control.mcp_servers())
+                spec = None if managed else self.control.mcp_source_spec(identifier, self.service.config_paths)
+                self.service.control_write(self.control.delete_mcp, identifier, spec)
                 self._reload_control_plane()
                 return self._ok({"deleted": identifier})
         if domain == "conversations":
             if method == "GET" and not identifier:
-                runs = self.service.list_runs(limit=100, offset=0)
-                conversations = []
-                for item in runs:
-                    session = _jsonable(self.service.export_session(item.run.run_id))
-                    conversations.append({
-                        "run": self._run_projection(item),
-                        "message_count": len(self.service.transcript(item.run.run_id)),
-                        "session": session.get("session", {}),
-                    })
+                conversations = [{"run": item["run"], "message_count": item["message_count"], "session": item["session"]}
+                                 for item in self.service.conversation_summaries()]
                 return self._ok({"conversations": conversations})
+            if identifier and method == "DELETE":
+                self.service.delete_conversation(identifier)
+                return self._ok({"deleted": identifier})
             if identifier and method == "GET":
-                self.service.status(identifier)
                 # Include the journal projection alongside the tree so clients can
                 # render the active branch and branch heads without a second,
                 # provider-specific query.  The tree remains unchanged for

@@ -333,9 +333,9 @@ class OperationExecutionMixin:
             # deltas and resume_control are the only paths that clear them.
             return self._result(state, workflow)
 
-        cycle_limit = max(1, int(max_actions)) if max_actions is not None else state.budget.action_limit
+        cycle_limit = max(0, int(max_actions)) if max_actions is not None else state.budget.action_limit
         executed = 0
-        while executed < cycle_limit:
+        while cycle_limit == 0 or executed < cycle_limit:
             token = self._renew_operation_lease(token, ttl=self._operation_lease_ttl(workflow))
             workflow = self._workflow_for(state)
             evidence = self.evidence_graph.list(run_id)

@@ -6,6 +6,7 @@ const {
   appendEmpty,
   coreRun,
   formatStatus,
+  formatTime,
   goal,
   renderArtifactList,
   renderEventTimeline,
@@ -141,11 +142,7 @@ async function loadSystem() {
     $("#api-badge").textContent =
       `API / v${valueOr(result.schema_version, "?")}`;
     if (result.control_plane)
-      $("#system-view").textContent = safeJson({
-        ...result.control_plane,
-        provider: result.provider,
-        auth: result.auth,
-      });
+      TracePresentation.renderSystem($("#system-view"), result);
   } catch (error) {
     setConnection("服务连接失败", false);
     showNotice(error.message, true);
@@ -231,7 +228,7 @@ async function loadRun(runId, resetEvents = true) {
     state.events = [];
     state.eventCursor = 0;
     state.report = null;
-    state.view = null;
+    state.view = state.runs.find((item) => coreRun(item).run_id === runId) || null;
     state.collectionPages = {};
     renderEvents();
     renderView();
@@ -246,32 +243,20 @@ async function loadRun(runId, resetEvents = true) {
     ))
       container.replaceChildren();
     for (const button of $$("[data-more]")) button.hidden = true;
+    for (const container of $$("#tools-view, #attack-view, #transparency-view")) container.replaceChildren();
   }
   try {
-    const result = await api(`/api/runs/${encodeURIComponent(runId)}`);
-    if (
-      epoch !== state.authEpoch ||
-      (state.authRequired && !state.authenticated)
-    )
-      return;
-    if (
-      state.selectedId !== runId ||
-      state.selectionVersion !== selectionVersion
-    )
-      return;
-    applyView(result.run);
-    if (resetEvents) {
-      await loadInitialEvents(runId, selectionVersion);
-      if (
-        state.selectedId !== runId ||
-        state.selectionVersion !== selectionVersion
-      )
-        return;
-      openEvents();
-    }
-    renderRuns();
-    renderView();
-    await loadTab(state.activeTab);
+    const current = () => epoch === state.authEpoch && state.selectedId === runId && state.selectionVersion === selectionVersion;
+    await Promise.all([
+      api(`/api/runs/${encodeURIComponent(runId)}`).then((result) => {
+        if (!current()) return;
+        applyView(result.run);
+        renderRuns();
+        renderView();
+      }),
+      resetEvents ? loadInitialEvents(runId, selectionVersion).then(() => { if (current()) openEvents(); }) : Promise.resolve(),
+      loadTab(state.activeTab),
+    ]);
   } catch (error) {
     showNotice(error.message, true);
   }
@@ -289,11 +274,10 @@ function renderView() {
   const runGoal = goal(view);
   const budget = run.budget || {};
   const knownUsage =
-    budget.input_tokens_used != null || budget.output_tokens_used != null;
-  const unknownUsage =
-    !knownUsage || Number(budget.token_usage_missing || 0) > 0;
+    budget.tokens_used != null || budget.input_tokens_used != null || budget.output_tokens_used != null;
+  const unknownUsage = Number(budget.token_usage_missing || 0) > 0;
   const usedTokens =
-    (budget.input_tokens_used || 0) + (budget.output_tokens_used || 0);
+    budget.tokens_used ?? (budget.input_tokens_used || 0) + (budget.output_tokens_used || 0);
   $("#run-status").textContent = formatStatus(run.status);
   $("#run-status").dataset.status = run.status || "";
   $("#run-id").textContent = run.run_id;
@@ -302,13 +286,14 @@ function renderView() {
     ? runGoal.targets.join("\n")
     : "未绑定目标";
   $("#metric-actions").textContent =
-    `${budget.actions_used || 0} / ${budget.action_limit || 0}`;
+    `${budget.actions_used || 0} / ${budget.action_limit === 0 ? "无上限" : budget.action_limit || 64}`;
+  $("#actions-progress").hidden = budget.action_limit === 0;
   $("#actions-progress").max = Math.max(1, budget.action_limit || 1);
   $("#actions-progress").value = budget.actions_used || 0;
   const tokenValue = unknownUsage
     ? knownUsage
-      ? `${usedTokens}+（部分未知）`
-      : "未知"
+      ? `${usedTokens}（部分调用未返回用量）`
+      : "未返回 Token 用量"
     : String(usedTokens);
   $("#metric-tokens").textContent =
     `${tokenValue} / ${budget.token_limit || "未设置"}`;
@@ -515,20 +500,20 @@ async function loadTab(tab, append = false) {
     } else if (tab === "tools") {
       const result = await api(`/api/runs/${id}/tools`);
       if (!current()) return;
-      $("#tools-view").textContent = safeJson(result);
+      TracePresentation.renderTools($("#tools-view"), result);
     } else if (tab === "attack") {
       const result = await api(`/api/runs/${id}/asset-attack-graph`);
       if (!current()) return;
-      $("#attack-view").textContent = safeJson(result);
+      TracePresentation.renderAttack($("#attack-view"), result);
     } else if (tab === "transparency") {
       const result = await api(`/api/runs/${id}/transparency?limit=1000`);
       if (!current()) return;
-      $("#transparency-view").textContent = safeJson(result);
+      TracePresentation.renderTransparency($("#transparency-view"), result);
     } else if (tab === "report") {
       const result = await api(`/api/runs/${id}/report`);
       if (!current()) return;
       state.report = result;
-      $("#report-view").textContent = safeJson(state.report);
+      TracePresentation.renderReport($("#report-view"), state.report);
     }
   } catch (error) {
     const moreButton = $(`[data-more="${tab}"]`);
@@ -551,6 +536,7 @@ function renderTranscript(messages) {
 }
 
 function openCreateDialog() {
+  $("#create-form").elements.max_actions.disabled = $("#create-form").elements.unlimited_actions.checked;
   $("#session-id").value =
     `trace-${new Date().toISOString().replace(/[:.]/g, "-")}`;
   $("#create-dialog").showModal();
@@ -568,7 +554,7 @@ async function submitCreate(event) {
       .split(/\r?\n/)
       .map((item) => item.trim())
       .filter(Boolean),
-    max_actions: Number(data.get("max_actions") || 64),
+    max_actions: data.get("unlimited_actions") === "on" ? 0 : Number(data.get("max_actions") || 64),
   };
   if (data.get("token_limit"))
     payload.token_limit = Number(data.get("token_limit"));
@@ -604,6 +590,7 @@ async function submitBudget(event) {
     tokens: Number(data.get("tokens") || 0),
     time_seconds: Number(data.get("time_seconds") || 0),
     acknowledge_missing_usage: data.get("acknowledge_missing_usage") === "on",
+    unlimited_actions: data.get("unlimited_actions") === "on",
   };
   $("#budget-dialog").close();
   await postCommand("budget", body);
@@ -699,6 +686,7 @@ function bind() {
   $("#configure-provider").addEventListener("click", () => openProviderEditor());
   $("#provider-form").addEventListener("submit", submitProvider);
   $("#skill-form").addEventListener("submit", submitSkill);
+  $("#add-skill").addEventListener("click", () => openSkillEditor());
   $("#add-mcp").addEventListener("click", () => openMcpEditor());
   $("#mcp-form").addEventListener("submit", submitMcp);
   $("#refresh-skills").addEventListener("click", loadSkills);
@@ -725,9 +713,16 @@ function bind() {
     loadRuns({ keepSelection: false }),
   );
   $("#create-form").addEventListener("submit", submitCreate);
-  $("#open-budget").addEventListener("click", () =>
-    $("#budget-dialog").showModal(),
-  );
+  $("#open-budget").addEventListener("click", () => {
+    const form = $("#budget-form");
+    form.elements.unlimited_actions.checked = coreRun(state.view).budget?.action_limit === 0;
+    form.elements.actions.disabled = form.elements.unlimited_actions.checked;
+    $("#budget-dialog").showModal();
+  });
+  for (const [selector, field] of [["#create-form", "max_actions"], ["#budget-form", "actions"]]) {
+    const form = $(selector);
+    form.elements.unlimited_actions.addEventListener("change", (event) => { form.elements[field].disabled = event.target.checked; });
+  }
   $("#budget-form").addEventListener("submit", submitBudget);
   $("#clear-events").addEventListener("click", () => {
     state.events = [];

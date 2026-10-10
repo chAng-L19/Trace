@@ -129,7 +129,7 @@ class RunBudget:
         if resolved_deadline is None and bounded_time is not None:
             resolved_deadline = started + timedelta(seconds=bounded_time)
         return cls(
-            action_limit=max(1, min(4096, int(action_limit))),
+            action_limit=max(0, min(4096, int(action_limit))),
             token_limit=bounded_tokens,
             time_limit_seconds=bounded_time,
             started_at=started.replace(microsecond=0).isoformat(),
@@ -210,6 +210,10 @@ class RunBudget:
 
         input_tokens = count("input_tokens")
         output_tokens = count("output_tokens")
+        if input_tokens is None:
+            input_tokens = count("prompt_tokens")
+        if output_tokens is None:
+            output_tokens = count("completion_tokens")
         total_tokens = count("total_tokens")
         if total_tokens is None:
             total_tokens = count("tokens")
@@ -244,8 +248,9 @@ class RunBudget:
         deadline: str = "",
     ) -> bool:
         changed = False
-        if action_limit is not None and int(action_limit) > self.action_limit:
-            self.action_limit = max(1, min(4096, int(action_limit)))
+        if (action_limit is not None and self.action_limit != 0
+                and (int(action_limit) == 0 or int(action_limit) > self.action_limit)):
+            self.action_limit = max(0, min(4096, int(action_limit)))
             changed = True
         if token_limit is not None and (self.token_limit is None or int(token_limit) > self.token_limit):
             self.token_limit = max(1, int(token_limit))
@@ -283,6 +288,7 @@ class RunBudget:
         time_seconds: float = 0.0,
         deadline: str = "",
         acknowledge_missing_usage: bool = False,
+        action_limit: int | None = None,
     ) -> bool:
         action_delta = max(0, int(actions))
         token_delta = max(0, int(tokens))
@@ -290,9 +296,11 @@ class RunBudget:
         if not math.isfinite(raw_time_delta):
             raise ValueError("budget_time_delta_must_be_finite")
         time_delta = max(0.0, raw_time_delta)
-        if not any((action_delta, token_delta, time_delta, deadline, acknowledge_missing_usage)):
+        if action_limit is None and not any((action_delta, token_delta, time_delta, deadline, acknowledge_missing_usage)):
             return False
-        if action_delta:
+        if action_limit is not None:
+            self.action_limit = max(0, min(4096, int(action_limit)))
+        if action_delta and self.action_limit != 0:
             self.action_limit = min(4096, self.action_limit + action_delta)
         if token_delta:
             base = self.token_limit if self.token_limit is not None else (self.tokens_used or 0)
@@ -313,7 +321,7 @@ class RunBudget:
         return True
 
     def exhaustion_reason(self, *, now: str = "") -> str:
-        if self.actions_used >= self.action_limit:
+        if self.action_limit != 0 and self.actions_used >= self.action_limit:
             return "action_limit_exhausted"
         if self.token_limit is not None:
             if self.token_usage_missing > self.token_usage_acknowledged:

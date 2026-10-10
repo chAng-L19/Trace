@@ -81,7 +81,7 @@ class RuntimeMcpToolDispatchMixin:
                 else {}
             )
             auto_continue = bool(arguments.get("auto_continue", True))
-            cycle_actions = int(arguments.get("max_actions") or self.default_max_actions)
+            cycle_actions = int(arguments.get("max_actions", self.default_max_actions))
             max_cycles = max(1, min(64, int(arguments.get("max_cycles") or 16)))
             if run_id and batch_session_id:
                 raise ValueError("run_id_and_batch_session_id_are_mutually_exclusive")
@@ -226,8 +226,8 @@ class RuntimeMcpToolDispatchMixin:
                 or self.runtime.compiler.extract_context_targets(starting_context)
             )
             predicates = arguments.get("success_predicates")
-            cycle_actions = int(arguments.get("max_actions") or self.default_max_actions)
-            total_actions = int(arguments.get("max_total_actions") or max(256, cycle_actions))
+            cycle_actions = int(arguments.get("max_actions", self.default_max_actions))
+            total_actions = int(arguments.get("max_total_actions", 0 if cycle_actions == 0 else max(64, cycle_actions)))
             budget_options: dict[str, Any] = {}
             if arguments.get("max_tokens") is not None:
                 budget_options["token_limit"] = int(arguments["max_tokens"])
@@ -293,7 +293,7 @@ class RuntimeMcpToolDispatchMixin:
                 self._bind_credentials(run_id, credential_bindings)
             summary = self._resume_summary(
                 run_id,
-                max_actions=int(arguments.get("max_actions") or self.default_max_actions),
+                max_actions=int(arguments.get("max_actions", self.default_max_actions)),
             )
         elif name == "redteam_status":
             run_id = str(arguments.get("run_id") or "").strip()

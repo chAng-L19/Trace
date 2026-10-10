@@ -12,10 +12,14 @@ import sqlite3
 import base64
 import threading
 import time
+import tomllib
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Mapping
 
 from ..application.resources import ResourceResolver, builtin_resource_root
+from ..runtime.skill_config import configured_resource_index
+from ..runtime.mcp_config import PUBLIC_MCP_PRESETS, parse_mcp_server_specs
 from ..providers.openai_protocol import token_limit
 
 
@@ -111,6 +115,14 @@ class ControlPlane:
                     enabled INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL
                 )"""
             )
+            for table, additions in {
+                "trace_skills": {"deleted": "INTEGER NOT NULL DEFAULT 0", "content_path": "TEXT NOT NULL DEFAULT ''"},
+                "trace_mcp_servers": {"deleted": "INTEGER NOT NULL DEFAULT 0"},
+            }.items():
+                columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+                for name, declaration in additions.items():
+                    if name not in columns:
+                        connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS trace_secrets (
                     secret_name TEXT PRIMARY KEY, ciphertext TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -364,7 +376,7 @@ class ControlPlane:
             self._secrets.pop(provider_id, None)
 
     def skills(self) -> list[dict[str, Any]]:
-        index = ResourceResolver().index((self.root, builtin_resource_root()))
+        index = configured_resource_index(self.store, ResourceResolver(), (self.root, builtin_resource_root()))
         with self.store.connection() as connection:
             rows = {str(row["skill_id"]): row for row in connection.execute("SELECT * FROM trace_skills")}
         result = []
@@ -376,22 +388,61 @@ class ControlPlane:
             result.append({**item.to_dict(), "enabled": bool(row["enabled"]) if row else True, "config": config})
         return result
 
+    def skill(self, skill_id: str) -> dict[str, Any]:
+        for item in self.skills():
+            if item["resource_id"] == skill_id:
+                return {**item, "content": Path(item["source"]).read_text(encoding="utf-8-sig")}
+        raise KeyError(f"skill_not_found:{skill_id}")
+
+    def save_skill(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        skill_id = str(payload.get("resource_id") or payload.get("skill_id") or "").strip()
+        if not skill_id or len(skill_id) > 300:
+            raise ValueError("skill_id_invalid")
+        content = str(payload["content"])
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        path = self.root / "skill-content" / f"{digest}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            path.write_text(content, encoding="utf-8")
+        indexed = ResourceResolver().index((path,))
+        if not indexed.resources:
+            raise ValueError(indexed.issues[0].error)
+        with self.store.transaction(immediate=True) as connection:
+            existing = connection.execute("SELECT enabled,config_json FROM trace_skills WHERE skill_id=? AND deleted=0", (skill_id,)).fetchone()
+            enabled = payload.get("enabled", bool(existing["enabled"]) if existing else True)
+            config = payload.get("config", json.loads(existing["config_json"]) if existing else {})
+            connection.execute(
+                "INSERT INTO trace_skills(skill_id,enabled,config_json,updated_at,deleted,content_path) VALUES(?,?,?,?,0,?) "
+                "ON CONFLICT(skill_id) DO UPDATE SET enabled=excluded.enabled,config_json=excluded.config_json,"
+                "updated_at=excluded.updated_at,deleted=0,content_path=excluded.content_path",
+                (skill_id, int(enabled is not False), _json(dict(config or {})), self._now(), str(path)),
+            )
+        return self.skill(skill_id)
+
+    def delete_skill(self, skill_id: str) -> None:
+        self.skill(skill_id)
+        with self.store.transaction(immediate=True) as connection:
+            connection.execute(
+                "INSERT INTO trace_skills(skill_id,enabled,config_json,updated_at,deleted) VALUES(?,0,'{}',?,1) "
+                "ON CONFLICT(skill_id) DO UPDATE SET enabled=0,deleted=1,updated_at=excluded.updated_at",
+                (skill_id, self._now()),
+            )
+
     def set_skill(self, skill_id: str, *, enabled: bool, config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         if not skill_id or len(skill_id) > 300:
             raise ValueError("skill_id_invalid")
-        if not any(item["resource_id"] == skill_id for item in self.skills()):
-            raise KeyError(f"skill_not_found:{skill_id}")
+        existing = self.skill(skill_id)
         now = self._now()
         with self.store.transaction(immediate=True) as connection:
             connection.execute(
                 "INSERT INTO trace_skills(skill_id,enabled,config_json,updated_at) VALUES(?,?,?,?) ON CONFLICT(skill_id) DO UPDATE SET enabled=excluded.enabled,config_json=excluded.config_json,updated_at=excluded.updated_at",
-                (skill_id, int(enabled), _json(dict(config or {})), now),
+                (skill_id, int(enabled), _json(dict(existing["config"] if config is None else config)), now),
             )
         return next(item for item in self.skills() if item["resource_id"] == skill_id)
 
     def mcp_servers(self) -> list[dict[str, Any]]:
         with self.store.connection() as connection:
-            rows = connection.execute("SELECT * FROM trace_mcp_servers ORDER BY server_id").fetchall()
+            rows = connection.execute("SELECT * FROM trace_mcp_servers WHERE deleted=0 ORDER BY server_id").fetchall()
         statuses = getattr(self.store, "_trace_mcp_statuses", {})
         result = []
         for row in rows:
@@ -400,6 +451,35 @@ class ControlPlane:
             spec.pop("headers", None)
             result.append({"server_id": row["server_id"], **spec, "enabled": bool(row["enabled"]), "status": statuses.get(str(row["server_id"]), {"status": "configured"})})
         return result
+
+    def deleted_mcp_ids(self) -> set[str]:
+        with self.store.connection() as connection:
+            return {str(row[0]) for row in connection.execute("SELECT server_id FROM trace_mcp_servers WHERE deleted=1")}
+
+    def mcp_source_spec(self, server_id: str, paths: Any) -> dict[str, Any]:
+        for path in paths:
+            path = Path(path)
+            if not path.is_file():
+                continue
+            config = tomllib.loads(path.read_text(encoding="utf-8-sig"))
+            for spec in parse_mcp_server_specs(path, config):
+                if spec.name == server_id:
+                    payload = asdict(spec)
+                    payload["args"] = list(spec.args)
+                    payload["cwd"] = str(spec.cwd or "")
+                    return payload
+        if server_id in PUBLIC_MCP_PRESETS:
+            return dict(PUBLIC_MCP_PRESETS[server_id])
+        raise KeyError(f"mcp_server_not_found:{server_id}")
+
+    def set_mcp(self, server_id: str, *, enabled: bool, paths: Any = ()) -> dict[str, Any]:
+        with self.store.connection() as connection:
+            row = connection.execute("SELECT spec_json FROM trace_mcp_servers WHERE server_id=? AND deleted=0", (server_id,)).fetchone()
+        if row is not None:
+            spec = json.loads(row[0])
+        else:
+            spec = self.mcp_source_spec(server_id, paths)
+        return self.save_mcp({**spec, "server_id": server_id, "enabled": enabled})
 
     def mcp_secret_bindings(self) -> dict[str, dict[str, str]]:
         with self._lock:
@@ -415,7 +495,7 @@ class ControlPlane:
 
     def save_mcp(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         server_id = str(payload.get("server_id") or payload.get("name") or "").strip()
-        if not server_id or len(server_id) > 100 or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for ch in server_id):
+        if not server_id or len(server_id) > 100:
             raise ValueError("mcp_server_id_invalid")
         transport = str(payload.get("transport") or ("stdio" if payload.get("command") else "http")).casefold()
         if transport not in {"stdio", "http"}:
@@ -430,12 +510,14 @@ class ControlPlane:
                 row = connection.execute("SELECT spec_json FROM trace_mcp_servers WHERE server_id=?", (server_id,)).fetchone()
                 existing_spec = json.loads(row["spec_json"]) if row is not None else {}
                 old_names = set(self._mcp_secret_references(existing_spec).values())
-                spec = {
+                spec = {**existing_spec,
+                    **{key: payload[key] for key in ("startup_timeout_seconds", "tool_timeout_seconds",
+                        "include_tools", "exclude_tools", "read_only_tools", "write_tools", "read_only") if key in payload},
                     "transport": transport,
                     "preset": str(payload.get("preset") or ""),
                     "scope": scope,
                     "command": str(payload.get("command") or ""),
-                    "args": [str(x) for x in payload.get("args", [])] if isinstance(payload.get("args", []), list) else [],
+                    "args": [str(x) for x in payload.get("args", [])],
                     "cwd": str(payload.get("cwd") or ""),
                     "url": str(payload.get("url") or ""),
                     "enabled": payload.get("enabled") is not False,
@@ -463,7 +545,7 @@ class ControlPlane:
                         raise ValueError("mcp_secret_unavailable")
                     _open_secret(self._secret_key, secret["ciphertext"])
                 connection.execute(
-                    "INSERT INTO trace_mcp_servers(server_id,spec_json,enabled,updated_at) VALUES(?,?,?,?) ON CONFLICT(server_id) DO UPDATE SET spec_json=excluded.spec_json,enabled=excluded.enabled,updated_at=excluded.updated_at",
+                    "INSERT INTO trace_mcp_servers(server_id,spec_json,enabled,updated_at) VALUES(?,?,?,?) ON CONFLICT(server_id) DO UPDATE SET spec_json=excluded.spec_json,enabled=excluded.enabled,deleted=0,updated_at=excluded.updated_at",
                     (server_id, _json(spec), int(spec["enabled"]), self._now()),
                 )
                 self._delete_unreferenced_secrets(connection, old_names)
@@ -472,14 +554,18 @@ class ControlPlane:
             self._load_secret_values()
             return next(item for item in self.mcp_servers() if item["server_id"] == server_id)
 
-    def delete_mcp(self, server_id: str) -> None:
+    def delete_mcp(self, server_id: str, spec: Mapping[str, Any] | None = None) -> None:
         with self._lock:
             with self.store.transaction(immediate=True) as connection:
                 row = connection.execute("SELECT spec_json FROM trace_mcp_servers WHERE server_id=?", (server_id,)).fetchone()
-                if row is None:
+                if row is None and spec is None:
                     raise KeyError(f"mcp_server_not_found:{server_id}")
-                names = set(self._mcp_secret_references(json.loads(row["spec_json"])).values())
-                connection.execute("DELETE FROM trace_mcp_servers WHERE server_id=?", (server_id,))
+                names = set(self._mcp_secret_references(json.loads(row["spec_json"])).values()) if row else set()
+                connection.execute(
+                    "INSERT INTO trace_mcp_servers(server_id,spec_json,enabled,updated_at,deleted) VALUES(?,'{}',0,?,1) "
+                    "ON CONFLICT(server_id) DO UPDATE SET spec_json='{}',enabled=0,deleted=1,updated_at=excluded.updated_at",
+                    (server_id, self._now()),
+                )
                 self._delete_unreferenced_secrets(connection, names)
             self._load_secret_values()
 
@@ -489,13 +575,18 @@ class ControlPlane:
         lines = []
         for row in rows:
             spec = json.loads(str(row["spec_json"]))
-            lines.append(f"[mcp_servers.{row['server_id']}]")
+            lines.append(f"[mcp_servers.{_toml_string(row['server_id'])}]")
             for key in ("transport", "preset", "scope", "command", "cwd", "url"):
                 if spec.get(key):
                     lines.append(f"{key} = {_toml_string(spec[key])}")
-            for key in ("args",):
+            for key in ("args", "include_tools", "exclude_tools", "read_only_tools", "write_tools"):
                 if spec.get(key):
                     lines.append(f"{key} = {_toml_array(spec[key])}")
+            for key in ("startup_timeout_seconds", "tool_timeout_seconds"):
+                if key in spec:
+                    lines.append(f"{key} = {float(spec[key])}")
+            if "read_only" in spec:
+                lines.append(f"read_only = {str(bool(spec['read_only'])).lower()}")
             for key in ("env", "headers"):
                 values = {str(name): str(value) for name, value in dict(spec.get(key, {})).items() if not str(value).startswith("secret://")}
                 if values:

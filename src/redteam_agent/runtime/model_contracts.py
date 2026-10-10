@@ -128,7 +128,7 @@ class GoalContract:
             intent_envelope=dict(intent_envelope or {}),
             stop_conditions=stop_conditions,
             evidence_standard=evidence_standard,
-            max_actions=max(1, min(4096, int(max_actions))),
+            max_actions=max(0, min(4096, int(max_actions))),
             max_retries_per_action=max(0, min(8, int(max_retries_per_action))),
         )
 
@@ -157,7 +157,7 @@ class GoalContract:
             intent_envelope=dict(_mapping(payload.get("intent_envelope"))),
             stop_conditions=tuple(str(item) for item in _sequence(payload.get("stop_conditions"))),
             evidence_standard=str(payload.get("evidence_standard") or "reproducible"),
-            max_actions=max(1, min(4096, _safe_int(payload.get("max_actions"), 64))),
+            max_actions=max(0, min(4096, _safe_int(payload.get("max_actions"), 64))),
             max_retries_per_action=max(0, min(8, _safe_int(payload.get("max_retries_per_action"), 2))),
             created_at=str(payload.get("created_at") or utc_now()),
         )

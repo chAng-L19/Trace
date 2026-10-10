@@ -11,6 +11,7 @@ from .conversation_records import (
     DiagnosticArtifactRecord,
 )
 from .store_common import ImmutableRecordError, _dump, _load
+from .session_journal import SessionJournal
 
 
 class ConversationStoreMixin:
@@ -75,6 +76,10 @@ class ConversationStoreMixin:
                 "SELECT * FROM conversation_messages WHERE run_id=? ORDER BY sequence",
                 (run_id,),
             ).fetchall()
+        return self._conversation_messages_from_rows(rows, run_id)
+
+    @staticmethod
+    def _conversation_messages_from_rows(rows: Any, run_id: str) -> tuple[ConversationMessageRecord, ...]:
         records = []
         for row in rows:
             record = ConversationMessageRecord.from_dict(_load(row["message_json"], {}))
@@ -89,6 +94,85 @@ class ConversationStoreMixin:
                 raise ImmutableRecordError(f"conversation_record_integrity:{record.message_id}")
             records.append(record)
         return tuple(records)
+
+    def active_conversation_messages(self, run_id: str, *, limit: int | None = None, offset: int = 0) -> tuple[ConversationMessageRecord, ...]:
+        with self.connection() as connection:
+            connection.execute("BEGIN")
+            if connection.execute("SELECT 1 FROM operations WHERE run_id=?", (run_id,)).fetchone() is None:
+                raise KeyError(f"operation_not_found:{run_id}")
+            active_query = """WITH RECURSIVE active(entry_id,parent_entry_id,raw_table,raw_id,sequence) AS (
+                    SELECT j.entry_id,j.parent_entry_id,j.raw_table,j.raw_id,j.sequence
+                    FROM session_journal_entries j JOIN session_journal_heads h ON h.leaf_entry_id=j.entry_id
+                    JOIN session_journal_state s ON s.run_id=h.run_id AND s.active_branch_id=h.branch_id
+                    WHERE h.run_id=? AND j.run_id=h.run_id
+                    UNION
+                    SELECT j.entry_id,j.parent_entry_id,j.raw_table,j.raw_id,j.sequence
+                    FROM session_journal_entries j JOIN active a ON j.entry_id=a.parent_entry_id WHERE j.run_id=?
+                ) """
+            journal_rows = connection.execute(active_query +
+                "SELECT j.*,o.session_id FROM active a JOIN session_journal_entries j ON j.entry_id=a.entry_id "
+                "JOIN operations o ON o.run_id=j.run_id ORDER BY j.sequence", (run_id, run_id)).fetchall()
+            entries = SessionJournal._validated_entries(journal_rows)
+            query = active_query + "SELECT m.* FROM active a JOIN conversation_messages m ON m.message_id=a.raw_id " \
+                "WHERE a.raw_table='conversation_messages' AND m.run_id=? ORDER BY a.sequence"
+            arguments: tuple[Any, ...] = (run_id, run_id, run_id)
+            if limit is not None:
+                query += " LIMIT ? OFFSET ?"
+                arguments += (int(limit), int(offset))
+            rows = connection.execute(query, arguments).fetchall()
+            expected_ids = [entry.raw_id for entry in entries if entry.raw_table == "conversation_messages"]
+            if limit is not None:
+                expected_ids = expected_ids[offset:offset + limit]
+            found_ids = {str(row["message_id"]) for row in rows}
+            for message_id in expected_ids:
+                if message_id not in found_ids:
+                    raise ImmutableRecordError(f"journal_raw_missing:conversation_messages:{message_id}")
+        return self._conversation_messages_from_rows(rows, run_id)
+
+    def conversation_summaries(self, *, limit: int = 100, offset: int = 0) -> tuple[dict[str, Any], ...]:
+        with self.connection() as connection:
+            connection.execute("BEGIN")
+            rows = connection.execute(
+                "SELECT o.*,s.active_branch_id,s.version AS journal_version FROM operations o "
+                "LEFT JOIN session_journal_state s ON s.run_id=o.run_id "
+                "ORDER BY o.updated_at DESC,o.run_id DESC LIMIT ? OFFSET ?",
+                (max(1, min(1000, int(limit))), max(0, int(offset))),
+            ).fetchall()
+            if not rows:
+                return ()
+            run_ids = tuple(str(row["run_id"]) for row in rows)
+            placeholders = ",".join("?" for _ in run_ids)
+            heads = connection.execute(
+                f"SELECT run_id,branch_id,leaf_entry_id FROM session_journal_heads WHERE run_id IN ({placeholders}) ORDER BY branch_id",
+                run_ids,
+            ).fetchall()
+            counts = dict(connection.execute(
+                f"""WITH RECURSIVE active(run_id,entry_id,parent_entry_id,raw_table) AS (
+                    SELECT j.run_id,j.entry_id,j.parent_entry_id,j.raw_table
+                    FROM session_journal_entries j JOIN session_journal_heads h ON h.leaf_entry_id=j.entry_id
+                    JOIN session_journal_state s ON s.run_id=h.run_id AND s.active_branch_id=h.branch_id
+                    WHERE h.run_id IN ({placeholders}) AND j.run_id=h.run_id
+                    UNION
+                    SELECT j.run_id,j.entry_id,j.parent_entry_id,j.raw_table
+                    FROM session_journal_entries j JOIN active a ON j.entry_id=a.parent_entry_id AND j.run_id=a.run_id
+                ) SELECT run_id,COUNT(*) FROM active WHERE raw_table='conversation_messages' GROUP BY run_id""",
+                run_ids,
+            ).fetchall())
+            branches: dict[str, dict[str, Any]] = {run_id: {} for run_id in run_ids}
+            for head in heads:
+                branches[str(head["run_id"])][str(head["branch_id"])] = head["leaf_entry_id"]
+            result = []
+            for row in rows:
+                state = self._state_from_row(connection, row)
+                if state is None:
+                    continue
+                run_id = str(row["run_id"])
+                result.append({"state": state, "message_count": counts.get(run_id, 0), "session": {
+                    "session_id": str(row["session_id"]), "run_id": run_id, "status": str(row["status"]),
+                    "active_branch_id": str(row["active_branch_id"] or "main"),
+                    "journal_version": int(row["journal_version"] or 0), "branches": branches[run_id],
+                }})
+        return tuple(result)
 
     def save_context_summary(self, record: ContextSummaryRecord) -> None:
         messages = {item.message_id: item for item in self.conversation_messages(record.run_id)}

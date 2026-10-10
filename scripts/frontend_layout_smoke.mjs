@@ -86,6 +86,20 @@ for (const status of ["paused_budget", "waiting_worker", "completed"]) {
   assert.equal(node('[data-command="resume"]').hidden, status !== "paused_budget");
 }
 assert.equal(node('[data-command="cancel"]').disabled, true);
+for (const [budget, expected] of [
+  [{ action_limit: 0 }, "0 / 未设置"],
+  [{ tokens_used: 42 }, "42 / 未设置"],
+  [{ tokens_used: 42, token_usage_missing: 1 }, "42（部分调用未返回用量） / 未设置"],
+  [{ token_usage_missing: 1 }, "未返回 Token 用量 / 未设置"],
+]) {
+  state.view.run.budget = budget;
+  vm.runInContext("renderView()", context);
+  assert.equal(node("#metric-tokens").textContent, expected);
+  if (budget.action_limit === 0) {
+    assert.equal(node("#metric-actions").textContent, "0 / 无上限");
+    assert.equal(node("#actions-progress").hidden, true);
+  }
+}
 console.log("PASS: unique entry points, navigation, one settings load, task text, command states");
 
 // Execute the production functions with delayed responses across account switches.

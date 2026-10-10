@@ -84,6 +84,7 @@ def _budget_from_runtime(state: OperationState) -> Budget:
         token_limit=budget.token_limit,
         time_limit_seconds=budget.time_limit_seconds,
         actions_used=budget.actions_used,
+        tokens_used=budget.tokens_used,
         input_tokens_used=budget.input_tokens_used,
         output_tokens_used=budget.output_tokens_used,
         token_usage_missing=budget.token_usage_missing,
@@ -207,8 +208,7 @@ def apply_core_run(state: OperationState, run: Run) -> OperationState:
     state.budget.token_limit = run.budget.token_limit
     state.budget.time_limit_seconds = run.budget.time_limit_seconds
     state.budget.actions_used = run.budget.actions_used
-    parts = (run.budget.input_tokens_used, run.budget.output_tokens_used)
-    state.budget.tokens_used = None if all(item is None for item in parts) else sum(item or 0 for item in parts)
+    state.budget.tokens_used = run.budget.tokens_used
     state.budget.input_tokens_used = run.budget.input_tokens_used
     state.budget.output_tokens_used = run.budget.output_tokens_used
     state.budget.token_usage_missing = run.budget.token_usage_missing

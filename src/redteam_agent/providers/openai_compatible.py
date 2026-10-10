@@ -634,13 +634,17 @@ class OpenAICompatibleProvider:
         aliases = {
             "prompt_tokens": "input_tokens",
             "completion_tokens": "output_tokens",
+            "input_tokens": "input_tokens",
+            "output_tokens": "output_tokens",
             "total_tokens": "total_tokens",
         }
         for source, target in aliases.items():
             if source in value:
                 usage[target] = value[source]
         for field, source, target in (("prompt_tokens_details", "cached_tokens", "cache_read_tokens"),
-                                      ("completion_tokens_details", "reasoning_tokens", "reasoning_tokens")):
+                                      ("completion_tokens_details", "reasoning_tokens", "reasoning_tokens"),
+                                      ("input_tokens_details", "cached_tokens", "cache_read_tokens"),
+                                      ("output_tokens_details", "reasoning_tokens", "reasoning_tokens")):
             details = value.get(field)
             if details is None:
                 continue

@@ -48,7 +48,7 @@ class RuntimeMcpServer(RuntimeMcpToolDispatchMixin):
 
             service = AgentService(runtime=runtime)
         self.service = service
-        self.default_max_actions = max(1, min(512, int(default_max_actions)))
+        self.default_max_actions = max(0, min(512, int(default_max_actions)))
         self.default_max_retries_per_action = max(0, min(8, int(default_max_retries_per_action)))
         self.handoff_ttl_seconds = max(1.0, float(handoff_ttl_seconds))
         self._handoff_tokens: dict[str, str] = {}
@@ -308,9 +308,13 @@ class RuntimeMcpServer(RuntimeMcpToolDispatchMixin):
         }
         if raw_delta.get("acknowledge_missing_usage") is True:
             delta["acknowledge_missing_usage"] = True
+        if raw_delta.get("unlimited_actions") is True:
+            delta["action_limit"] = 0
+        elif raw_delta.get("action_limit") is not None:
+            delta["action_limit"] = int(raw_delta["action_limit"])
         if any(delta[key] < 0 for key in ("actions", "tokens", "time_seconds")):
             raise ValueError("budget_delta_must_be_non_negative")
-        if not any(delta.values()):
+        if "action_limit" not in delta and not any(delta.values()):
             return
         apply_delta = getattr(self.runtime, "apply_budget_delta", None)
         service = self._application_service()

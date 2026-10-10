@@ -2,22 +2,11 @@
 
 // Provider, Skill, MCP and conversation settings.
 async function loadControl() {
-  const epoch = state.authEpoch;
   try {
-    await Promise.all([
-      loadProviders(),
-      loadSkills(),
-      loadMcp(),
-      loadConversations(),
-      loadSystemSettings(),
-      loadProfile(),
-      loadUsers(),
-    ]);
-    if (
-      epoch !== state.authEpoch ||
-      (state.authRequired && !state.authenticated)
-    )
-      return;
+    const tab = $(".control-tab.active").dataset.controlTab;
+    await ({ providers: loadProviders, skills: loadSkills, mcp: loadMcp,
+      conversations: loadConversations, system: loadSystemSettings,
+      profile: loadProfile, users: loadUsers })[tab]();
   } catch (error) {
     showNotice(error.message, true);
   }
@@ -27,6 +16,37 @@ function renderSettingsList(container, items, renderItem, empty = "暂无配置"
   container.setAttribute("aria-busy", "false");
   if (!items.length) return appendEmpty(container, empty);
   items.forEach((item) => container.append(renderItem(item)));
+}
+
+function resourceToggle(enabled, update) {
+  const label = document.createElement("label");
+  label.className = "resource-toggle";
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = enabled;
+  input.setAttribute("aria-label", "启用");
+  input.addEventListener("change", async () => {
+    input.disabled = true;
+    try { await update(input.checked); }
+    catch (error) { input.checked = enabled; input.disabled = false; showNotice(error.message, true); }
+  });
+  label.append(input, "启用");
+  return label;
+}
+
+function removeSetting(label, path, reload) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "danger";
+  button.textContent = "删除";
+  button.addEventListener("click", async () => {
+    if (!confirm(`确认删除${label}？`)) return;
+    try {
+      await api(path, { method: "DELETE", headers: commandHeaders() });
+      await reload();
+    } catch (error) { showNotice(error.message, true); }
+  });
+  return button;
 }
 
 async function loadProviders() {
@@ -147,15 +167,11 @@ async function loadSkills() {
     meta.textContent = `${item.byte_count} bytes · ${item.content_hash.slice(0, 12)}`;
     main.append(title, meta);
     if (state.user?.role !== "admin") { row.append(main); return row; }
-    const toggle = document.createElement("button");
-    toggle.type = "button";
-    toggle.textContent = item.enabled ? "已启用" : "已停用";
-    toggle.className = item.enabled ? "primary" : "quiet";
-    toggle.addEventListener("click", async () => {
+    const toggle = resourceToggle(item.enabled, async (enabled) => {
       await api(`/api/skills/${encodeURIComponent(item.resource_id)}`, {
         method: "POST",
         headers: commandHeaders(),
-        body: JSON.stringify({ enabled: !item.enabled }),
+        body: JSON.stringify({ enabled }),
       });
       await loadSkills();
     });
@@ -165,18 +181,36 @@ async function loadSkills() {
     edit.addEventListener("click", () => openSkillEditor(item));
     const actions = document.createElement("div");
     actions.className = "button-row";
-    actions.append(edit, toggle);
+    actions.append(toggle, edit, removeSetting(` Skill ${item.resource_id}`, `/api/skills/${encodeURIComponent(item.resource_id)}`, loadSkills));
     row.append(main, actions);
     return row;
   });
 }
 
-function openSkillEditor(item) {
-  $("#skill-id").value = item.resource_id || "";
+async function openSkillEditor(item = null) {
+  const epoch = state.authEpoch;
+  const form = $("#skill-form");
+  form.reset();
+  form.dataset.mode = item ? "edit" : "create";
+  $("#skill-id").value = item?.resource_id || "";
+  $("#skill-id").readOnly = Boolean(item);
   $("#skill-name").textContent =
-    `${item.resource_id || "Skill"} · ${item.byte_count || 0} bytes`;
-  $("#skill-config").value = safeJson(item.config || {});
+    item ? `${item.resource_id} · ${item.byte_count} bytes` : "";
+  $("#skill-config").value = safeJson(item?.config || {});
+  $("#skill-content").value = "";
+  $("#skill-content").disabled = Boolean(item);
+  const submit = form.querySelector('button[value="default"]');
+  submit.disabled = Boolean(item);
   $("#skill-dialog").showModal();
+  if (item) {
+    try {
+      const result = await api(`/api/skills/${encodeURIComponent(item.resource_id)}`);
+      if (epoch !== state.authEpoch || form.dataset.mode !== "edit" || $("#skill-id").value !== item.resource_id) return;
+      $("#skill-content").value = result.skill.content;
+      $("#skill-content").disabled = false;
+      submit.disabled = false;
+    } catch (error) { showNotice(error.message, true); }
+  }
 }
 
 async function submitSkill(event) {
@@ -195,10 +229,10 @@ async function submitSkill(event) {
     return;
   }
   try {
-    await api(`/api/skills/${encodeURIComponent(id)}`, {
+    await api($("#skill-form").dataset.mode === "create" ? "/api/skills" : `/api/skills/${encodeURIComponent(id)}`, {
       method: "POST",
       headers: commandHeaders(),
-      body: JSON.stringify({ config }),
+      body: JSON.stringify({ resource_id: id, content: $("#skill-content").value, config }),
     });
     $("#skill-dialog").close();
     await loadSkills();
@@ -243,60 +277,18 @@ async function loadMcp() {
     }
     const actions = document.createElement("div");
     actions.className = "button-row";
-    if (item.source === "catalog" && state.user?.role === "admin") {
-      const connect = document.createElement("button");
-      connect.type = "button";
-      connect.className = "primary";
-      connect.textContent = "配置接入";
-      connect.addEventListener("click", () => openMcpEditor(item));
-      actions.append(connect);
-    }
-    if ((!item.source || item.source === "managed") && state.user?.role === "admin") {
-      const toggle = document.createElement("button");
-      toggle.type = "button";
-      toggle.className = item.enabled ? "secondary" : "primary";
-      toggle.textContent = item.enabled ? "停用" : "启用";
-      toggle.addEventListener("click", async () => {
-        toggle.disabled = true;
-        try {
-          await api("/api/mcp", {
-            method: "POST",
-            headers: commandHeaders(),
-            body: JSON.stringify({
-              server_id: item.server_id,
-              transport: item.transport,
-              command: item.command,
-              args: item.args || [],
-              cwd: item.cwd,
-              url: item.url,
-              preset: item.preset,
-              scope: item.scope,
-              enabled: !item.enabled,
-            }),
-          });
-          await loadMcp();
-          showNotice(item.enabled ? "MCP 已停用" : "MCP 已启用");
-        } catch (error) {
-          toggle.disabled = false;
-          showNotice(error.message, true);
-        }
+    if (state.user?.role === "admin") {
+      const toggle = resourceToggle(item.enabled, async (enabled) => {
+        await api(`/api/mcp/${encodeURIComponent(item.server_id)}`, {
+          method: "POST", headers: commandHeaders(), body: JSON.stringify({ enabled }),
+        });
+        await loadMcp();
       });
       const edit = document.createElement("button");
       edit.type = "button";
       edit.textContent = "编辑";
       edit.addEventListener("click", () => openMcpEditor(item));
-      const remove = document.createElement("button");
-      remove.type = "button";
-      remove.className = "danger";
-      remove.textContent = "移除";
-      remove.addEventListener("click", async () => {
-        if (!confirm("确认移除 MCP 服务器？")) return;
-        await api(`/api/mcp/${encodeURIComponent(item.server_id)}`, {
-          method: "DELETE",
-          headers: commandHeaders(),
-        });
-        await loadMcp();
-      });
+      const remove = removeSetting(` MCP ${item.server_id}`, `/api/mcp/${encodeURIComponent(item.server_id)}`, loadMcp);
       const inspect = document.createElement("button");
       inspect.type = "button";
       inspect.textContent = "查看工具";
@@ -314,6 +306,8 @@ async function loadMcp() {
 function openMcpEditor(item = null) {
   const form = $("#mcp-form");
   form.reset();
+  form.elements.server_id.readOnly = Boolean(item);
+  form.elements.enabled.checked = item?.source === "catalog" || item === null || item.enabled;
   for (const [name, value] of Object.entries(item || {})) {
     const field = form.elements.namedItem(name);
     if (!field || ["env", "headers", "status", "enabled"].includes(name))
@@ -352,15 +346,11 @@ async function loadConversations() {
           ? session.branches
           : {};
       const meta = document.createElement("code");
-      meta.textContent = `${item.run?.run?.run_id || "-"} · ${item.message_count || 0} messages · 当前分支 ${activeBranch}`;
+      meta.textContent = `${item.message_count || 0} 条消息 · ${formatStatus(item.run?.run?.status)} · ${formatTime(item.run?.run?.updated_at)}`;
       main.append(title, meta);
       const branchHeads = document.createElement("small");
       branchHeads.className = "setting-detail";
-      branchHeads.textContent = `分支头：${
-        Object.entries(branches)
-          .map(([id, leaf]) => `${id}=${leaf || "空"}`)
-          .join(" · ") || "main=空"
-      }`;
+      branchHeads.textContent = `${Object.keys(branches).length || 1} 个分支 · 当前：${activeBranch === "main" ? "主线" : activeBranch}`;
       main.append(branchHeads);
       const actions = document.createElement("div");
       actions.className = "button-row";
@@ -369,6 +359,13 @@ async function loadConversations() {
       open.textContent = "打开";
       open.addEventListener("click", () => {
         setView("runs");
+        if (!state.runs.some((view) => coreRun(view).run_id === item.run?.run?.run_id)) state.runs.push(item.run);
+        state.activeTab = "transcript";
+        $$('[role="tab"]').forEach((button) => {
+          button.setAttribute("aria-selected", String(button.dataset.tab === "transcript"));
+          button.tabIndex = button.dataset.tab === "transcript" ? 0 : -1;
+        });
+        $$('[role="tabpanel"]').forEach((panel) => { panel.hidden = panel.dataset.panel !== "transcript"; });
         loadRun(item.run?.run?.run_id);
       });
       const fork = document.createElement("button");
@@ -384,7 +381,7 @@ async function loadConversations() {
         .forEach((branchId) => {
           const option = document.createElement("option");
           option.value = branchId;
-          option.textContent = branchId;
+          option.textContent = branchId === "main" ? "主线" : branchId;
           option.selected = branchId === activeBranch;
           checkout.append(option);
         });
@@ -407,7 +404,11 @@ async function loadConversations() {
           checkout.value = activeBranch;
         }
       });
-      actions.append(open, fork, checkout);
+      const remove = removeSetting("此对话及其运行记录", `/api/conversations/${encodeURIComponent(item.run?.run?.run_id)}`, async () => {
+        if (state.selectedId === item.run?.run?.run_id) showRunRegistry();
+        await Promise.all([loadConversations(), loadRuns({ keepSelection: false })]);
+      });
+      actions.append(open, fork, checkout, remove);
       row.append(main, actions);
       return row;
     },
@@ -424,7 +425,8 @@ async function openForkEditor(runId) {
       const entry = node?.entry || {};
       const option = document.createElement("option");
       option.value = entryId;
-      option.textContent = `#${entry.sequence ?? "?"} · ${entry.entry_type || "entry"} · ${entry.branch_id || "main"}`;
+      const roles = { user: "用户消息", assistant: "助手回复", tool: "工具结果", observation: "观察结果" };
+      option.textContent = `第 ${entry.sequence ?? "?"} 条 · ${roles[entry.entry_type] || "会话记录"}`;
       select.append(option);
     }
     $("#fork-run-id").value = runId;
@@ -466,11 +468,7 @@ async function loadSystemSettings() {
   const result = await api("/api/system");
   if (epoch !== state.authEpoch || (state.authRequired && !state.authenticated))
     return;
-  $("#system-view").textContent = safeJson({
-    ...result.control_plane,
-    provider: result.provider,
-    auth: result.auth,
-  });
+  TracePresentation.renderSystem($("#system-view"), result);
 }
 
 async function submitProvider(event) {
@@ -509,6 +507,7 @@ async function submitMcp(event) {
     .split(/\r?\n/)
     .map((x) => x.trim())
     .filter(Boolean);
+  payload.enabled = data.get("enabled") === "on";
   for (const field of ["env", "headers"]) {
     const raw = String(payload[field] || "").trim();
     if (!raw) {

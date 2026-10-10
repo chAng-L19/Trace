@@ -79,8 +79,8 @@ class StartRequest:
     def validated(self) -> "StartRequest":
         session_id = required_text(self.session_id, "session_id")
         objective = required_text(self.objective, "objective")
-        if not 1 <= int(self.max_actions) <= 4096:
-            raise ContractError("max_actions_out_of_range:1:4096")
+        if not 0 <= int(self.max_actions) <= 4096:
+            raise ContractError("max_actions_out_of_range:0:4096")
         if not 0 <= int(self.max_retries_per_action) <= 32:
             raise ContractError("max_retries_per_action_out_of_range:0:32")
         if self.token_limit is not None and int(self.token_limit) <= 0:
@@ -151,6 +151,7 @@ class BudgetDelta:
     deadline: str = ""
     idempotency_key: str = ""
     acknowledge_missing_usage: bool = False
+    action_limit: int | None = None
 
     @classmethod
     def from_value(cls, value: "BudgetDelta | Mapping[str, Any] | None") -> "BudgetDelta":
@@ -166,10 +167,13 @@ class BudgetDelta:
                 deadline=str(value.get("deadline") or ""),
                 idempotency_key=str(value.get("idempotency_key") or ""),
                 acknowledge_missing_usage=bool(value.get("acknowledge_missing_usage", False)),
+                action_limit=(0 if value.get("unlimited_actions") is True else
+                              int(value["action_limit"]) if value.get("action_limit") is not None else None),
             )
         else:
             raise TypeError("budget_delta_must_be_mapping")
-        if delta.actions < 0 or delta.tokens < 0 or delta.time_seconds < 0:
+        if (delta.actions < 0 or delta.tokens < 0 or delta.time_seconds < 0
+                or (delta.action_limit is not None and delta.action_limit < 0)):
             raise ContractError("budget_delta_must_be_nonnegative")
         if not math.isfinite(delta.time_seconds):
             raise ContractError("budget_time_delta_must_be_finite")
@@ -187,6 +191,7 @@ class BudgetDelta:
             or self.time_seconds
             or self.deadline
             or self.acknowledge_missing_usage
+            or self.action_limit is not None
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -197,6 +202,7 @@ class BudgetDelta:
             "deadline": self.deadline,
             "idempotency_key": self.idempotency_key,
             "acknowledge_missing_usage": self.acknowledge_missing_usage,
+            "action_limit": self.action_limit,
         }
 
 
@@ -238,8 +244,8 @@ class Observation:
 
     def validated(self) -> "Observation":
         action_id = required_text(self.action_id, "observation_action_id")
-        if self.max_actions is not None and int(self.max_actions) <= 0:
-            raise ContractError("observation_max_actions_must_be_positive")
+        if self.max_actions is not None and int(self.max_actions) < 0:
+            raise ContractError("observation_max_actions_must_be_nonnegative")
         receipt = (self.handoff_id, self.handoff_token, self.attempt_id, self.contract_hash)
         if any(receipt) and not all(receipt):
             raise ContractError("handoff_receipt_fields_incomplete")

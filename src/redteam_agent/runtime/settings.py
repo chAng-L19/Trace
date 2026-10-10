@@ -122,7 +122,7 @@ def _runtime_settings(paths: list[Path], *, environ: Mapping[str, str] | None = 
             automation,
             "max_actions_per_cycle",
             settings["max_actions_per_cycle"],
-            minimum=1,
+            minimum=0,
             maximum=512,
             path=path,
         )

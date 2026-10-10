@@ -119,7 +119,7 @@ class Goal:
         contract_version(payload, kind=cls.KIND)
         criteria = tuple(item if isinstance(item, GoalCriterion) else GoalCriterion.from_dict(item) for item in payload.get("criteria", payload.get("success_criteria", ())) if isinstance(item, (GoalCriterion, Mapping)))
         predicates = tuple(json_mapping(item, field="goal.success_predicates[]") for item in payload.get("success_predicates", ()) if isinstance(item, Mapping))
-        return cls(required_text(payload.get("goal_id") or payload.get("id"), "goal_id"), required_text(payload.get("objective"), "objective"), unique_strings(payload.get("targets")), criteria, json_mapping(payload.get("constraints"), field="goal.constraints"), predicates, optional_text(payload.get("evidence_standard")) or "reproducible", bounded_int(payload.get("max_actions", 64), default=64, minimum=1, maximum=4096, field="max_actions"), bounded_int(payload.get("max_retries_per_action", 2), default=2, minimum=0, maximum=8, field="max_retries_per_action"), json_mapping(payload.get("metadata"), field="goal.metadata"))
+        return cls(required_text(payload.get("goal_id") or payload.get("id"), "goal_id"), required_text(payload.get("objective"), "objective"), unique_strings(payload.get("targets")), criteria, json_mapping(payload.get("constraints"), field="goal.constraints"), predicates, optional_text(payload.get("evidence_standard")) or "reproducible", bounded_int(payload.get("max_actions", 64), default=64, minimum=0, maximum=4096, field="max_actions"), bounded_int(payload.get("max_retries_per_action", 2), default=2, minimum=0, maximum=8, field="max_retries_per_action"), json_mapping(payload.get("metadata"), field="goal.metadata"))
 
 
 @dataclass(frozen=True, slots=True)

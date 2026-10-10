@@ -45,19 +45,22 @@ class Budget:
     deadline: str = ""
     pause_reason: str = ""
     paused_at: str = ""
+    tokens_used: int | None = None
 
     @property
-    def remaining_actions(self) -> int:
-        return max(0, self.action_limit - self.actions_used)
+    def remaining_actions(self) -> int | None:
+        return None if self.action_limit == 0 else max(0, self.action_limit - self.actions_used)
 
     def to_dict(self) -> dict[str, Any]:
         return versioned_payload(
             self.KIND,
             {
                 "action_limit": self.action_limit,
+                "remaining_actions": self.remaining_actions,
                 "token_limit": self.token_limit,
                 "time_limit_seconds": self.time_limit_seconds,
                 "actions_used": self.actions_used,
+                "tokens_used": self.tokens_used,
                 "input_tokens_used": self.input_tokens_used,
                 "output_tokens_used": self.output_tokens_used,
                 "token_usage_missing": self.token_usage_missing,
@@ -74,13 +77,13 @@ class Budget:
         legacy_total = optional_nonnegative_int(payload.get("tokens_used"), field="tokens_used")
         input_used = optional_nonnegative_int(payload.get("input_tokens_used"), field="input_tokens_used")
         output_used = optional_nonnegative_int(payload.get("output_tokens_used"), field="output_tokens_used")
-        if input_used is None and output_used is None and legacy_total is not None:
-            output_used = legacy_total
+        if legacy_total is None and input_used is not None and output_used is not None:
+            legacy_total = input_used + output_used
         return cls(
             action_limit=bounded_int(
                 payload.get("action_limit", 64),
                 default=64,
-                minimum=1,
+                minimum=0,
                 maximum=4096,
                 field="action_limit",
             ),
@@ -98,6 +101,7 @@ class Budget:
             ),
             input_tokens_used=input_used,
             output_tokens_used=output_used,
+            tokens_used=legacy_total,
             token_usage_missing=bounded_int(
                 payload.get("token_usage_missing", 0),
                 default=0,

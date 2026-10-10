@@ -13,6 +13,9 @@ const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
 const errors = [];
 const posts = [];
+const gets = [];
+let holdReads = false;
+const releaseReads = [];
 page.on("pageerror", (error) => errors.push(error.message));
 page.on("console", (message) => { if (message.type() === "error" && /Content Security Policy|font/i.test(message.text())) errors.push(message.text()); });
 let authenticated = false;
@@ -26,12 +29,15 @@ const view = (runId, status) => ({
 });
 const runs = [view("created", "created"), view("paused", "paused_budget"), view("complete", "completed"), view("running", "running")];
 const conversations = [{ run: runs[0], message_count: 2, session: { active_branch_id: "main", branches: { main: "entry-1", alternate: "entry-2" } } }];
+let skills = [{ resource_id: "web/recon", byte_count: 1200, content_hash: "a".repeat(64), enabled: true, config: {}, content: "# Recon\nCollect evidence." }];
+let servers = [{ server_id: "playwright", source: "catalog", transport: "stdio", preset: "playwright", enabled: false, status: { status: "available", tool_count: 0 } }];
 await page.route("**/api/**", async (route) => {
   const request = route.request();
   const url = new URL(request.url());
   const path = url.pathname;
   const body = request.postDataJSON();
   if (request.method() !== "GET") posts.push({ path, body, headers: request.headers() });
+  else gets.push(path);
   const reply = (payload, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify({ ok: status < 400, ...payload }) });
   if (path === "/api/auth/status") return reply({ required: true, authenticated, user: authenticated ? user() : null });
   if (path === "/api/auth/login") {
@@ -48,10 +54,32 @@ await page.route("**/api/**", async (route) => {
     if (request.method() === "POST") providers = [{ ...body, active: true, api_key_set: false }];
     return reply({ providers });
   }
-  if (path === "/api/skills") return reply({ skills: [{ resource_id: "web/recon", byte_count: 1200, content_hash: "a".repeat(64), enabled: true, config: {} }] });
-  if (path === "/api/mcp") return reply({ servers: [{ server_id: "playwright", source: "catalog", transport: "stdio", preset: "playwright", enabled: false, status: { status: "available", tool_count: 0 } }] });
+  if (path === "/api/skills") {
+    if (request.method() === "POST") skills.push({ ...body, enabled: true, byte_count: body.content.length, content_hash: "b".repeat(64) });
+    return reply({ skills });
+  }
+  if (path.startsWith("/api/skills/")) {
+    const id = decodeURIComponent(path.slice("/api/skills/".length));
+    const skill = skills.find((item) => item.resource_id === id);
+    if (request.method() === "DELETE") skills = skills.filter((item) => item !== skill);
+    if (request.method() === "POST") Object.assign(skill, body);
+    return reply({ skill });
+  }
+  if (path === "/api/mcp") {
+    if (request.method() === "POST") servers.push({ ...body, source: "managed", status: { status: "configured" } });
+    return reply({ servers });
+  }
+  if (path.startsWith("/api/mcp/")) {
+    const server = servers.find((item) => item.server_id === path.split("/").at(-1));
+    if (request.method() === "DELETE") servers = servers.filter((item) => item !== server);
+    if (request.method() === "POST") Object.assign(server, body);
+    return reply({ server });
+  }
   if (path === "/api/conversations") return reply({ conversations });
-  if (path === "/api/conversations/created") return reply({ tree: { nodes: { "entry-1": { entry: { sequence: 1, entry_type: "user", branch_id: "main" } } } } });
+  if (path === "/api/conversations/created") {
+    if (request.method() === "DELETE") { conversations.splice(0); runs.splice(0, 1); return reply({ deleted: true }); }
+    return reply({ tree: { nodes: { "entry-1": { entry: { sequence: 1, entry_type: "user", branch_id: "main" } } } } });
+  }
   if (path.endsWith("/fork")) return reply({ active_branch_id: body.branch_id });
   if (path.endsWith("/checkout")) return reply({ error: "fixture_checkout_failed" }, 409);
   if (path === "/api/runs") {
@@ -62,6 +90,7 @@ await page.route("**/api/**", async (route) => {
   if (!match) return reply({});
   const run = runs.find((item) => item.run.run_id === match[1]) || runs[0];
   const endpoint = match[2];
+  if (holdReads && (!endpoint || endpoint === "events") && !url.searchParams.has("channel")) await new Promise((resolve) => releaseReads.push(resolve));
   if (!endpoint || request.method() === "POST") return reply({ run });
   if (endpoint === "events") {
     if (url.searchParams.has("channel")) return route.fulfill({ contentType: "text/event-stream", body: ": fixture stream\n\n" });
@@ -72,6 +101,7 @@ await page.route("**/api/**", async (route) => {
   if (endpoint === "artifacts") return reply({ artifacts: [{ artifact_id: "artifact-1", artifact_type: "http-response" }], truncated: false });
   if (endpoint === "transcript") return reply({ messages: [{ entry_id: "message-1", role: "assistant", content: "证据记录已生成。", sequence: 1 }], truncated: false });
   if (endpoint === "report") return reply({ run: { run }, findings: [] });
+  if (endpoint === "asset-attack-graph") return reply({ assets: [{ asset_id: "app", name: "本地应用", asset_type: "web", value: "localhost" }], attack_paths: [{ path_id: "path-1", title: "会话边界验证", steps: [{ description: "检查登录入口" }, { description: "验证会话隔离" }], status: "candidate" }] });
   return reply({ fixture: endpoint });
 });
 
@@ -141,6 +171,40 @@ try {
   await page.waitForFunction(() => document.querySelector("#provider-list").textContent.includes("Test Provider"));
   assert.ok(posts.find((post) => post.path === "/api/providers").headers["x-command-id"]);
   await page.click("#terminal-toggle");
+  const beforeSkills = gets.length;
+  await navigate("skills");
+  await visible("#skill-list .setting-row");
+  assert.deepEqual(gets.slice(beforeSkills), ["/api/skills"], "settings load only the selected page");
+  await page.uncheck('#skill-list input[type="checkbox"]');
+  await page.waitForFunction(() => document.querySelector('#skill-list input').checked === false);
+  await page.check('#skill-list input[type="checkbox"]');
+  await page.click("#add-skill");
+  await page.fill("#skill-id", "custom/test");
+  await page.fill("#skill-content", "# Custom\nVerify local boundaries.");
+  await page.click('#skill-form button[value="default"]');
+  await hidden("#skill-dialog");
+  await page.waitForFunction(() => document.querySelectorAll('#skill-list .setting-row').length === 2);
+  await page.locator('#skill-list .setting-row').last().locator('button[aria-label="配置"]').click();
+  await page.waitForFunction(() => document.querySelector('#skill-content').disabled === false);
+  assert.match(await page.inputValue('#skill-content'), /Verify local/);
+  await page.click('#skill-form button[value="cancel"]');
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.locator('#skill-list .setting-row').last().locator('button[aria-label="删除"]').click();
+  await page.waitForFunction(() => document.querySelectorAll('#skill-list .setting-row').length === 1);
+  await navigate("mcp");
+  await visible('#mcp-list input[type="checkbox"]');
+  await page.check('#mcp-list input[type="checkbox"]');
+  await page.waitForFunction(() => document.querySelector('#mcp-list input').checked);
+  await page.uncheck('#mcp-list input[type="checkbox"]');
+  await page.click("#add-mcp");
+  await page.fill('#mcp-form [name="server_id"]', "custom-mcp");
+  await page.fill('#mcp-form [name="command"]', "local-fixture");
+  await page.click('#mcp-form button[value="default"]');
+  await hidden("#mcp-dialog");
+  await page.waitForFunction(() => document.querySelectorAll('#mcp-list .setting-row').length === 2);
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.locator('#mcp-list .setting-row').last().locator('button[aria-label="删除"]').click();
+  await page.waitForFunction(() => document.querySelectorAll('#mcp-list .setting-row').length === 1);
   await visible("#terminal-body");
   await noOverflow();
   await page.click("#terminal-toggle");
@@ -153,6 +217,14 @@ try {
   assert.ok(posts.find((post) => post.path.endsWith("/fork")).body.from_entry_id);
   await page.selectOption('#conversation-list select', "alternate");
   await page.waitForFunction(() => document.querySelector("#conversation-list select").value === "main");
+  holdReads = true;
+  await page.click('#conversation-list button[aria-label="打开"]');
+  await visible("#workbench");
+  await page.waitForFunction(() => document.querySelector('#transcript-list').textContent.includes('证据记录已生成'));
+  assert.equal(await page.locator('[data-tab="transcript"]').getAttribute('aria-selected'), 'true');
+  assert.ok(releaseReads.length > 0, "conversation renders before detail/events finish");
+  holdReads = false;
+  releaseReads.splice(0).forEach((resolve) => resolve());
   await page.click('.top-nav .nav-button');
   await visible("#run-list .run-item");
   await page.fill("#run-search", "missing-run");
@@ -180,9 +252,21 @@ try {
   await visible("#create-dialog");
   await page.fill('#create-form [name="objective"]', "Browser fixture goal");
   await page.fill('#create-form [name="targets"]', "localhost\n127.0.0.1");
+  await page.check('#create-form [name="unlimited_actions"]');
+  assert.equal(await page.locator('#create-form [name="max_actions"]').isDisabled(), true);
   await page.click("#create-submit");
   await hidden("#create-dialog");
   assert.deepEqual(posts.find((post) => post.path === "/api/runs").body.targets, ["localhost", "127.0.0.1"]);
+  assert.equal(posts.find((post) => post.path === "/api/runs").body.max_actions, 0);
+  await page.click("#open-budget");
+  await page.check('#budget-form [name="unlimited_actions"]');
+  await page.click('#budget-form button[value="default"]');
+  await hidden("#budget-dialog");
+  assert.equal(posts.find((post) => post.path.endsWith('/budget')).body.unlimited_actions, true);
+  await navigate("conversations");
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.click('#conversation-list button[aria-label="删除"]');
+  await page.waitForFunction(() => document.querySelectorAll('#conversation-list .setting-row').length === 0);
   await page.click("#logout");
   await visible("#login-dialog");
   await screenshot("login-dark-desktop");
@@ -201,7 +285,7 @@ try {
   assert.equal(await page.textContent("#gate-state"), "GATE_STATE: SESSION_EXPIRED");
   assert.equal(await page.locator("#create-dialog").isVisible(), false);
   assert.deepEqual(errors, []);
-  console.log("PASS: login failures/success/expiry, admin/member, Provider editing, settings, fork, checkout rollback, nine run tabs, events, create payload, theme, 1440 desktop layout and CSP");
+  console.log("PASS: auth/roles, Provider, Skill/MCP CRUD and switches, conversation immediate render/delete/fork/checkout, unlimited budget, nine readable tabs, events, desktop layout and CSP");
 } finally {
   await browser.close();
 }

@@ -14,7 +14,7 @@ from ..adapters.runtime import (
     terminal_from_runtime,
     RuntimeToolAdapter,
 )
-from ..core import Event, ModelPort, ToolPort, WorkerPort
+from ..core import Event, ModelPort, TerminalDecision, ToolPort, WorkerPort
 from ..runtime.durable_store import StateVersionConflict, StoreConflictError
 from ..runtime.worker_store import WorkerStore
 from ..runtime.terminal_judge import OperationResult
@@ -42,6 +42,7 @@ from .worker_service import WorkerServiceMixin
 from .service_execution import ServiceExecutionMixin, service_write
 from .bootstrap import build_runtime, config_paths as resolve_config_paths, configure_service
 from ..runtime.settings import _runtime_settings
+from ..runtime.skill_config import configured_resource_index
 from .agent_tools import AgentToolAdapter
 from .asset_graph import project_asset_attack_graph
 from .model_loop import AgentLoop
@@ -355,6 +356,7 @@ class AgentService(ServiceExecutionMixin, WorkerServiceMixin):
         limit: int = 100,
         offset: int = 0,
         status: str = "",
+        summary_only: bool = False,
     ) -> tuple[AgentRunView, ...]:
         """Return bounded run projections for CLI/Web consumers."""
 
@@ -372,12 +374,25 @@ class AgentService(ServiceExecutionMixin, WorkerServiceMixin):
             )
         ) if normalized_status else ()
         return tuple(
-            self.status(state.run_id)
+            self._stored_run_view(state) if summary_only else self.status(state.run_id)
             for state in self.runtime.store.operations(
                 limit=limit,
                 offset=offset,
                 statuses=runtime_statuses,
             )
+        )
+
+    @staticmethod
+    def _stored_run_view(state: Any) -> AgentRunView:
+        return AgentRunView(
+            run=run_from_runtime(state), goal=goal_from_runtime(state.goal), evidence=(),
+            terminal=TerminalDecision(
+                terminal=state.status in {"completed", "failed", "failed_integrity", "cancelled"},
+                success=state.status == "completed",
+                reason=state.terminal_reason or state.failure_reason or state.cancel_reason,
+                metadata={"projection": "stored_state"},
+            ),
+            next_action=state.current_action_id,
         )
 
     def summary(self, run_id: str) -> dict[str, Any]:
@@ -462,6 +477,7 @@ class AgentService(ServiceExecutionMixin, WorkerServiceMixin):
         if delta.changes_budget:
             arguments = {
                 "actions": delta.actions,
+                "action_limit": delta.action_limit,
                 "tokens": delta.tokens,
                 "time_seconds": delta.time_seconds,
                 "deadline": delta.deadline,
@@ -508,10 +524,33 @@ class AgentService(ServiceExecutionMixin, WorkerServiceMixin):
             )
         )
 
-    def transcript(self, run_id: str):
-        if self.runtime.store.load_operation(run_id) is None:
+    def transcript(self, run_id: str, *, limit: int | None = None, offset: int = 0):
+        return self.runtime.store.active_conversation_messages(run_id, limit=limit, offset=offset)
+
+    def conversation_summaries(self, *, limit: int = 100, offset: int = 0):
+        summaries = self.runtime.store.conversation_summaries(limit=limit, offset=offset)
+        return tuple({"message_count": item["message_count"], "session": item["session"],
+            "run": self._stored_run_view(item["state"]).to_dict()} for item in summaries)
+
+    @service_write
+    def delete_conversation(self, run_id: str) -> None:
+        state = self.runtime.store.load_operation(run_id)
+        if state is None:
             raise KeyError(f"operation_not_found:{run_id}")
-        return self.conversation.messages(run_id)
+        if state.status not in {"completed", "failed", "failed_integrity", "cancelled"}:
+            view = self.cancel(run_id, reason="conversation_deleted")
+            if view.run.status != "cancelled":
+                raise StoreConflictError(f"conversation_cancelling:{run_id}")
+        else:
+            self._interrupt_model_loops(run_id, cancel=True)
+            self._cancel_run_workers(run_id)
+        with self._model_condition:
+            self._model_condition.wait_for(lambda: run_id not in self._active_runs
+                and run_id not in self._active_model_loops, timeout=5)
+            if run_id in self._active_runs or run_id in self._active_model_loops:
+                raise StoreConflictError(f"conversation_cancelling:{run_id}")
+            self.runtime.broker.close_run(run_id)
+            self.runtime.store.delete_operation(run_id)
 
     @service_write
     def tool_catalog(self, run_id: str, *, capabilities: tuple[str, ...] = (), profile: str = ""):
@@ -622,7 +661,8 @@ class AgentService(ServiceExecutionMixin, WorkerServiceMixin):
         roots = view.goal.constraints.get("resource_roots", ())
         if isinstance(roots, (str, bytes)) or not isinstance(roots, Sequence):
             roots = ()
-        return self.resources.index((*(roots or (self.runtime.root,)), builtin_resource_root()))
+        return configured_resource_index(self.runtime.store, self.resources,
+            (*(roots or (self.runtime.root,)), builtin_resource_root()))
 
     def resource_selection(
         self,
