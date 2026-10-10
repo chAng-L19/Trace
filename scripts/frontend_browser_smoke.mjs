@@ -15,6 +15,10 @@ const errors = [];
 const posts = [];
 const gets = [];
 let holdReads = false;
+let holdSkillRead = false;
+let releaseSkillRead;
+let notifySkillRead;
+const skillReadHeld = new Promise((resolve) => { notifySkillRead = resolve; });
 const releaseReads = [];
 page.on("pageerror", (error) => errors.push(error.message));
 page.on("console", (message) => { if (message.type() === "error" && /Content Security Policy|font/i.test(message.text())) errors.push(message.text()); });
@@ -61,6 +65,10 @@ await page.route("**/api/**", async (route) => {
   if (path.startsWith("/api/skills/")) {
     const id = decodeURIComponent(path.slice("/api/skills/".length));
     const skill = skills.find((item) => item.resource_id === id);
+    if (request.method() === "GET" && holdSkillRead) {
+      holdSkillRead = false;
+      await new Promise((resolve) => { releaseSkillRead = resolve; notifySkillRead(); });
+    }
     if (request.method() === "DELETE") skills = skills.filter((item) => item !== skill);
     if (request.method() === "POST") Object.assign(skill, body);
     return reply({ skill });
@@ -187,6 +195,20 @@ try {
   await page.locator('#skill-list .setting-row').last().locator('button[aria-label="配置"]').click();
   await page.waitForFunction(() => document.querySelector('#skill-content').disabled === false);
   assert.match(await page.inputValue('#skill-content'), /Verify local/);
+  await page.click('#skill-form button[value="cancel"]');
+  holdSkillRead = true;
+  const editSkill = page.locator('#skill-list .setting-row').last().locator('button[aria-label="配置"]');
+  await editSkill.click();
+  await skillReadHeld;
+  await page.click('#skill-form button[value="cancel"]');
+  await editSkill.click();
+  await page.waitForFunction(() => document.querySelector('#skill-content').disabled === false);
+  await page.fill('#skill-content', "USER UNSAVED EDIT");
+  const staleResponse = page.waitForResponse((response) => response.url().includes('/api/skills/custom%2Ftest'));
+  releaseSkillRead();
+  await (await staleResponse).finished();
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(await page.inputValue('#skill-content'), "USER UNSAVED EDIT", "old same-Skill request cannot overwrite a reopened editor");
   await page.click('#skill-form button[value="cancel"]');
   page.once("dialog", (dialog) => dialog.accept());
   await page.locator('#skill-list .setting-row').last().locator('button[aria-label="删除"]').click();

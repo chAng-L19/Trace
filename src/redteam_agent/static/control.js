@@ -190,6 +190,8 @@ async function loadSkills() {
 async function openSkillEditor(item = null) {
   const epoch = state.authEpoch;
   const form = $("#skill-form");
+  const requestId = String(Number(form.dataset.requestId || 0) + 1);
+  form.dataset.requestId = requestId;
   form.reset();
   form.dataset.mode = item ? "edit" : "create";
   $("#skill-id").value = item?.resource_id || "";
@@ -205,7 +207,7 @@ async function openSkillEditor(item = null) {
   if (item) {
     try {
       const result = await api(`/api/skills/${encodeURIComponent(item.resource_id)}`);
-      if (epoch !== state.authEpoch || form.dataset.mode !== "edit" || $("#skill-id").value !== item.resource_id) return;
+      if (epoch !== state.authEpoch || form.dataset.requestId !== requestId || !$("#skill-dialog").open) return;
       $("#skill-content").value = result.skill.content;
       $("#skill-content").disabled = false;
       submit.disabled = false;
