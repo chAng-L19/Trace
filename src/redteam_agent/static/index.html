@@ -15,6 +15,7 @@
     <script src="/control.js" defer></script>
     <script src="/session.js" defer></script>
     <script src="/profile.js" defer></script>
+    <script src="/run-controls.js" defer></script>
     <script src="/app.js" defer></script>
     <script src="/theme.js" defer></script>
   </head>
@@ -106,6 +107,7 @@
         </div>
         <div class="run-list" id="run-list" aria-live="polite"></div>
         </div>
+        <button class="secondary load-more" id="more-runs" type="button" hidden>加载更多运行</button>
 
         <div class="runs-empty rl-reticle-box" id="empty-state" hidden>
           <img class="empty-symbol" src="/trace-mark.png" alt="" width="512" height="512" />
@@ -119,6 +121,7 @@
         <header class="dossier-header">
           <div class="dossier-meta">
             <div class="identity-line">
+              <button class="secondary icon-only" id="back-runs" type="button" title="返回运行列表" aria-label="返回运行列表"><i data-lucide="arrow-left" aria-hidden="true"></i></button>
               <span class="status-badge" id="run-status">-</span>
               <code id="run-id">-</code>
             </div>
@@ -149,10 +152,12 @@
           <button class="danger icon-only" data-command="cancel" type="button" title="取消运行" aria-label="取消运行">
               <i data-lucide="square" aria-hidden="true"></i>
             </button>
+            <button class="danger icon-only" id="delete-conversation" type="button" title="删除对话" aria-label="删除对话"><i data-lucide="trash-2" aria-hidden="true"></i></button>
             </div>
           </div>
         </header>
 
+        <p class="run-pause-reason" id="run-pause-reason" hidden></p>
         <nav class="tabs" role="tablist" aria-label="运行详情">
           <button role="tab" aria-selected="true" data-tab="events" type="button">
             事件
@@ -246,8 +251,13 @@
             </div>
             <div class="transcript" id="transcript-list"></div>
             <button class="secondary load-more" type="button" data-more="transcript" hidden>
-              加载更多会话
+              加载更早消息
             </button>
+            <form id="message-form" class="message-composer">
+              <label for="message-text">补充指令</label>
+              <textarea id="message-text" name="text" rows="3" required placeholder="先检查登录接口，再验证会话隔离"></textarea>
+              <div class="composer-actions"><span id="message-state" role="status"></span><button class="primary icon-only" id="message-submit" type="submit" title="发送消息" aria-label="发送消息"><i data-lucide="send" aria-hidden="true"></i></button></div>
+            </form>
           </section>
           <section class="tab-panel" role="tabpanel" data-panel="tools" hidden>
             <div class="panel-heading">
@@ -299,6 +309,8 @@
                 <div class="metric"><span>Token 用量</span><strong id="metric-tokens">未设置</strong><progress id="tokens-progress" aria-label="Token 预算用量" max="1"></progress></div>
                 <div class="metric metric-action"><span>下一动作</span><strong id="metric-next">-</strong></div>
                 <div class="metric"><span>状态版本</span><strong id="metric-version">0</strong></div>
+                <div class="metric"><span>时间预算</span><strong id="metric-time">未设置</strong></div>
+                <div class="metric"><span>截止时间</span><strong id="metric-deadline">未设置</strong></div>
               </div>
             </section>
           </div>
@@ -372,7 +384,9 @@
               <i data-lucide="rotate-cw" aria-hidden="true"></i>刷新
             </button>
           </div>
+          <div class="conversation-toolbar"><label for="conversation-search">搜索对话<input id="conversation-search" type="search" placeholder="任务目标、目标地址、会话或运行 ID" /></label></div>
           <div class="settings-list" id="conversation-list"></div>
+          <button class="secondary load-more" id="more-conversations" type="button" hidden>加载更多对话</button>
         </section>
         <section class="control-section" data-control-panel="system" hidden>
           <div class="panel-heading">
@@ -563,9 +577,10 @@
         <label>Skill 标识<input id="skill-id" name="skill_id" required /></label>
         <p class="dialog-copy" id="skill-name"></p>
         <label>内容（Markdown）<textarea id="skill-content" name="content" rows="10" spellcheck="false" required></textarea></label>
-        <label>配置 JSON
+        <label class="check"><input id="skill-enabled" name="enabled" type="checkbox" checked />启用</label>
+        <details class="form-advanced"><summary>高级配置</summary><label>配置 JSON
           <textarea id="skill-config" name="config" rows="10" spellcheck="false" placeholder="{}"></textarea>
-        </label>
+        </label></details>
         <div class="dialog-actions">
           <button class="secondary" value="cancel" type="submit" formnovalidate>
             取消</button>
@@ -587,7 +602,7 @@
           </button>
         </div>
         <label>服务器 ID
-          <input name="server_id" required maxlength="100" pattern="[A-Za-z0-9_\-]+" />
+          <input name="server_id" required maxlength="100" />
         </label>
         <label>传输
           <select name="transport">
@@ -595,16 +610,16 @@
             <option value="http">HTTP</option>
           </select>
         </label>
-        <label>命令，stdio
+        <label data-mcp-transport="stdio">命令
           <input name="command" placeholder="npx" />
         </label>
-        <label>参数，每行一个
+        <label data-mcp-transport="stdio">参数，每行一个
           <textarea name="args" rows="3" maxlength="2000"></textarea>
         </label>
-        <label>URL，HTTP
+        <label data-mcp-transport="http">服务地址
           <input name="url" type="url" />
         </label>
-        <label>Preset
+        <details class="form-advanced"><summary>高级连接配置</summary><label>Preset
           <input name="preset" placeholder="playwright" />
         </label>
         <label>作用域
@@ -619,16 +634,19 @@
         <label>请求头 JSON
           <textarea name="headers" rows="2" placeholder='{"Authorization":"Bearer ${MCP_TOKEN}"}'></textarea>
         </label>
+        </details>
         <label class="check"><input name="enabled" type="checkbox" checked />启用</label>
         <div class="dialog-actions">
           <button class="secondary" value="cancel" type="submit" formnovalidate>
             取消</button>
           <button class="primary" value="default" type="submit">
-            保存并连接
+            保存
           </button>
         </div>
       </form>
     </dialog>
+
+    <dialog id="mcp-tools-dialog" class="rl-reticle-box" aria-labelledby="mcp-tools-title"><form method="dialog"><div class="dialog-heading"><h2 id="mcp-tools-title">工具目录</h2><button class="icon-button" value="cancel" aria-label="关闭" formnovalidate><i data-lucide="x" aria-hidden="true"></i></button></div><div class="readable-view" id="mcp-tools-list"></div><div class="dialog-actions"><button class="secondary" value="cancel">关闭</button></div></form></dialog>
 
     <dialog id="fork-dialog" class="rl-reticle-box" aria-labelledby="fork-title">
       <form id="fork-form" method="dialog">

@@ -12,6 +12,12 @@
 .dossier-header h1 { max-height: 140px; overflow: auto; margin: 0; font-size: 22px; font-weight: 600; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere; }
 .run-targets { max-height: 96px; overflow: auto; margin: 8px 0 0; color: var(--ink-muted); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .run-actions { display: flex; flex-wrap: wrap; gap: 12px; padding-top: 2px; }
+.run-pause-reason { flex: 0 0 auto; margin: 0 0 12px; color: var(--ink-secondary); font-size: 12px; }
+.message-composer { display: grid; gap: 8px; border-top: 1px solid var(--line); padding-top: 16px; margin-top: 20px; }
+.message-composer label, .composer-actions { font-size: 12px; color: var(--ink-secondary); }
+.message-composer textarea { min-height: 80px; }
+.composer-actions { display: flex; align-items: center; justify-content: space-between; }
+.composer-actions .icon-only { width: 36px; height: 36px; padding: 0; }
 .execution-actions, .inspection-actions { display: flex; align-items: center; gap: 6px; }
 .inspection-actions { border-left: 1px solid var(--line); padding-left: 12px; }
 .run-actions button { min-height: 36px; padding-inline: 12px; font-size: 12px; }

@@ -33,7 +33,7 @@ _STATIC_FILES = {
     **{f"/{name}.css": (f"{name}.css", "text/css; charset=utf-8")
        for name in ("app", "base", "registry", "workbench", "control")},
     **{f"/{name}.js": (f"{name}.js", "text/javascript; charset=utf-8")
-       for name in ("ui", "presentation", "layout", "control", "session", "profile", "app", "theme", "lucide.min")},
+       for name in ("ui", "presentation", "layout", "control", "session", "profile", "run-controls", "app", "theme", "lucide.min")},
     "/trace-mark.png": ("trace-mark.png", "image/png"),
     "/barlow-condensed-bold.ttf": ("barlow-condensed-bold.ttf", "font/ttf"),
     **{f"/{name}.ttf": (f"{name}.ttf", "font/ttf")
@@ -187,7 +187,7 @@ class WebApi(ControlRoutesMixin):
         if segments[:2] == ["api", "mcp"]:
             return self._control_request(method, "mcp", segments[2:], payload, request_headers)
         if segments[:2] == ["api", "conversations"]:
-            return self._control_request(method, "conversations", segments[2:], payload, request_headers)
+            return self._control_request(method, "conversations", segments[2:], query if method == "GET" else payload, request_headers)
         if segments == ["api", "system", "reload"]:
             if method != "POST":
                 return self._error(405, "method_not_allowed")
@@ -288,13 +288,10 @@ class WebApi(ControlRoutesMixin):
         return WebResponse(int(saved.get("status", 200)), body)
     def _get(self, tail: list[str], query: Mapping[str, str]) -> WebResponse:
         if not tail:
-            views = self.service.list_runs(
-                summary_only=True,
-                limit=self._int_query(query, "limit", 100, 1, 1000),
-                offset=self._int_query(query, "offset", 0, 0, 1000000),
-                status=str(query.get("status") or ""),
-            )
-            return self._ok({"runs": [self._run_projection(view) for view in views]})
+            limit = self._int_query(query, "limit", 100, 1, 1000)
+            views = self.service.list_runs(summary_only=True, limit=limit + 1, offset=self._int_query(query, "offset", 0, 0, 1000000),
+                status=str(query.get("status") or ""), search=str(query.get("search") or ""))
+            return self._ok({"runs": [self._run_projection(view) for view in views[:limit]], "truncated": len(views) > limit})
         run_id = tail[0]
         if len(tail) == 1:
             return self._ok({"run": self._run_projection(self.service.status(run_id))})
@@ -382,8 +379,9 @@ class WebApi(ControlRoutesMixin):
                 return self._error(404, "resource_not_found")
             offset = self._int_query(query, "offset", 0, 0, 1_000_000)
             limit = self._int_query(query, "limit", 200, 1, 1000)
-            messages = self.service.transcript(run_id, limit=limit + 1, offset=offset)
-            return self._ok({"run_id": run_id, "messages": [_jsonable(item) for item in messages[:limit]], "truncated": len(messages) > limit})
+            latest = query.get("latest") == "1"
+            messages = self.service.transcript(run_id, limit=limit + 1, offset=offset, latest=latest)
+            return self._ok({"run_id": run_id, "messages": [_jsonable(item) for item in (messages[-limit:] if latest else messages[:limit])], "truncated": len(messages) > limit})
         if resource == "artifacts":
             if len(tail) == 2:
                 offset = self._int_query(query, "offset", 0, 0, 1_000_000)
@@ -502,6 +500,9 @@ class WebApi(ControlRoutesMixin):
         if len(tail) > 2:
             return self._error(404, "command_not_found")
         command = tail[1] if len(tail) > 1 else "run"
+        if command == "message":
+            message = self.service.submit_message(run_id, body.get("text"), message_id=command_id)
+            return self._ok({"run": self._run_projection(self.service.status(run_id)), "message": _jsonable(message)})
         if command == "run":
             budget_delta = self._command_budget_delta(body.get("budget_delta"), command_id)
             return self._run_ok(
@@ -588,7 +589,7 @@ class WebApi(ControlRoutesMixin):
         if not tail:
             return False
         command = tail[1] if len(tail) > 1 else "run"
-        return command in {"run", "resume", "observation", "fork"}
+        return command in {"run", "resume", "observation", "fork", "message"}
 
     def _evidence_graph(self, run_id: str, *, include_payload: bool, limit: int = 1000, offset: int = 0) -> dict[str, Any]:
         self.service.status(run_id)

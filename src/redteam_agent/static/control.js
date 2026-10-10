@@ -199,6 +199,9 @@ async function openSkillEditor(item = null) {
   $("#skill-name").textContent =
     item ? `${item.resource_id} · ${item.byte_count} bytes` : "";
   $("#skill-config").value = safeJson(item?.config || {});
+  $("#skill-enabled").checked = item?.enabled !== false;
+  $("#skill-title").textContent = item ? "编辑 Skill" : "新增 Skill";
+  form.querySelector("details").open = false;
   $("#skill-content").value = "";
   $("#skill-content").disabled = Boolean(item);
   const submit = form.querySelector('button[value="default"]');
@@ -234,7 +237,7 @@ async function submitSkill(event) {
     await api($("#skill-form").dataset.mode === "create" ? "/api/skills" : `/api/skills/${encodeURIComponent(id)}`, {
       method: "POST",
       headers: commandHeaders(),
-      body: JSON.stringify({ resource_id: id, content: $("#skill-content").value, config }),
+      body: JSON.stringify({ resource_id: id, content: $("#skill-content").value, enabled: $("#skill-enabled").checked, config }),
     });
     $("#skill-dialog").close();
     await loadSkills();
@@ -268,7 +271,7 @@ async function loadMcp() {
     const detail = document.createElement("small");
     detail.className = `setting-detail mcp-state mcp-state-${status}`;
     detail.textContent = item.enabled
-      ? (item.status?.callable ? `运行中，可调用 ${toolCount} 个工具` : "已开启，等待连接")
+      ? (status === "connected" ? `已连接 · ${toolCount} 个工具` : status === "catalogued" ? `已启用 · 每次运行按需连接 · ${toolCount} 个工具` : "已开启，等待连接")
       : "已停用，不会注入运行";
     main.append(detail);
     if (item.status?.error) {
@@ -294,10 +297,7 @@ async function loadMcp() {
       const inspect = document.createElement("button");
       inspect.type = "button";
       inspect.textContent = "查看工具";
-      inspect.disabled = !toolCount;
-      inspect.addEventListener("click", () => {
-        showNotice(`${title.textContent} 已发现 ${toolCount} 个工具；启动运行后可在“工具”页查看可见目录。`);
-      });
+      inspect.addEventListener("click", () => openMcpTools(item));
       actions.append(toggle, inspect, edit, remove);
     }
     row.append(main, actions);
@@ -319,18 +319,54 @@ function openMcpEditor(item = null) {
         ? value.join("\n")
         : (value ?? "");
   }
+  form.querySelector("details").open = false;
+  syncMcpTransport();
   $("#mcp-dialog").showModal();
 }
 
-async function loadConversations() {
+function syncMcpTransport() {
+  const transport = $("#mcp-form").elements.transport.value;
+  $$("[data-mcp-transport]").forEach((label) => {
+    label.hidden = label.dataset.mcpTransport !== transport;
+    for (const input of label.querySelectorAll("input, textarea")) input.disabled = label.hidden;
+  });
+}
+
+async function openMcpTools(item) {
+  const dialog = $("#mcp-tools-dialog");
+  const list = $("#mcp-tools-list");
   const epoch = state.authEpoch;
+  const requestId = commandId();
+  dialog.dataset.requestId = requestId;
+  $("#mcp-tools-title").textContent = `${item.server_id} · 工具目录`;
+  list.replaceChildren();
+  appendEmpty(list, "正在加载工具目录");
+  dialog.showModal();
+  try {
+    const result = await api(`/api/mcp/${encodeURIComponent(item.server_id)}/tools`);
+    if (epoch !== state.authEpoch || dialog.dataset.requestId !== requestId || !dialog.open) return;
+    list.replaceChildren();
+    if (!result.tools.length) appendEmpty(list, item.enabled ? "尚未发现工具" : "此服务器已停用");
+    else list.append(TracePresentation.readableValue(result.tools));
+  } catch (error) {
+    if (epoch === state.authEpoch && dialog.dataset.requestId === requestId && dialog.open) { list.replaceChildren(); appendEmpty(list, error.message); }
+  }
+}
+
+async function loadConversations(append = false) {
+  if (typeof append !== "boolean") append = false;
+  const epoch = state.authEpoch;
+  const version = state.conversationsVersion = (state.conversationsVersion || 0) + 1;
   $("#conversation-list").setAttribute("aria-busy", "true");
-  const result = await api("/api/conversations");
-  if (epoch !== state.authEpoch || (state.authRequired && !state.authenticated))
+  const query = new URLSearchParams({ limit: "100", offset: String(append ? (state.conversations || []).length : 0), search: $("#conversation-search").value });
+  const result = await api(`/api/conversations?${query}`);
+  if (epoch !== state.authEpoch || version !== state.conversationsVersion || (state.authRequired && !state.authenticated))
     return;
+  state.conversations = append ? [...state.conversations, ...(result.conversations || [])] : result.conversations || [];
+  $("#more-conversations").hidden = !result.truncated;
   renderSettingsList(
     $("#conversation-list"),
-    result.conversations || [],
+    state.conversations,
     (item) => {
       const row = document.createElement("article");
       row.className = "setting-row";
@@ -360,15 +396,7 @@ async function loadConversations() {
       open.type = "button";
       open.textContent = "打开";
       open.addEventListener("click", () => {
-        setView("runs");
-        if (!state.runs.some((view) => coreRun(view).run_id === item.run?.run?.run_id)) state.runs.push(item.run);
-        state.activeTab = "transcript";
-        $$('[role="tab"]').forEach((button) => {
-          button.setAttribute("aria-selected", String(button.dataset.tab === "transcript"));
-          button.tabIndex = button.dataset.tab === "transcript" ? 0 : -1;
-        });
-        $$('[role="tabpanel"]').forEach((panel) => { panel.hidden = panel.dataset.panel !== "transcript"; });
-        loadRun(item.run?.run?.run_id);
+        openConversation(item.run?.run?.run_id, item.run);
       });
       const fork = document.createElement("button");
       fork.type = "button";
@@ -413,7 +441,7 @@ async function loadConversations() {
       actions.append(open, fork, checkout, remove);
       row.append(main, actions);
       return row;
-    },
+    }, "暂无匹配的对话",
   );
 }
 

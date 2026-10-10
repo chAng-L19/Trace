@@ -1,4 +1,9 @@
 .control-section, .settings-list { min-width: 0; }
+.conversation-toolbar { max-width: 560px; margin-bottom: 20px; }
+.conversation-toolbar label { display: grid; gap: 6px; color: var(--ink-secondary); font-size: 11px; }
+.form-advanced { margin-top: 18px; }
+.form-advanced summary { cursor: pointer; color: var(--ink-secondary); font-size: 12px; }
+.form-advanced[open] > label { margin-top: 18px; }
 .settings-list { counter-reset: setting; border-top: 1px solid var(--line); background: var(--surface); }
 .button-row { min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .button-row > * { max-width: 100%; }

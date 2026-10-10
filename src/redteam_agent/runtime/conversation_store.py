@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from ..core import contract_hash
 from .conversation_records import (
@@ -95,7 +95,7 @@ class ConversationStoreMixin:
             records.append(record)
         return tuple(records)
 
-    def active_conversation_messages(self, run_id: str, *, limit: int | None = None, offset: int = 0) -> tuple[ConversationMessageRecord, ...]:
+    def active_conversation_messages(self, run_id: str, *, limit: int | None = None, offset: int = 0, latest: bool = False) -> tuple[ConversationMessageRecord, ...]:
         with self.connection() as connection:
             connection.execute("BEGIN")
             if connection.execute("SELECT 1 FROM operations WHERE run_id=?", (run_id,)).fetchone() is None:
@@ -115,28 +115,34 @@ class ConversationStoreMixin:
             entries = SessionJournal._validated_entries(journal_rows)
             query = active_query + "SELECT m.* FROM active a JOIN conversation_messages m ON m.message_id=a.raw_id " \
                 "WHERE a.raw_table='conversation_messages' AND m.run_id=? ORDER BY a.sequence"
+            if latest:
+                query += " DESC"
             arguments: tuple[Any, ...] = (run_id, run_id, run_id)
             if limit is not None:
                 query += " LIMIT ? OFFSET ?"
                 arguments += (int(limit), int(offset))
             rows = connection.execute(query, arguments).fetchall()
             expected_ids = [entry.raw_id for entry in entries if entry.raw_table == "conversation_messages"]
+            if latest:
+                expected_ids.reverse()
             if limit is not None:
                 expected_ids = expected_ids[offset:offset + limit]
             found_ids = {str(row["message_id"]) for row in rows}
             for message_id in expected_ids:
                 if message_id not in found_ids:
                     raise ImmutableRecordError(f"journal_raw_missing:conversation_messages:{message_id}")
-        return self._conversation_messages_from_rows(rows, run_id)
+        return self._conversation_messages_from_rows(rows[::-1] if latest else rows, run_id)
 
-    def conversation_summaries(self, *, limit: int = 100, offset: int = 0) -> tuple[dict[str, Any], ...]:
+    def conversation_summaries(self, *, limit: int = 100, offset: int = 0,
+                               statuses: Sequence[str] = (), search: str = "") -> tuple[dict[str, Any], ...]:
+        where, arguments = self._operation_filter(statuses, search)
         with self.connection() as connection:
             connection.execute("BEGIN")
             rows = connection.execute(
                 "SELECT o.*,s.active_branch_id,s.version AS journal_version FROM operations o "
-                "LEFT JOIN session_journal_state s ON s.run_id=o.run_id "
-                "ORDER BY o.updated_at DESC,o.run_id DESC LIMIT ? OFFSET ?",
-                (max(1, min(1000, int(limit))), max(0, int(offset))),
+                "LEFT JOIN session_journal_state s ON s.run_id=o.run_id" + where +
+                " ORDER BY o.updated_at DESC,o.run_id DESC LIMIT ? OFFSET ?",
+                (*arguments, max(1, min(1001, int(limit))), max(0, int(offset))),
             ).fetchall()
             if not rows:
                 return ()

@@ -165,7 +165,10 @@ class ControlRoutesMixin:
                 self.service.control_write(self.control.delete_skill, identifier)
                 return self._ok({"deleted": identifier})
         if domain == "mcp":
-            if method == "GET" and not identifier:
+            tools_route = bool(identifier) and tail[1:] == ["tools"]
+            if tools_route and method != "GET":
+                return self._error(405, "method_not_allowed")
+            if method == "GET" and (not identifier or tools_route):
                 statuses = self.service.runtime.broker.server_statuses()
                 items = self.control.mcp_servers()
                 deleted_ids = self.control.deleted_mcp_ids()
@@ -198,6 +201,21 @@ class ControlRoutesMixin:
                     for name, preset in PUBLIC_MCP_PRESETS.items()
                     if name not in configured_ids and name not in configured_presets and name not in deleted_ids
                 )
+                if tools_route:
+                    server = next((item for item in items if item["server_id"] == identifier), None)
+                    if server is None:
+                        return self._error(404, f"mcp_server_not_found:{identifier}")
+                    # Use the already discovered catalog, including run-scoped MCPs.
+                    # Viewing tools must not refresh discovery or create a client.
+                    tools = []
+                    if server["enabled"] and server["status"]["discovered"]:
+                        tools = [
+                            {"name": item.name, "qualified_name": item.qualified_name,
+                             "description": item.description, "capabilities": list(item.capabilities)}
+                            for item in self.service.runtime.broker.descriptors()
+                            if item.server == identifier and item.source.startswith("live-mcp")
+                        ]
+                    return self._ok({"server": server, "tools": tools, "tool_count": len(tools)})
                 mcp_tools = sum(item.source.startswith("live-mcp")
                                 for item in self.service.runtime.broker.descriptors())
                 return self._ok({"servers": items, "tools": mcp_tools})
@@ -225,9 +243,13 @@ class ControlRoutesMixin:
                 return self._ok({"deleted": identifier})
         if domain == "conversations":
             if method == "GET" and not identifier:
+                limit = self._int_query(body, "limit", 100, 1, 1000)
+                summaries = self.service.conversation_summaries(limit=limit + 1,
+                    offset=self._int_query(body, "offset", 0, 0, 1000000),
+                    status=str(body.get("status") or ""), search=str(body.get("search") or ""))
                 conversations = [{"run": item["run"], "message_count": item["message_count"], "session": item["session"]}
-                                 for item in self.service.conversation_summaries()]
-                return self._ok({"conversations": conversations})
+                                 for item in summaries[:limit]]
+                return self._ok({"conversations": conversations, "truncated": len(summaries) > limit})
             if identifier and method == "DELETE":
                 self.service.delete_conversation(identifier)
                 return self._ok({"deleted": identifier})

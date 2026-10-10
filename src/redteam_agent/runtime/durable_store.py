@@ -528,27 +528,37 @@ class DurableStore(
             row = connection.execute(query, (session_id,)).fetchone()
             return self._state_from_row(connection, row) if row else None
 
+    @staticmethod
+    def _operation_filter(statuses: Sequence[str], search: str) -> tuple[str, list]:
+        clauses, arguments = [], []
+        normalized = tuple(dict.fromkeys(str(item).strip() for item in statuses if str(item).strip()))
+        if normalized:
+            clauses.append("o.status IN (" + ",".join("?" for _ in normalized) + ")")
+            arguments.extend(normalized)
+        if keyword := str(search or "").strip():
+            clauses.append("(instr(lower(o.run_id),lower(?)) > 0 "
+                "OR instr(lower(o.session_id),lower(?)) > 0 "
+                "OR instr(lower(json_extract(o.state_json,'$.goal.objective')),lower(?)) > 0 "
+                "OR EXISTS (SELECT 1 FROM json_each(o.state_json,'$.goal.targets') t "
+                "WHERE instr(lower(t.value),lower(?)) > 0))")
+            arguments.extend([keyword] * 4)
+        return (" WHERE " + " AND ".join(clauses) if clauses else ""), arguments
+
     def operations(
         self,
         *,
         limit: int = 100,
         offset: int = 0,
         statuses: Sequence[str] = (),
+        search: str = "",
     ) -> tuple[OperationState, ...]:
         """Return a bounded, newest-first operation projection for adapters."""
 
-        bounded_limit = max(1, min(1000, int(limit)))
+        bounded_limit = max(1, min(1001, int(limit)))  # API pages allow one lookahead row.
         bounded_offset = max(0, int(offset))
-        query = "SELECT * FROM operations"
-        arguments: list[Any] = []
-        normalized_statuses = tuple(
-            dict.fromkeys(str(item).strip() for item in statuses if str(item).strip())
-        )
-        if normalized_statuses:
-            placeholders = ",".join("?" for _ in normalized_statuses)
-            query += f" WHERE status IN ({placeholders})"
-            arguments.extend(normalized_statuses)
-        query += " ORDER BY updated_at DESC, run_id DESC LIMIT ? OFFSET ?"
+        where, arguments = self._operation_filter(statuses, search)
+        query = "SELECT o.* FROM operations o" + where
+        query += " ORDER BY o.updated_at DESC, o.run_id DESC LIMIT ? OFFSET ?"
         arguments.extend((bounded_limit, bounded_offset))
         with self.connection() as connection:
             rows = connection.execute(query, tuple(arguments)).fetchall()

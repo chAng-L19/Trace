@@ -356,29 +356,21 @@ class AgentService(ServiceExecutionMixin, WorkerServiceMixin):
         limit: int = 100,
         offset: int = 0,
         status: str = "",
+        search: str = "",
         summary_only: bool = False,
     ) -> tuple[AgentRunView, ...]:
         """Return bounded run projections for CLI/Web consumers."""
 
         normalized_status = str(status or "").strip()
-        runtime_statuses = tuple(
-            dict.fromkeys(
-                (
-                    normalized_status,
-                    *(
-                        legacy
-                        for legacy, canonical in LEGACY_TO_CORE_STATUS.items()
-                        if canonical == normalized_status
-                    ),
-                )
-            )
-        ) if normalized_status else ()
+        runtime_statuses = (normalized_status, *(legacy for legacy, canonical in LEGACY_TO_CORE_STATUS.items()
+                           if canonical == normalized_status)) if normalized_status else ()
         return tuple(
             self._stored_run_view(state) if summary_only else self.status(state.run_id)
             for state in self.runtime.store.operations(
                 limit=limit,
                 offset=offset,
                 statuses=runtime_statuses,
+                search=search,
             )
         )
 
@@ -524,11 +516,14 @@ class AgentService(ServiceExecutionMixin, WorkerServiceMixin):
             )
         )
 
-    def transcript(self, run_id: str, *, limit: int | None = None, offset: int = 0):
-        return self.runtime.store.active_conversation_messages(run_id, limit=limit, offset=offset)
+    def transcript(self, run_id: str, *, limit: int | None = None, offset: int = 0, latest: bool = False):
+        return self.runtime.store.active_conversation_messages(run_id, limit=limit, offset=offset, latest=latest)
 
-    def conversation_summaries(self, *, limit: int = 100, offset: int = 0):
-        summaries = self.runtime.store.conversation_summaries(limit=limit, offset=offset)
+    def conversation_summaries(self, *, limit: int = 100, offset: int = 0, status: str = "", search: str = ""):
+        normalized = str(status or "").strip()
+        statuses = (normalized, *(legacy for legacy, canonical in LEGACY_TO_CORE_STATUS.items()
+                    if canonical == normalized)) if normalized else ()
+        summaries = self.runtime.store.conversation_summaries(limit=limit, offset=offset, statuses=statuses, search=search)
         return tuple({"message_count": item["message_count"], "session": item["session"],
             "run": self._stored_run_view(item["state"]).to_dict()} for item in summaries)
 

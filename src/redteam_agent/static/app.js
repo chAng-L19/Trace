@@ -180,23 +180,30 @@ function showRunRegistry() {
   );
 }
 
-async function loadRuns({ keepSelection = true } = {}) {
+async function loadRuns({ keepSelection = true, append = false } = {}) {
   const epoch = state.authEpoch;
-  const query = new URLSearchParams({ limit: "200" });
+  const version = state.runsVersion = (state.runsVersion || 0) + 1;
+  const more = $("#more-runs");
+  more.disabled = true;
+  const query = new URLSearchParams({ limit: "200", offset: String(append ? state.runs.length : 0), search: state.search, status: $("#status-filter").value });
   try {
     const result = await api(`/api/runs?${query}`);
     if (
       epoch !== state.authEpoch ||
+      version !== state.runsVersion ||
       (state.authRequired && !state.authenticated)
     )
       return;
-    state.runs = result.runs || [];
+    state.runs = append ? [...state.runs, ...(result.runs || [])] : result.runs || [];
+    more.hidden = !result.truncated;
+    more.disabled = false;
     renderRuns();
     if (!keepSelection || !state.selectedId) return;
     if (state.runs.some((item) => coreRun(item).run_id === state.selectedId))
       await loadRun(state.selectedId, false);
   } catch (error) {
     showNotice(error.message, true);
+    more.disabled = false;
   }
 }
 
@@ -204,11 +211,11 @@ function renderRuns() {
   renderRunList({
     views: state.runs,
     selectedId: state.selectedId,
-    search: state.search,
+    search: "",
     status: $("#status-filter").value,
     onSelect: (runId) => {
       state.registryScroll = $(".app-shell").scrollTop;
-      loadRun(runId);
+      openConversation(runId);
     },
   });
 }
@@ -305,6 +312,11 @@ function renderView() {
   else $("#tokens-progress").value = usedTokens;
   $("#metric-next").textContent = valueOr(view.next_action);
   $("#metric-version").textContent = valueOr(run.state_version, 0);
+  $("#metric-time").textContent = budget.time_limit_seconds ? `${budget.time_limit_seconds} 秒` : "未设置";
+  $("#metric-deadline").textContent = budget.deadline ? formatTime(budget.deadline) : "未设置";
+  const pauses = { user_requested: "已由你暂停", operator_pause: "已由你暂停", action_limit_exhausted: "动作预算已耗尽", token_limit_exhausted: "Token 预算已耗尽", token_usage_unknown: "模型未返回用量，预算核算已暂停", time_limit_exhausted: "时间预算已耗尽", cycle_action_limit: "本轮动作已完成", service_shutdown: "服务重启后已暂停" };
+  $("#run-pause-reason").hidden = run.status !== "paused_budget";
+  $("#run-pause-reason").textContent = pauses[budget.pause_reason] || "运行已暂停";
   const terminal = terminalStatuses.has(run.status);
   const paused = run.status === "paused_budget";
   const waiting = run.status === "waiting_worker";
@@ -324,6 +336,7 @@ function renderView() {
   $('[data-command="cancel"]').disabled =
     terminal || run.status === "cancelling";
   $("#open-budget").disabled = terminal;
+  renderComposer();
   for (const button of $$("[data-command]")) {
     if (state.pendingCommands.has(`${run.run_id}:${button.dataset.command}`))
       button.disabled = true;
@@ -477,16 +490,22 @@ async function loadTab(tab, append = false) {
         artifacts: "artifacts",
         transcript: "messages",
       }[tab];
-      const prior = append ? state.collectionPages[tab] || [] : [];
+      const prior = state.collectionPages[tab] || [];
+      const scroll = $(".tab-content");
+      const oldTop = scroll.scrollTop, oldHeight = scroll.scrollHeight;
+      const atBottom = oldHeight - oldTop - scroll.clientHeight < 64;
       const moreButton = $(`[data-more="${tab}"]`);
       moreButton.disabled = true;
-      const result = await api(
-        `/api/runs/${id}/${endpoint}?limit=200&offset=${prior.length}`,
-      );
+      const offsets = append ? [prior.length] : Array.from({ length: Math.max(1, Math.ceil(prior.length / 200)) }, (_, index) => index * 200);
+      const pages = await Promise.all(offsets.map((offset) => api(`/api/runs/${id}/${endpoint}?limit=200&offset=${offset}${tab === "transcript" ? "&latest=1" : ""}`)));
       if (!current()) return;
-      const records = [...prior, ...(result[key] || [])];
+      const idKey = { evidence: "evidence_id", artifacts: "artifact_id", transcript: "message_id" }[tab];
+      const merged = new Map(prior.map((item) => [item[idKey] || item.entry_id, item]));
+      for (const item of pages.flatMap((page) => page[key] || [])) merged.set(item[idKey] || item.entry_id, item);
+      const records = [...merged.values()];
+      if (tab === "transcript") records.sort((left, right) => Number(left.sequence) - Number(right.sequence));
       state.collectionPages[tab] = records;
-      moreButton.hidden = !result.truncated;
+      moreButton.hidden = !pages.at(-1).truncated;
       moreButton.disabled = false;
       if (tab === "evidence")
         renderRecords(
@@ -497,6 +516,8 @@ async function loadTab(tab, append = false) {
         );
       else if (tab === "artifacts") renderArtifacts(records);
       else renderTranscript(records);
+      scroll.scrollTop = tab === "transcript" && append ? oldTop + scroll.scrollHeight - oldHeight
+        : tab === "transcript" && (!prior.length || atBottom) ? scroll.scrollHeight : oldTop;
     } else if (tab === "tools") {
       const result = await api(`/api/runs/${id}/tools`);
       if (!current()) return;
@@ -535,123 +556,8 @@ function renderTranscript(messages) {
   renderTranscriptList($("#transcript-list"), messages);
 }
 
-function openCreateDialog() {
-  $("#create-form").elements.max_actions.disabled = $("#create-form").elements.unlimited_actions.checked;
-  $("#session-id").value =
-    `trace-${new Date().toISOString().replace(/[:.]/g, "-")}`;
-  $("#create-dialog").showModal();
-}
-
-async function submitCreate(event) {
-  event.preventDefault();
-  if (event.submitter?.value === "cancel") return $("#create-dialog").close();
-  const form = event.currentTarget;
-  const data = new FormData(form);
-  const payload = {
-    session_id: String(data.get("session_id") || "").trim(),
-    objective: String(data.get("objective") || "").trim(),
-    targets: String(data.get("targets") || "")
-      .split(/\r?\n/)
-      .map((item) => item.trim())
-      .filter(Boolean),
-    max_actions: data.get("unlimited_actions") === "on" ? 0 : Number(data.get("max_actions") || 64),
-  };
-  if (data.get("token_limit"))
-    payload.token_limit = Number(data.get("token_limit"));
-  if (data.get("time_limit_seconds"))
-    payload.time_limit_seconds = Number(data.get("time_limit_seconds"));
-  $("#create-submit").disabled = true;
-  try {
-    const result = await api("/api/runs", {
-      method: "POST",
-      headers: { "X-Command-ID": commandId() },
-      body: JSON.stringify(payload),
-    });
-    $("#create-dialog").close();
-    form.reset();
-    setView("runs");
-    const runId = result.runs?.[0]?.run?.run_id;
-    await loadRuns({ keepSelection: false });
-    if (runId) await loadRun(runId);
-    showNotice("运行已创建");
-  } catch (error) {
-    showNotice(error.message, true);
-  } finally {
-    $("#create-submit").disabled = false;
-  }
-}
-
-async function submitBudget(event) {
-  event.preventDefault();
-  if (event.submitter?.value === "cancel") return $("#budget-dialog").close();
-  const data = new FormData(event.currentTarget);
-  const body = {
-    actions: Number(data.get("actions") || 0),
-    tokens: Number(data.get("tokens") || 0),
-    time_seconds: Number(data.get("time_seconds") || 0),
-    acknowledge_missing_usage: data.get("acknowledge_missing_usage") === "on",
-    unlimited_actions: data.get("unlimited_actions") === "on",
-  };
-  $("#budget-dialog").close();
-  await postCommand("budget", body);
-}
-
-function openObservationEditor() {
-  if (!state.selectedId) return;
-  $("#observation-json").value = safeJson({
-    action_id: valueOr(
-      state.view?.handoff?.action_id,
-      state.view?.next_action,
-      "",
-    ),
-    output: {},
-    tool: "host-agent",
-    continue_run: true,
-  });
-  $("#observation-dialog").showModal();
-}
-
-async function submitObservation(event) {
-  event.preventDefault();
-  if (event.submitter?.value === "cancel")
-    return $("#observation-dialog").close();
-  let observation;
-  try {
-    observation = JSON.parse(String($("#observation-json").value || "{}"));
-  } catch (_) {
-    showNotice("观察 JSON 无效", true);
-    return;
-  }
-  if (
-    !observation ||
-    Array.isArray(observation) ||
-    typeof observation !== "object"
-  ) {
-    showNotice("观察必须是 JSON 对象", true);
-    return;
-  }
-  $("#observation-dialog").close();
-  await postCommand("observation", {
-    observation: {
-      ...observation,
-      idempotency_key: observation.idempotency_key || commandId(),
-    },
-  });
-}
-
-function exportReport() {
-  if (!state.report || state.report.run?.run?.run_id !== state.selectedId)
-    return;
-  const blob = new Blob([safeJson(state.report)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `trace-${state.selectedId}-report.json`;
-  link.click();
-  URL.revokeObjectURL(url);
-}
-
 function bind() {
+  bindRunControls();
   $$(".top-nav .nav-button, .control-tab").forEach((button) =>
     button.setAttribute("aria-pressed", String(button.classList.contains("active") && (button.dataset.view === state.page || state.page === "control"))),
   );
@@ -689,9 +595,15 @@ function bind() {
   $("#add-skill").addEventListener("click", () => openSkillEditor());
   $("#add-mcp").addEventListener("click", () => openMcpEditor());
   $("#mcp-form").addEventListener("submit", submitMcp);
+  $("#mcp-form").elements.transport.addEventListener("change", syncMcpTransport);
   $("#refresh-skills").addEventListener("click", loadSkills);
   $("#refresh-mcp").addEventListener("click", loadMcp);
   $("#refresh-conversations").addEventListener("click", loadConversations);
+  $("#more-conversations").addEventListener("click", () => loadConversations(true));
+  $("#conversation-search").addEventListener("input", () => {
+    clearTimeout(loadConversations.searchTimer);
+    loadConversations.searchTimer = setTimeout(() => loadConversations().catch((error) => showNotice(error.message, true)), 180);
+  });
   $("#fork-form").addEventListener("submit", submitFork);
   $("#observation-form").addEventListener("submit", submitObservation);
   $("#reload-system").addEventListener("click", async () => {
@@ -705,9 +617,11 @@ function bind() {
   });
   $("#new-run").addEventListener("click", openCreateDialog);
   $("#refresh-runs").addEventListener("click", () => loadRuns());
+  $("#more-runs").addEventListener("click", () => loadRuns({ keepSelection: false, append: true }));
   $("#run-search").addEventListener("input", (event) => {
     state.search = String(event.target.value || "");
-    renderRuns();
+    clearTimeout(loadRuns.searchTimer);
+    loadRuns.searchTimer = setTimeout(() => loadRuns({ keepSelection: false }), 180);
   });
   $("#status-filter").addEventListener("change", () =>
     loadRuns({ keepSelection: false }),

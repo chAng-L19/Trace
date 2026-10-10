@@ -54,6 +54,8 @@ const context = vm.createContext({
   showRunRegistry: () => { returns += 1; },
   coreRun: (view) => view?.run || {}, goal: (view) => view.goal,
   formatStatus: (status) => status,
+  formatTime: (time) => time,
+  renderComposer() {},
   valueOr: (value, fallback = "-") => value ?? fallback,
   terminalStatuses: new Set(["completed", "failed", "cancelled"]),
 });

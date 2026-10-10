@@ -51,6 +51,10 @@ def exercise(base):
         result = request("GET", path)
         timings[path] = round((time.perf_counter() - before) * 1000, 2)
     assert result["messages"]
+    request("POST", f"/api/runs/{run_id}/message", {"text": "Inspect the login entry first"})
+    transcript = request("GET", f"/api/runs/{run_id}/transcript?latest=1")
+    assert transcript["messages"][-1]["content"]["text"] == "Inspect the login entry first"
+    assert not request("GET", "/api/conversations?search=missing-archive")["conversations"]
 
     skill = "skill:server-http"
     route = "/api/skills/" + quote(skill, safe="")
@@ -66,13 +70,14 @@ def exercise(base):
             "url": "http://127.0.0.1:1/mcp", "enabled": False}, expected=201)
     assert request("POST", "/api/mcp/server-http", {"enabled": True})["server"]["enabled"] is True
     assert request("POST", "/api/mcp/server-http", {"enabled": False})["server"]["enabled"] is False
+    assert request("GET", "/api/mcp/server-http/tools")["tools"] == []
     request("DELETE", "/api/mcp/server-http")
     assert "server-http" not in {item["server_id"] for item in request("GET", "/api/mcp")["servers"]}
     request("DELETE", f"/api/conversations/{run_id}")
     assert not request("GET", "/api/conversations")["conversations"]
     assert not request("GET", "/api/runs")["runs"]
     print(json.dumps({"ok": True, "checks": ["installed_http", "auth", "unlimited", "conversation_delete",
-          "skill_crud", "mcp_crud"], "fixture_request_ms": timings}))
+          "skill_crud", "mcp_crud", "message", "latest-transcript", "history-search", "mcp-tools"], "fixture_request_ms": timings}))
 
 
 def main():

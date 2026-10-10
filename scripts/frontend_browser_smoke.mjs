@@ -35,6 +35,7 @@ const runs = [view("created", "created"), view("paused", "paused_budget"), view(
 const conversations = [{ run: runs[0], message_count: 2, session: { active_branch_id: "main", branches: { main: "entry-1", alternate: "entry-2" } } }];
 let skills = [{ resource_id: "web/recon", byte_count: 1200, content_hash: "a".repeat(64), enabled: true, config: {}, content: "# Recon\nCollect evidence." }];
 let servers = [{ server_id: "playwright", source: "catalog", transport: "stdio", preset: "playwright", enabled: false, status: { status: "available", tool_count: 0 } }];
+const messages = [{ entry_id: "message-1", role: "assistant", content: "证据记录已生成。", sequence: 1 }];
 await page.route("**/api/**", async (route) => {
   const request = route.request();
   const url = new URL(request.url());
@@ -78,7 +79,8 @@ await page.route("**/api/**", async (route) => {
     return reply({ servers });
   }
   if (path.startsWith("/api/mcp/")) {
-    const server = servers.find((item) => item.server_id === path.split("/").at(-1));
+    const server = servers.find((item) => item.server_id === path.split("/")[3]);
+    if (path.endsWith('/tools')) return reply({ server, tools: [{ name: "browser_snapshot", qualified_name: "playwright.browser_snapshot", description: "Read the browser page", capabilities: ["browser.read"] }], tool_count: 1 });
     if (request.method() === "DELETE") servers = servers.filter((item) => item !== server);
     if (request.method() === "POST") Object.assign(server, body);
     return reply({ server });
@@ -92,13 +94,19 @@ await page.route("**/api/**", async (route) => {
   if (path.endsWith("/checkout")) return reply({ error: "fixture_checkout_failed" }, 409);
   if (path === "/api/runs") {
     if (request.method() === "POST") return reply({ runs: [runs[0]] });
-    return reply({ runs });
+    const needle = (url.searchParams.get('search') || '').toLowerCase();
+    const status = url.searchParams.get('status');
+    return reply({ runs: runs.filter((item) => (!needle || JSON.stringify(item).toLowerCase().includes(needle)) && (!status || item.run.status === status)) });
   }
   const match = path.match(/^\/api\/runs\/([^/]+)(?:\/(.*))?$/);
   if (!match) return reply({});
   const run = runs.find((item) => item.run.run_id === match[1]) || runs[0];
   const endpoint = match[2];
   if (holdReads && (!endpoint || endpoint === "events") && !url.searchParams.has("channel")) await new Promise((resolve) => releaseReads.push(resolve));
+  if (endpoint === "message" && request.method() === "POST") {
+    messages.push({ entry_id: `message-${messages.length + 1}`, role: "user", content: { text: body.text }, sequence: messages.length + 1 });
+    return reply({ run, message: messages.at(-1) });
+  }
   if (!endpoint || request.method() === "POST") return reply({ run });
   if (endpoint === "events") {
     if (url.searchParams.has("channel")) return route.fulfill({ contentType: "text/event-stream", body: ": fixture stream\n\n" });
@@ -107,7 +115,7 @@ await page.route("**/api/**", async (route) => {
   if (endpoint === "search-graph") return reply({ records: [{ record_id: "hypothesis-1", record_kind: "hypothesis", status: "active", statement: "验证会话边界", target: "localhost", confidence: .5 }], search_graph: { record_count: 1 } });
   if (endpoint === "evidence-graph") return reply({ nodes: [{ evidence_id: "evidence-1", artifact_type: "verified-response" }], truncated: false });
   if (endpoint === "artifacts") return reply({ artifacts: [{ artifact_id: "artifact-1", artifact_type: "http-response" }], truncated: false });
-  if (endpoint === "transcript") return reply({ messages: [{ entry_id: "message-1", role: "assistant", content: "证据记录已生成。", sequence: 1 }], truncated: false });
+  if (endpoint === "transcript") return reply({ messages, truncated: false });
   if (endpoint === "report") return reply({ run: { run }, findings: [] });
   if (endpoint === "asset-attack-graph") return reply({ assets: [{ asset_id: "app", name: "本地应用", asset_type: "web", value: "localhost" }], attack_paths: [{ path_id: "path-1", title: "会话边界验证", steps: [{ description: "检查登录入口" }, { description: "验证会话隔离" }], status: "candidate" }] });
   return reply({ fixture: endpoint });
@@ -215,10 +223,19 @@ try {
   await page.waitForFunction(() => document.querySelectorAll('#skill-list .setting-row').length === 1);
   await navigate("mcp");
   await visible('#mcp-list input[type="checkbox"]');
+  await page.click('#mcp-list button[aria-label="查看工具"]');
+  await visible('#mcp-tools-dialog');
+  await page.waitForFunction(() => document.querySelector('#mcp-tools-list').textContent.includes('browser_snapshot'));
+  await page.click('#mcp-tools-dialog button[value="cancel"]');
   await page.check('#mcp-list input[type="checkbox"]');
   await page.waitForFunction(() => document.querySelector('#mcp-list input').checked);
   await page.uncheck('#mcp-list input[type="checkbox"]');
   await page.click("#add-mcp");
+  assert.equal(await page.locator('#mcp-form [name="url"]').isVisible(), false);
+  await page.selectOption('#mcp-form [name="transport"]', "http");
+  assert.equal(await page.locator('#mcp-form [name="command"]').isVisible(), false);
+  assert.equal(await page.locator('#mcp-form [name="url"]').isVisible(), true);
+  await page.selectOption('#mcp-form [name="transport"]', "stdio");
   await page.fill('#mcp-form [name="server_id"]', "custom-mcp");
   await page.fill('#mcp-form [name="command"]', "local-fixture");
   await page.click('#mcp-form button[value="default"]');
@@ -247,6 +264,11 @@ try {
   assert.ok(releaseReads.length > 0, "conversation renders before detail/events finish");
   holdReads = false;
   releaseReads.splice(0).forEach((resolve) => resolve());
+  await page.fill('#message-text', '先检查登录接口，再验证会话隔离');
+  await page.click('#message-submit');
+  await page.waitForFunction(() => document.querySelector('#transcript-list').textContent.includes('先检查登录接口'));
+  assert.equal(posts.find((post) => post.path.endsWith('/message')).body.text, '先检查登录接口，再验证会话隔离');
+  assert.equal(await page.locator('#delete-conversation').isVisible(), true);
   await page.click('.top-nav .nav-button');
   await visible("#run-list .run-item");
   await page.fill("#run-search", "missing-run");
@@ -286,8 +308,12 @@ try {
   await hidden("#budget-dialog");
   assert.equal(posts.find((post) => post.path.endsWith('/budget')).body.unlimited_actions, true);
   await navigate("conversations");
+  await page.click('#conversation-list button[aria-label="打开"]');
+  await visible('#workbench');
   page.once("dialog", (dialog) => dialog.accept());
-  await page.click('#conversation-list button[aria-label="删除"]');
+  await page.click('#delete-conversation');
+  await visible('#runs-index');
+  await navigate("conversations");
   await page.waitForFunction(() => document.querySelectorAll('#conversation-list .setting-row').length === 0);
   await page.click("#logout");
   await visible("#login-dialog");

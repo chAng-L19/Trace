@@ -31,6 +31,16 @@ class ServiceExecutionMixin:
         if self._closing:
             raise RuntimeError("agent_service_closing")
 
+    @service_write
+    def submit_message(self, run_id: str, text: str, *, message_id: str):
+        view = self.status(run_id)
+        if view.run.status in {"completed", "failed", "cancelled", "cancelling"}:
+            raise ValueError(f"operation_terminal:{view.run.status}")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("message_text_required")
+        return self.conversation.append(run_id=run_id, role="user", content={"text": text},
+            protected=False, source_type="operator_message", source_id=message_id)
+
     @contextmanager
     def _write_scope(self):
         with self._model_condition:
