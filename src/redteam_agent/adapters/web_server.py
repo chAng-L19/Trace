@@ -170,7 +170,12 @@ class TraceRequestHandler(BaseHTTPRequestHandler):
             if self.headers.get("Last-Event-ID"):
                 query["after_sequence"] = self.headers.get("Last-Event-ID", "0")
             after = self.api._int_query(query, "after_sequence", 0, 0, 2**63 - 1)
-            events = self.api.sse_events(segments[2], after_sequence=after, wait_seconds=float(query.get("wait_seconds", "0") or 0))
+            channel = str(query.get("channel") or "")
+            events = self.api.sse_events(
+                segments[2], after_sequence=after,
+                wait_seconds=float(query.get("wait_seconds", "0") or 0),
+                channel=channel,
+            )
             if not self.api.control.authenticated(
                 {str(key).casefold(): str(value) for key, value in self.headers.items()}, force=self.api.force_auth
             ):
@@ -185,9 +190,11 @@ class TraceRequestHandler(BaseHTTPRequestHandler):
                 self.send_header(name, value)
             self.end_headers()
             headers_sent = True
-            event_name = "trace-event" if query.get("channel") == "ui" else ""
             for event in events:
-                event_type = event_name or str(event["event_type"]).replace("\r", "").replace("\n", "")
+                if channel == "trajectory":
+                    event_type = "trace-cursor" if event["event_type"] == "trace-cursor" else "trace-event"
+                else:
+                    event_type = "trace-event" if channel == "ui" else str(event["event_type"]).replace("\r", "").replace("\n", "")
                 self.wfile.write((f"id: {event['sequence']}\n" f"event: {event_type}\n" f"data: {json.dumps(event, ensure_ascii=False, sort_keys=True, default=str)}\n\n").encode("utf-8"))
             if not events:
                 self.wfile.write(b": keep-alive\n\n")

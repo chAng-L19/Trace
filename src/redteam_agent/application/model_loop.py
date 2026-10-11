@@ -32,6 +32,7 @@ from .bounded_output import BoundedOutput
 from .model_turn import run_model_turn
 from .model_cycle import run_model_cycles
 from .model_stream import MAX_INLINE_MODEL_STREAM_BYTES, invoke_model_stream, project_stream_file
+from .trajectory import text_summary, tool_request_summary, tool_result_summary
 MAX_INLINE_MODEL_OBSERVATION_BYTES = 64 * 1024
 MAX_TOOL_CALLS_PER_TURN = 32
 MAX_PARALLEL_TOOL_CALLS = 4
@@ -255,6 +256,14 @@ class AgentLoop(ModelIntegrityMixin):
                 created_at=utc_now(),
             )
         )
+        self.service.runtime.store.append_event(request.run_id, "harness_step_started", {
+            "request_id": request.request_id,
+            "turn_id": str(request.metadata.get("action_id") or request.request_id),
+            "action_id": str(request.metadata.get("action_id") or ""),
+            "attempt": int(request.metadata.get("attempt") or 0),
+            "provider": provider,
+            "model": request.model,
+        })
         self.service.conversation.record_model_request(request)
     def _invoke(self, request: ModelRequest) -> ModelResponse:
         capabilities = self.model.capabilities()
@@ -322,6 +331,21 @@ class AgentLoop(ModelIntegrityMixin):
         # Provider work has already consumed budget even when its claimed hash
         # is invalid. Account usage before surfacing the integrity failure.
         self._account_response_usage(request, usage)
+        decision = normalized.structured_output.get("decision")
+        decision_summary = (decision.get("reason") or decision.get("summary")) if isinstance(decision, Mapping) else ""
+        self.service.runtime.store.append_event(request.run_id, "harness_step_finished", {
+            "request_id": request.request_id,
+            "turn_id": str(request.metadata.get("action_id") or request.request_id),
+            "status": status,
+            "model": normalized.model or request.model,
+            "finish_reason": normalized.finish_reason,
+            "tool_count": len(normalized.tool_calls),
+            "usage": dict(usage),
+            "text": text_summary(normalized.structured_output.get("reason") or decision_summary or normalized.text, 600) if not (
+                normalized.metadata.get("complete_text_artifact") or normalized.metadata.get("incomplete_text_artifact")
+            ) else "模型正文已保存为工件，请在运行详情查看",
+            "error": text_summary(normalized.error),
+        })
         if status == "integrity_error":
             if invalid_arguments:
                 current = self.service.status(request.run_id)
@@ -546,9 +570,24 @@ class AgentLoop(ModelIntegrityMixin):
                 raise ModelInterruptedError("model_loop_interrupted")
             self._active_calls.setdefault(view.run.run_id, set()).add(cancellation_id)
         try:
+            self.service.runtime.store.append_event(view.run.run_id, "harness_tool_started", {
+                "request_id": request.request_id,
+                "turn_id": str(request.metadata.get("action_id") or request.request_id),
+                "call_id": call.call_id,
+                "tool_name": call.tool_name,
+                **tool_request_summary(call.tool_name, self.service.runtime._credential_vault.project(call.arguments)),
+            })
             result = self.tools.reconcile(call) if reconcile else None
             if result is None:
                 result = self.tools.invoke(call)
+        except Exception as error:
+            self.service.runtime.store.append_event(view.run.run_id, "harness_tool_finished", {
+                "request_id": request.request_id,
+                "turn_id": str(request.metadata.get("action_id") or request.request_id),
+                "call_id": call.call_id, "tool_name": call.tool_name, "status": "failed",
+                "error": text_summary(self.service.runtime._credential_vault.project(str(error))),
+            })
+            raise
         finally:
             self._track(self._active_calls, view.run.run_id, cancellation_id, add=False)
         if result.call_id != call.call_id or result.tool_name != call.tool_name:
@@ -560,6 +599,18 @@ class AgentLoop(ModelIntegrityMixin):
             or (result.output_hash and result.output_hash != output_hash)
         )
         normalized = replace(result, input_hash=input_hash, output_hash=output_hash)
+        result_summary = tool_result_summary(self.service.runtime._credential_vault.project(normalized.output))
+        self.service.runtime.store.append_event(view.run.run_id, "harness_tool_finished", {
+            "request_id": request.request_id,
+            "turn_id": str(request.metadata.get("action_id") or request.request_id),
+            "call_id": call.call_id,
+            "tool_name": call.tool_name,
+            **result_summary,
+            "status": "integrity_error" if mismatch else normalized.status,
+            "error": "tool_result_hash_mismatch" if mismatch else (
+                text_summary(self.service.runtime._credential_vault.project(normalized.error)) or result_summary.get("error", "")
+            ),
+        })
         observation_id = "model-observation-" + contract_hash(
             {"request_id": request.request_id, "call_id": call.call_id}
         )[:32]

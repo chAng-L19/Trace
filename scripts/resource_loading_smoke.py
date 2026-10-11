@@ -6,6 +6,7 @@ import sys
 import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -139,8 +140,24 @@ def main() -> None:
         builtin = next(item for item in listed.output["items"] if "api-recon" in item["resource_id"])
         fixture_id = next(item.resource_id for item in service.resource_index(run_id).resources
                           if item.source == str(procedure.resolve()))
-        loaded = invoke(service, run_id, "load_resource", {"resource_id": fixture_id})
+        default_tools = {item.qualified_name for item in service.tool_catalog(run_id).tools}
+        for name in ("first", "second"):
+            descriptor = service.runtime.broker.register_adapter(name=name, server="deferred",
+                capabilities=("fixture",), adapter=lambda _: {"ok": True}, side_effecting=True)
+            service.runtime.broker._descriptors[descriptor.qualified_name] = replace(descriptor, source="live-mcp-fixture")
+        assert not any(item.server == "deferred" for item in service.tool_catalog(run_id).tools)
+        for selectors in (("deferred:first",), ("does-not-match:*",), ("deferred:second",)):
+            catalog = service.expand_tools(run_id, selectors)
+            names = {item.qualified_name for item in catalog.tools}
+            assert default_tools <= names and "deferred:first" in names
+            if selectors != ("deferred:second",):
+                assert "deferred:second" not in names
+        assert "deferred:second" in names
+        loaded = invoke(service, run_id, "load_resource", {"resource_id": fixture_id,
+            "tool_selectors": ["builtin:cloud-*"]})
         assert loaded.status == "success" and loaded.output["authority"] == "guidance_only", loaded.error
+        assert default_tools <= {item.qualified_name for item in service.tool_catalog(run_id).tools}
+        assert invoke(service, run_id, "list_resources", {}).status == "success"
         selected = service.resource_selection(run_id)
         assert fixture_id in selected.resource_ids and any(item.kind == "agents" for item in selected.selected)
         assert fixture_id not in service.resource_selection(other).resource_ids
@@ -148,6 +165,8 @@ def main() -> None:
         service.close()
         service = AgentService(root=root, load_external_configuration=False)
         assert fixture_id in service.resource_selection(run_id).resource_ids
+        assert default_tools <= {item.qualified_name for item in service.tool_catalog(run_id).tools}
+        assert invoke(service, run_id, "list_resources", {}).status == "success"
         procedure.write_text("Fixture procedure version 2.", encoding="utf-8")
         assert fixture_id not in service.resource_selection(run_id).resource_ids
         assert invoke(service, run_id, "load_resource", {"resource_id": fixture_id}).status == "success"
@@ -166,7 +185,9 @@ def main() -> None:
         "builtin-discovery", "on-demand-loading", "default-guidance-preserved", "run-isolation",
         "durable-resume", "changed-source-requires-reload", "disabled-resource", "no-evidence-promotion",
         "malformed-schema-secrets", "schema-composition", "enabled-skill-preserves-guidance",
-        "ambiguous-resource-rejected", "budget-no-eviction", "atomic-concurrent-load"]}))
+        "ambiguous-resource-rejected", "budget-no-eviction", "atomic-concurrent-load",
+        "additive-tool-expansion", "nonmatching-selector-preserves-tools", "skill-selector-preserves-tools",
+        "expanded-catalog-restart"]}))
 
 
 if __name__ == "__main__":

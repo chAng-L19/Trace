@@ -91,14 +91,14 @@ headers = {Authorization = "fixture-secret"}
         request("POST", "/api/mcp", {"server_id": "config.server", "transport": "http",
             "url": "http://fixture.invalid/edited", "enabled": True}, status=201)
         assert broker._server_configs["config.server"].url == "http://fixture.invalid/edited"
-        assert broker._server_configs["config.server"].render(environment=api.control.mcp_secret_bindings()["config.server"]).headers["Authorization"] == "fixture-secret"
+        assert broker._server_configs["config.server"].render().headers["Authorization"] == "fixture-secret"
         request("POST", "/api/mcp/config.server", {"enabled": False})
         assert broker.server_statuses()["config.server"]["status"] == "disabled"
         request("POST", "/api/mcp/config.server", {"enabled": True})
         spec = broker._server_configs["config.server"]
         assert spec.include_tools == ("read",) and spec.exclude_tools == ("write",)
         assert spec.read_only and spec.startup_timeout_seconds == 73 and spec.tool_timeout_seconds == 91
-        assert spec.render(environment=api.control.mcp_secret_bindings()["config.server"]).headers["Authorization"] == "fixture-secret"
+        assert spec.render().headers["Authorization"] == "fixture-secret"
         assert "fixture-secret" not in json.dumps(request("GET", "/api/mcp"))
         request("DELETE", "/api/mcp/config.server")
         reload_mcp(service)

@@ -170,6 +170,10 @@ class OpenAICompatibleProvider:
         self._port = parsed.port
         base_path = parsed.path.rstrip("/")
         self._responses_api = base_path.endswith("/responses")
+        self._response_format_type = (
+            "json_object" if self._host.casefold() in {"api.deepseek.com", "api.deepseek.com.cn"}
+            else "json_schema"
+        )
         self._path = (
             base_path
             if self._responses_api or base_path.endswith("/chat/completions")
@@ -196,7 +200,8 @@ class OpenAICompatibleProvider:
             usage_reporting=True,
             max_context_tokens=int(max_context_tokens),
             metadata={"provider": "openai-compatible", "model": self.model,
-                      "opaque_continuation": True, "max_output_tokens": self.max_output_tokens},
+                      "opaque_continuation": True, "max_output_tokens": self.max_output_tokens,
+                      "response_format_type": self._response_format_type},
         )
         self._active: dict[str, _ActiveRequest] = {}
         self._lock = threading.RLock()

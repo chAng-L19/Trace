@@ -55,6 +55,7 @@ def audit_wheel(path: Path) -> None:
                 bad.append(name)
         _require(not bad, f"wheel_contains_build_residue:{bad[:10]}")
         _require("redteam_agent/workflows/skills/api-recon/SKILL.md" in names, "wheel_builtin_skill_missing")
+        _require("redteam_agent/prompts/agent.md" in names, "wheel_agent_prompt_missing")
 
         metadata_names = [name for name in names if name.endswith(".dist-info/METADATA")]
         entry_names = [name for name in names if name.endswith(".dist-info/entry_points.txt")]

@@ -1,6 +1,7 @@
 "use strict";
 
 function openConversation(runId, view = null) {
+  if (state.selectedId) state.drafts.set(state.selectedId, $("#message-text").value);
   setView("runs");
   if (view && !state.runs.some((item) => coreRun(item).run_id === runId)) state.runs.push(view);
   state.activeTab = "transcript";
@@ -9,47 +10,77 @@ function openConversation(runId, view = null) {
     button.tabIndex = button.dataset.tab === "transcript" ? 0 : -1;
   });
   $$('[role="tabpanel"]').forEach((panel) => { panel.hidden = panel.dataset.panel !== "transcript"; });
-  if (state.selectedId !== runId) $("#message-text").value = "";
+  $("#message-text").value = state.drafts.get(runId) || "";
   loadRun(runId);
 }
 
 function renderComposer() {
   const run = coreRun(state.view);
-  const ended = terminalStatuses.has(run.status) || run.status === "cancelling";
+  const terminal = terminalStatuses.has(run.status);
+  const blocked = !state.selectedId || run.status === "cancelling";
   const pending = state.pendingCommands.has(`${run.run_id}:message`);
-  $("#message-text").disabled = ended || pending;
-  $("#message-submit").disabled = ended || pending;
-  $("#message-submit").title = pending ? "正在发送" : "发送消息";
-  $("#message-state").textContent = ended ? "此运行已结束" : pending ? "正在发送" : run.status === "paused_budget" ? "已暂停" : "";
+  const paused = run.status === "paused_budget";
+  $("#message-text").disabled = blocked || pending;
+  $("#message-submit").disabled = blocked || pending;
+  $("#message-submit").title = pending ? "正在发送" : terminal ? "追问结果" : "发送消息";
+  $("#message-resume").hidden = !paused && run.status !== "created";
+  $("#message-resume").disabled = blocked || pending;
+  $("#message-state").textContent = pending ? "正在发送" : terminal ? "结果讨论，不执行工具" : paused ? "已暂停 · 发送消息不会恢复执行" : "";
 }
 
 async function submitMessage(event) {
   event.preventDefault();
   const runId = state.selectedId;
   const input = $("#message-text");
-  const text = input.value.trim();
-  if (!runId || !text) return;
-  const epoch = state.authEpoch;
+  const draft = input.value;
+  const text = draft.trim();
+  const status = coreRun(state.view).status;
+  const resume = event.submitter?.id === "message-resume";
   const pendingKey = `${runId}:message`;
+  if (!runId || !text || status === "cancelling" || state.pendingCommands.has(pendingKey)) return;
+  if (resume && !["created", "paused_budget"].includes(status)) return;
+  const epoch = state.authEpoch;
+  const discussion = terminalStatuses.has(status);
+  state.drafts.set(runId, draft);
   state.pendingCommands.add(pendingKey);
   renderComposer();
+  let accepted = false;
   try {
-    const result = await api(`/api/runs/${encodeURIComponent(runId)}/message`, {
+    const result = await api(`/api/runs/${encodeURIComponent(runId)}/${discussion ? "discussion" : "message"}`, {
       method: "POST", headers: commandHeaders(), body: JSON.stringify({ text }),
     });
-    if (epoch !== state.authEpoch || state.selectedId !== runId) return;
-    input.value = "";
-    applyView(result.run);
-    await loadTab("transcript");
-    const status = coreRun(result.run).status;
-    if (status === "created" || status === "paused_budget") {
-      postCommand(status === "paused_budget" ? "resume" : "run", { execute: true });
-    } else showNotice("消息已加入当前会话");
+    if (epoch !== state.authEpoch) return;
+    accepted = true;
+    const discussionFailed = discussion && result.response?.status === "failed";
+    if (!discussionFailed && state.drafts.get(runId) === draft) state.drafts.delete(runId);
+    if (state.selectedId === runId) {
+      input.value = state.drafts.get(runId) || "";
+      applyView(result.run);
+    }
+    const nextStatus = coreRun(result.run).status;
+    if (!discussion && (nextStatus === "created" || (resume && nextStatus === "paused_budget"))) {
+      await postCommand(nextStatus === "created" ? "run" : "resume", { execute: true }, runId);
+      if (epoch !== state.authEpoch) return;
+    }
+    if (state.selectedId === runId) {
+      await loadTab("transcript");
+      if (epoch !== state.authEpoch || state.selectedId !== runId) return;
+      showNotice(discussionFailed
+        ? `讨论回复失败：${result.response.error || result.response.text || "模型未返回回复"}。消息已记录，草稿已保留，可重试。`
+        : discussion ? "结果讨论已更新" : "消息已加入当前会话", discussionFailed);
+    }
   } catch (error) {
-    if (epoch === state.authEpoch && state.selectedId === runId) showNotice(error.message, true);
+    if (epoch !== state.authEpoch) return;
+    if (!accepted && !state.drafts.has(runId)) state.drafts.set(runId, draft);
+    if (state.selectedId === runId) {
+      input.value = state.drafts.get(runId) || "";
+      showNotice(error.message, true);
+    }
   } finally {
-    state.pendingCommands.delete(pendingKey);
-    renderComposer();
+    if (epoch === state.authEpoch) {
+      state.pendingCommands.delete(pendingKey);
+      renderComposer();
+    }
   }
 }
 
@@ -65,6 +96,16 @@ async function deleteConversation(runId) {
 
 function bindRunControls() {
   $("#message-form").addEventListener("submit", submitMessage);
+  $("#message-text").addEventListener("input", (event) => {
+    if (state.selectedId) state.drafts.set(state.selectedId, event.target.value);
+  });
+  $("#copy-conversation-link").addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(location.href); showNotice("会话地址已复制"); }
+    catch (error) { showNotice(`复制失败：${error.message}`, true); }
+  });
+  $("#export-report-html").addEventListener("click", () => exportReport("html"));
+  $("#provider-test").addEventListener("click", testProvider);
+  $("#fork-more").addEventListener("click", () => loadForkEntries(true));
   $("#back-runs").addEventListener("click", showRunRegistry);
   $("#delete-conversation").addEventListener("click", () => deleteConversation(state.selectedId));
 }
@@ -134,12 +175,27 @@ async function submitObservation(event) {
   await postCommand("observation", { observation: { ...observation, idempotency_key: observation.idempotency_key || commandId() } });
 }
 
-function exportReport() {
-  if (!state.report || state.report.run?.run?.run_id !== state.selectedId) return;
-  const url = URL.createObjectURL(new Blob([safeJson(state.report)], { type: "application/json" }));
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `trace-${state.selectedId}-report.json`;
-  link.click();
-  URL.revokeObjectURL(url);
+async function exportReport(format = "markdown") {
+  if (typeof format !== "string") format = "markdown";
+  const runId = state.selectedId;
+  const epoch = state.authEpoch;
+  if (!runId) return;
+  try {
+    const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/report?format=${format}`, {
+      credentials: "same-origin", cache: "no-store", headers: { Accept: format === "html" ? "text/html" : "text/markdown" },
+    });
+    if (epoch !== state.authEpoch) return;
+    if (response.status === 401) { handleAuthExpired(); return; }
+    if (!response.ok) throw new Error(`报告导出失败：HTTP ${response.status}`);
+    const blob = await response.blob();
+    if (epoch !== state.authEpoch) return;
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `trace-${runId}-report.${format === "html" ? "html" : "md"}`;
+    link.click();
+    URL.revokeObjectURL(url);
+  } catch (error) {
+    if (epoch === state.authEpoch) showNotice(error.message, true);
+  }
 }

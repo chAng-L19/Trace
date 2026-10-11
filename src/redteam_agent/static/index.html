@@ -17,6 +17,7 @@
     <script src="/profile.js" defer></script>
     <script src="/run-controls.js" defer></script>
     <script src="/app.js" defer></script>
+    <script src="/workspace.js" defer></script>
     <script src="/theme.js" defer></script>
   </head>
   <body>
@@ -30,7 +31,10 @@
       <nav class="top-nav" aria-label="控制面">
         <p class="rail-section-label">[01] 控制面</p>
         <button class="nav-button btn btn-ghost active" data-view="runs" type="button">
-          所有运行
+          所有对话
+        </button>
+        <button class="nav-button btn btn-ghost" data-view="workspaces" type="button">
+          工作区
         </button>
         <button class="control-tab" type="button" data-control-tab="conversations">对话管理</button>
       </nav>
@@ -53,13 +57,13 @@
       </div>
     </aside>
     <header class="app-header">
-      <div class="header-label"><span class="path-mono">TRACE_SYS //</span><strong id="workspace-title">所有运行</strong></div>
+      <div class="header-label"><span class="path-mono">TRACE_SYS //</span><strong id="workspace-title">所有对话</strong></div>
       <div class="header-tools">
         <div class="rl-badge connection" id="connection" role="status">
           <span class="pulse-dot connection-dot" aria-hidden="true"></span>
           <span id="connection-text" class="font-mono">正在连接</span>
         </div>
-        <button class="primary small" id="new-run" type="button" title="新建运行" aria-label="新建运行"><i data-lucide="plus" aria-hidden="true"></i><span>新建运行</span></button>
+        <button class="primary small" id="new-run" type="button" title="新建对话" aria-label="新建对话"><i data-lucide="plus" aria-hidden="true"></i><span>新建对话</span></button>
       </div>
     </header>
 
@@ -69,7 +73,7 @@
           <div>
             <div class="heading-line">
               <span class="rl-sys-tag">// SUB_MODULE: RUN_REGISTRY</span>
-              <h1 class="rl-card-title" id="runs-title">所有运行</h1>
+              <h1 class="rl-card-title" id="runs-title">所有对话</h1>
               <span class="run-count font-mono" id="run-count">0</span>
             </div>
           </div>
@@ -124,6 +128,7 @@
               <button class="secondary icon-only" id="back-runs" type="button" title="返回运行列表" aria-label="返回运行列表"><i data-lucide="arrow-left" aria-hidden="true"></i></button>
               <span class="status-badge" id="run-status">-</span>
               <code id="run-id">-</code>
+              <button class="secondary icon-only" id="copy-conversation-link" type="button" title="复制会话地址" aria-label="复制会话地址"><i data-lucide="link" aria-hidden="true"></i></button>
             </div>
           </div>
           <div class="dossier-task">
@@ -193,7 +198,7 @@
           <section class="tab-panel" role="tabpanel" data-panel="events">
             <div class="panel-heading">
               <div>
-                <h2>事件脊线</h2>
+                <h2>Harness 实时轨迹</h2>
                 <p id="event-cursor">序号 0</p>
               </div>
               <button class="text-button icon-only" id="clear-events" type="button" title="清空事件视图" aria-label="清空事件视图">
@@ -256,7 +261,7 @@
             <form id="message-form" class="message-composer">
               <label for="message-text">补充指令</label>
               <textarea id="message-text" name="text" rows="3" required placeholder="先检查登录接口，再验证会话隔离"></textarea>
-              <div class="composer-actions"><span id="message-state" role="status"></span><button class="primary icon-only" id="message-submit" type="submit" title="发送消息" aria-label="发送消息"><i data-lucide="send" aria-hidden="true"></i></button></div>
+              <div class="composer-actions"><span id="message-state" role="status"></span><button class="primary icon-only" id="message-submit" type="submit" title="发送消息" aria-label="发送消息"><i data-lucide="send" aria-hidden="true"></i></button><button class="secondary" id="message-resume" type="submit" hidden>发送并继续</button></div>
             </form>
           </section>
           <section class="tab-panel" role="tabpanel" data-panel="tools" hidden>
@@ -275,6 +280,7 @@
               </div>
             </div>
             <div class="readable-view" id="attack-view"></div>
+            <button class="secondary load-more" id="attack-more" type="button" data-more="attack" hidden>加载更多攻击路径</button>
           </section>
           <section class="tab-panel" role="tabpanel" data-panel="transparency" hidden>
             <div class="panel-heading">
@@ -289,9 +295,10 @@
               <div>
                 <h2>运行报告</h2>
               </div>
-              <button class="secondary" id="export-report" type="button">
-                <i data-lucide="download" aria-hidden="true"></i>导出 JSON
-              </button>
+              <div class="button-row">
+                <button class="secondary" id="export-report" type="button"><i data-lucide="download" aria-hidden="true"></i>导出 Markdown</button>
+                <button class="secondary" id="export-report-html" type="button"><i data-lucide="download" aria-hidden="true"></i>导出 HTML</button>
+              </div>
             </div>
             <div class="readable-view" id="report-view"></div>
           </section>
@@ -315,6 +322,49 @@
             </section>
           </div>
         </details>
+        </div>
+      </section>
+
+      <section class="workspace-index" id="workspace-index" aria-labelledby="workspace-index-title" hidden>
+        <header class="rl-card-header page-heading">
+          <div>
+            <div class="heading-line">
+              <span class="rl-sys-tag">// SUB_MODULE: WORKSPACE_REGISTRY</span>
+              <h1 class="rl-card-title" id="workspace-index-title">工作区</h1>
+              <span class="run-count font-mono" id="workspace-count">0</span>
+            </div>
+          </div>
+          <button class="primary" id="new-workspace" type="button"><i data-lucide="plus" aria-hidden="true"></i>新建工作区</button>
+        </header>
+        <div class="rl-card-body workspace-body">
+          <section class="workspace-toolbar" aria-label="筛选工作区">
+            <label class="search-field" for="workspace-search"><span>搜索工作区</span><input id="workspace-search" type="search" placeholder="名称、目标、来源或工作区 ID" autocomplete="off" /></label>
+            <label class="status-field" for="workspace-status"><span>状态</span><select id="workspace-status"><option value="">全部状态</option><option value="active">进行中</option><option value="stopped">已暂停</option><option value="completed">已完成</option></select></label>
+            <button class="secondary icon-only" id="refresh-workspaces" type="button" title="刷新工作区" aria-label="刷新工作区"><i data-lucide="rotate-cw" aria-hidden="true"></i></button>
+          </section>
+          <div class="workspace-layout">
+            <div class="workspace-list rl-reticle-box" id="workspace-list" aria-live="polite"></div>
+            <button id="workspace-more" class="secondary" type="button" hidden><i data-lucide="chevrons-down" aria-hidden="true"></i>加载更多</button>
+            <section class="workspace-detail" id="workspace-detail" aria-live="polite" hidden>
+              <header class="workspace-detail-header">
+                <div class="workspace-detail-title"><span class="status-badge" id="workspace-detail-status">-</span><h2 id="workspace-detail-name">-</h2><code id="workspace-detail-id">-</code></div>
+                <div class="button-row">
+                  <button class="secondary small" id="workspace-rename" type="button"><i data-lucide="pencil" aria-hidden="true"></i>重命名</button>
+                  <button class="secondary small" id="workspace-export-md" type="button"><i data-lucide="download" aria-hidden="true"></i>Markdown</button>
+                  <button class="secondary small" id="workspace-export-json" type="button"><i data-lucide="download" aria-hidden="true"></i>JSON</button>
+                  <button class="danger small" id="workspace-delete" type="button"><i data-lucide="trash-2" aria-hidden="true"></i>删除</button>
+                </div>
+              </header>
+              <div class="workspace-summary" id="workspace-summary"></div>
+              <div class="workspace-actions" id="workspace-actions"></div>
+              <div class="workspace-panels">
+                <section class="workspace-panel"><div class="workspace-panel-heading"><h3>运行</h3><button class="primary small" id="workspace-add-intent" type="button"><i data-lucide="plus" aria-hidden="true"></i>新增意图</button></div><div id="workspace-runs"></div></section>
+                <section class="workspace-panel"><div class="workspace-panel-heading"><h3>事实</h3></div><div id="workspace-facts"></div></section>
+                <section class="workspace-panel"><div class="workspace-panel-heading"><h3>线索</h3><button class="secondary small" id="workspace-add-hint" type="button"><i data-lucide="plus" aria-hidden="true"></i>新增线索</button></div><div id="workspace-hints"></div></section>
+              </div>
+            </section>
+            <div class="workspace-empty" id="workspace-empty" hidden><span class="archive-label">// STATUS: WORKSPACE_NOT_SELECTED</span><h2>选择一个工作区</h2><p>工作区把目标、运行、证据和操作线索放在同一处。</p></div>
+          </div>
         </div>
       </section>
     </main>
@@ -354,6 +404,7 @@
             <div class="button-row"><button class="secondary" id="refresh-skills" type="button">
               <i data-lucide="rotate-cw" aria-hidden="true"></i>刷新索引
             </button>
+            <button class="secondary" id="import-skill" type="button" data-admin-only><i data-lucide="download" aria-hidden="true"></i>导入 Skill</button>
             <button class="primary" id="add-skill" type="button" data-admin-only><i data-lucide="plus" aria-hidden="true"></i>新增 Skill</button></div>
           </div>
           <div class="settings-list" id="skill-list"></div>
@@ -430,7 +481,7 @@
       <form id="create-form" method="dialog">
         <div class="dialog-heading">
           <div>
-            <h2 id="create-title">新建运行</h2>
+            <h2 id="create-title">新建对话</h2>
           </div>
           <button class="icon-button" value="cancel" aria-label="关闭" type="submit" formnovalidate>
             ×
@@ -526,14 +577,14 @@
         <label>模型
           <input name="model" required maxlength="200" />
         </label>
-        <label>API Key 环境变量
-          <input name="api_key_env" placeholder="OPENAI_API_KEY" />
+        <label>环境变量名（可选）
+          <input name="api_key_env" placeholder="OPENAI_API_KEY" autocomplete="off" />
         </label>
-        <label>本次进程 API Key，不会回显或写入数据库
+        <label>API Key（直接保存，不会回显）
           <input name="api_key" type="password" autocomplete="new-password" />
         </label>
         <label class="check">
-          <input id="provider-clear-key" name="clear_api_key" type="checkbox" />清除已绑定的进程密钥</label>
+          <input id="provider-clear-key" name="clear_api_key" type="checkbox" />清除已保存的 API Key</label>
         <div class="form-grid two-columns">
           <label>超时，秒
           <input name="timeout_seconds" type="number" min="1" max="3600" value="120" />
@@ -554,7 +605,9 @@
           <input name="thinking_budget_tokens" type="number" min="0" value="0" />
         </label>
         </div>
+        <p id="provider-test-result" class="provider-test-result" role="status" aria-live="polite"></p>
         <div class="dialog-actions">
+          <button id="provider-test" class="secondary" type="button">测试连接</button>
           <button class="secondary" value="cancel" type="submit" formnovalidate>
             取消</button>
           <button class="primary" value="default" type="submit">
@@ -591,6 +644,33 @@
       </form>
     </dialog>
 
+    <dialog id="skill-import-dialog" class="rl-reticle-box" aria-labelledby="skill-import-title">
+      <form id="skill-import-form" method="dialog">
+        <div class="dialog-heading">
+          <div>
+            <h2 id="skill-import-title">导入 Skill</h2>
+          </div>
+          <button class="icon-button" value="cancel" aria-label="关闭" type="submit" formnovalidate>
+            ×
+          </button>
+        </div>
+        <label>选择文件
+          <input name="file" type="file" accept=".md,text/markdown,text/plain" />
+        </label>
+        <label>服务器路径或 Markdown 地址
+          <input name="source" type="text" placeholder="/opt/skills/SKILL.md 或 https://example.test/SKILL.md" autocomplete="off" />
+        </label>
+        <label>Skill 标识（可选）
+          <input name="resource_id" type="text" placeholder="默认使用 skill:external/文件名" autocomplete="off" />
+        </label>
+        <label class="check"><input name="enabled" type="checkbox" checked />导入后启用</label>
+        <div class="dialog-actions">
+          <button class="secondary" value="cancel" type="submit" formnovalidate>取消</button>
+          <button class="primary" value="default" type="submit">导入 Skill</button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog id="mcp-dialog" class="rl-reticle-box" aria-labelledby="mcp-title">
       <form id="mcp-form" method="dialog">
         <div class="dialog-heading">
@@ -611,7 +691,7 @@
           </select>
         </label>
         <label data-mcp-transport="stdio">命令
-          <input name="command" placeholder="npx" />
+          <input name="command" placeholder="MCP 服务可执行文件路径" />
         </label>
         <label data-mcp-transport="stdio">参数，每行一个
           <textarea name="args" rows="3" maxlength="2000"></textarea>
@@ -648,6 +728,16 @@
 
     <dialog id="mcp-tools-dialog" class="rl-reticle-box" aria-labelledby="mcp-tools-title"><form method="dialog"><div class="dialog-heading"><h2 id="mcp-tools-title">工具目录</h2><button class="icon-button" value="cancel" aria-label="关闭" formnovalidate><i data-lucide="x" aria-hidden="true"></i></button></div><div class="readable-view" id="mcp-tools-list"></div><div class="dialog-actions"><button class="secondary" value="cancel">关闭</button></div></form></dialog>
 
+    <dialog id="evidence-dialog" class="rl-reticle-box" aria-labelledby="evidence-title">
+      <form method="dialog">
+        <div class="dialog-heading">
+          <h2 id="evidence-title">证据详情</h2>
+          <button id="evidence-close" class="icon-button" type="submit" value="close" aria-label="关闭证据详情"><i data-lucide="x" aria-hidden="true"></i></button>
+        </div>
+        <div id="evidence-detail" class="readable-view" aria-live="polite"></div>
+      </form>
+    </dialog>
+
     <dialog id="fork-dialog" class="rl-reticle-box" aria-labelledby="fork-title">
       <form id="fork-form" method="dialog">
         <div class="dialog-heading">
@@ -661,13 +751,14 @@
         <input id="fork-run-id" name="run_id" type="hidden" /><label>分支起点
           <select id="fork-entry" name="from_entry_id" required></select>
         </label>
+        <button id="fork-more" class="secondary load-more" type="button" hidden>加载更多消息</button>
         <label>分支 ID
           <input id="fork-branch-id" name="branch_id" required maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9._-]*" />
         </label>
         <div class="dialog-actions">
           <button class="secondary" value="cancel" type="submit" formnovalidate>
             取消</button>
-          <button class="primary" value="default" type="submit">
+          <button id="fork-submit" class="primary" value="default" type="submit">
             创建分支
           </button>
         </div>
@@ -737,9 +828,29 @@
       </form>
     </dialog>
 
+    <dialog id="workspace-dialog" class="rl-reticle-box" aria-labelledby="workspace-title-dialog">
+      <form id="workspace-form" method="dialog">
+        <div class="dialog-heading"><h2 id="workspace-title-dialog">新建工作区</h2><button class="icon-only" value="cancel" type="submit" formnovalidate aria-label="关闭"><i data-lucide="x" aria-hidden="true"></i></button></div>
+        <label>名称<input name="title" required maxlength="200" placeholder="例如：授权边界复核" /></label>
+        <label>来源或入口<input name="origin" maxlength="1000" placeholder="http://127.0.0.1:8781" /></label>
+        <label>工作目标<textarea name="goal" rows="4" required maxlength="12000" placeholder="验证匿名用户是否能读取其他用户的资源"></textarea></label>
+        <label>目标地址，每行一个<textarea name="targets" rows="3" maxlength="12000"></textarea></label>
+        <label class="check"><input name="unlimited_actions" type="checkbox" checked />动作无上限</label>
+        <div class="dialog-actions"><button class="secondary" value="cancel" type="submit" formnovalidate>取消</button><button class="primary" value="default" type="submit">创建工作区</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="workspace-hint-dialog" class="rl-reticle-box" aria-labelledby="workspace-hint-title">
+      <form id="workspace-hint-form" method="dialog"><div class="dialog-heading"><h2 id="workspace-hint-title">新增操作线索</h2><button class="icon-only" value="cancel" type="submit" formnovalidate aria-label="关闭"><i data-lucide="x" aria-hidden="true"></i></button></div><label>线索<textarea name="content" rows="5" required maxlength="12000" placeholder="保留匿名拒绝控制，不要只验证管理员路径"></textarea></label><div class="dialog-actions"><button class="secondary" value="cancel" type="submit" formnovalidate>取消</button><button class="primary" value="default" type="submit">添加线索</button></div></form>
+    </dialog>
+
+    <dialog id="workspace-intent-dialog" class="rl-reticle-box" aria-labelledby="workspace-intent-title">
+      <form id="workspace-intent-form" method="dialog"><div class="dialog-heading"><h2 id="workspace-intent-title">新增意图</h2><button class="icon-only" value="cancel" type="submit" formnovalidate aria-label="关闭"><i data-lucide="x" aria-hidden="true"></i></button></div><label>要验证什么<textarea name="description" rows="5" required maxlength="12000" placeholder="比较同一用户读取不同资源时的响应差异"></textarea></label><label>目标地址，每行一个<textarea name="targets" rows="3" maxlength="12000"></textarea></label><label class="check"><input name="unlimited_actions" type="checkbox" checked />动作无上限</label><div class="dialog-actions"><button class="secondary" value="cancel" type="submit" formnovalidate>取消</button><button class="primary" value="default" type="submit">创建运行</button></div></form>
+    </dialog>
+
     <section class="trace-terminal" id="trace-terminal" aria-label="Trace 控制台">
       <button class="terminal-bar" id="terminal-toggle" type="button" aria-expanded="false">
-        <span><i data-lucide="terminal" aria-hidden="true"></i>DIAGNOSTIC MONITOR // 实时推演流</span>
+        <span><i data-lucide="route" aria-hidden="true"></i>DEEPSEEK HARNESS // 实时轨迹</span>
         <span class="terminal-state"><span id="terminal-state">展开</span><i data-lucide="chevron-up" aria-hidden="true"></i></span>
       </button>
       <div class="terminal-body" id="terminal-body" hidden>

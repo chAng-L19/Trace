@@ -97,9 +97,13 @@ def resolve_provider(control: Any, paths: Sequence[Path], options: Mapping[str, 
     if not str(values["model"]).strip():
         return None, sources
     # An endpoint override must never forward a persisted key to another host.
+    matches_active = bool(active and values["base_url"] == active["base_url"]
+                          and kind == active.get("provider", "openai-compatible"))
     secret = credential_override
+    if active and not matches_active and secret is not None:
+        secret = ""
     if secret is None:
-        secret = control.provider_secret(active["provider_id"], include_environment=False) if control and active and values["base_url"] == active["base_url"] and kind == active.get("provider", "openai-compatible") else ""
+        secret = control.provider_secret(active["provider_id"], include_environment=False) if control and matches_active else ""
     key_name = str(values["api_key_env"])
     try:
         timeout, context = float(values["timeout_seconds"]), int(values["max_context_tokens"])
@@ -175,7 +179,8 @@ def configuration_projection(root: Path, paths: Sequence[Path | str] | None = No
                 active = dict(row) if row else None
         except sqlite3.Error:
             pass
-    provider, sources = resolve_provider(None, resolved_paths, active=active)
+    provider, sources = resolve_provider(None, resolved_paths, active=active,
+                                        credential_override=str(active.get("api_key") or "") if active else None)
     return {
         "precedence": ["explicit", "environment", "persisted", "toml", "default"],
         "provider_sources": sources, "automation": _runtime_settings(resolved_paths),

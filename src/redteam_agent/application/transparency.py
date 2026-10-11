@@ -74,6 +74,8 @@ class TransparencyProjector:
         responses = {item.request_id: item for item in store.model_responses(run_id)}
         observations = tuple(store.model_observations(run_id))
         usage = tuple(store.model_budget_usage(run_id))
+        discussion_usage = [dict(responses[item.request_id].usage) for item in requests
+            if item.request.get("metadata", {}).get("discussion") and item.request_id in responses]
         snapshots = tuple(store.context_snapshots(run_id))
         summaries = tuple(store.context_summaries(run_id))
         artifacts = tuple(self.service.artifacts(run_id))
@@ -191,6 +193,7 @@ class TransparencyProjector:
                 ],
                 "usage": list(usage),
                 "totals": _usage_totals(usage),
+                "discussion_totals": _usage_totals(discussion_usage),
             },
             "tools": {
                 "revision": catalog.revision,

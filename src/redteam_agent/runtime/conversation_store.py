@@ -11,6 +11,7 @@ from .conversation_records import (
     DiagnosticArtifactRecord,
 )
 from .store_common import ImmutableRecordError, _dump, _load
+from .security import redact_sensitive
 from .session_journal import SessionJournal
 
 
@@ -21,6 +22,10 @@ class ConversationStoreMixin:
     ) -> ConversationMessageRecord:
         if contract_hash(record.content) != record.content_hash:
             raise ImmutableRecordError(f"conversation_content_hash_mismatch:{record.message_id}")
+        # Hash the same projection that _dump persists, after validating the input.
+        content = redact_sensitive(record.content)
+        record = replace(record, content=content, content_hash=contract_hash(content),
+                         metadata=redact_sensitive(record.metadata))
         with self.transaction(immediate=True) as connection:
             row = connection.execute(
                 "SELECT message_json FROM conversation_messages WHERE message_id=?",
@@ -42,6 +47,7 @@ class ConversationStoreMixin:
                 ).fetchone()[0]
             )
             assigned = replace(record, sequence=sequence)
+            serialized = _dump(assigned.to_dict())
             connection.execute(
                 "INSERT INTO conversation_messages(message_id, run_id, sequence, role, content_hash, "
                 "protected, source_type, source_id, message_json, created_at) "
@@ -55,7 +61,7 @@ class ConversationStoreMixin:
                     int(assigned.protected),
                     assigned.source_type,
                     assigned.source_id,
-                    _dump(assigned.to_dict()),
+                    serialized,
                     assigned.created_at,
                 ),
             )
@@ -65,7 +71,7 @@ class ConversationStoreMixin:
                 entry_type="message",
                 raw_table="conversation_messages",
                 raw_id=assigned.message_id,
-                raw_json=_dump(assigned.to_dict()),
+                raw_json=serialized,
                 created_at=assigned.created_at,
             )
             return assigned

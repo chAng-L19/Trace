@@ -232,7 +232,8 @@ class ToolRegistry(ToolPort):
         )
         patterns = persisted_patterns or ()
         if expanded and patterns:
-            matched = {
+            defaults, _ = self.policy.select(tools, capabilities=effective_capabilities)
+            matched = {item.qualified_name for item in defaults} | {
                 item.qualified_name
                 for item in selected
                 if any(fnmatch.fnmatchcase(item.qualified_name, pattern) for pattern in patterns)
@@ -294,7 +295,7 @@ class ToolRegistry(ToolPort):
             raise KeyError(f"tool_not_found:{requested}")
         selected = {
             str(item.qualified_name): self._tool_signature(item)
-            for item in catalog.tools
+            for item in self.delegate.discover()
             if not requested or item.qualified_name == requested
         }
         return {
@@ -456,6 +457,7 @@ class ToolRegistry(ToolPort):
             "capabilities": list(getattr(tool, "capabilities", ()) or ()),
             "side_effecting": bool(getattr(tool, "side_effecting", False)),
             "supports_reconcile": bool(getattr(tool, "supports_reconcile", False)),
+            "missing_dependencies": list(metadata.get("missing_dependencies", ()) or ()),
         }
 
     @staticmethod

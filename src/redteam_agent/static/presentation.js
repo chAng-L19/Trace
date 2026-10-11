@@ -58,6 +58,7 @@
     action_fingerprint: "动作指纹", runtime_branch_id: "执行分支", session_branch_id: "会话分支",
     focus: "当前探索方向", authority: "来源权威", selected: "已选工具", visible: "提供给模型",
     expanded: "目录已展开", enabled: "已启用", input_schema: "输入字段", retryable: "可重试",
+    missing_dependencies: "缺少依赖",
   };
   const states = {
     created: "已创建", running: "运行中", completed: "已完成", failed: "失败",
@@ -98,7 +99,8 @@
   }
 
   function copy(container, text) {
-    if (present(text)) container.append(node("div", "presentation-copy", text));
+    if (present(text)) container.append(typeof text === "string" && /^\s*[\[{]/.test(text)
+      ? readableValue(text) : node("div", "presentation-copy", text));
   }
 
   function readableValue(value, key = "") {
@@ -123,6 +125,13 @@
     }
     if (typeof value === "string" && /^\s*(?:\{\s*"|\[\s*[\{"\[])/.test(value))
       return node("span", "presentation-muted", "结构化内容不完整");
+    if (typeof value === "string" && /^(?:evidence_id|evidence_refs|evidence_ids|parent_ids|.*_evidence_ids)$/.test(key)) {
+      const link = node("a", "presentation-download", value);
+      link.href = "#evidence";
+      link.dataset.evidenceRef = value;
+      link.title = "查看证据正文与来源";
+      return link;
+    }
     const translated = ["status", "reason", "severity", "trust", "next_action", "kind", "authority"].includes(key)
       ? state(value) : key === "artifact_type" ? kind(value) : value;
     return node("span", "presentation-value", translated);
@@ -200,7 +209,8 @@
       copy(entry, state(item.reason));
       fields(entry, { capabilities: signature.capabilities, version: signature.version,
         source: signature.source, "会产生副作用": signature.side_effecting,
-        "支持执行状态核对": signature.supports_reconcile });
+        "支持执行状态核对": signature.supports_reconcile,
+        missing_dependencies: signature.missing_dependencies });
       details(entry, "目录引用", { schema_hash: signature.schema_hash,
         "描述摘要": signature.description_hash, "目录版本": result.revision });
     }
@@ -216,7 +226,7 @@
     return entry;
   }
 
-  function renderAttack(container, result) {
+  function renderAttack(container, result, showFindings = true) {
     reset(container);
     const paths = result.attack_paths || [];
     const assets = result.assets || [];
@@ -237,7 +247,7 @@
         return value ? `${value.title} · ${state(value.severity)} · ${state(value.status)}` : `${id}（当前响应未包含发现详情）`;
       }));
       field(relation, "影响", path.impact);
-      field(relation, "支持证据", path.evidence_ids);
+      field(relation, "支持证据", path.evidence_ids, "evidence_ids");
       entry.append(relation);
       details(entry, "路径引用与补充信息", { "路径编号": path.path_id,
         relationship_ids: path.relationship_ids, metadata: path.metadata });
@@ -249,11 +259,12 @@
       fields(entry, { target: asset.target, evidence_ids: asset.evidence_ids });
       details(entry, "资产属性与引用", { "资产编号": asset.asset_id, attributes: asset.attributes });
     }
-    const findingSection = section(container, "已记录的发现");
-    if (!findings.length) empty(findingSection, "暂无发现记录");
-    findings.forEach((value) => finding(findingSection, value));
+    if (showFindings) {
+      const findingSection = section(container, "已记录的发现");
+      if (!findings.length) empty(findingSection, "暂无发现记录");
+      findings.forEach((value) => finding(findingSection, value));
+    }
     details(container, "证据来源与图关系", { "来源证据": result.source_evidence_ids, "关系": result.edges });
-    if (result.truncated) copy(container, "当前仅展示部分记录，后续记录偏移量：" + result.next_offset);
   }
 
   function renderEvidence(container, records) {
@@ -321,6 +332,14 @@
     fields(overview, { targets: goal.targets, next_action: view.next_action,
       missing_capabilities: view.missing_capabilities });
     renderTerminal(container, result.terminal || view.terminal || {}, goal.criteria || []);
+    const findings = section(container, "有证据支持的发现");
+    if (!result.findings?.length) empty(findings, "暂无有证据支持的发现");
+    for (const value of result.findings || []) {
+      const entry = finding(findings, value);
+      fields(entry, { "复现步骤": value.reproduction_steps, impact: value.impact, "修复建议": value.remediation });
+    }
+    const paths = section(container, "攻击路径与资产");
+    renderAttack(paths, result, false);
     const evidenceSection = section(container, "支撑证据");
     const evidenceBody = node("div");
     evidenceSection.append(evidenceBody);
@@ -345,6 +364,10 @@
     usage.append(counts);
     if (totals.usage_complete === false) details(usage, "已知部分用量与缺失字段", {
       known_totals: totals.known_totals, missing_fields: totals.missing_fields });
+    if (model.discussion_totals?.requests) {
+      const discussion = section(container, "结果讨论用量");
+      fields(discussion, model.discussion_totals);
+    }
     const actions = section(container, "模型请求与响应");
     if (!model.actions?.length) empty(actions, "暂无模型请求记录");
     for (const action of model.actions || []) {

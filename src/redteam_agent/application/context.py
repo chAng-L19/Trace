@@ -12,6 +12,7 @@ from ..runtime.conversation_records import (
     ConversationMessageRecord,
 )
 from ..runtime.model_common import utc_now
+from ..runtime.security import redact_sensitive
 from ..runtime.evidence_gate import EvidenceGate
 from ..runtime.verifier import SemanticVerifier
 from .contracts import AgentRunView, StartRequest
@@ -46,7 +47,7 @@ class ConversationLedger:
         source_id: str,
         metadata: Mapping[str, Any] | None = None,
     ) -> ConversationMessageRecord:
-        normalized = json_value(content, field="conversation.content")
+        normalized = redact_sensitive(json_value(content, field="conversation.content"))
         message_id = "message-" + contract_hash(
             {"run_id": run_id, "source_type": source_type, "source_id": source_id}
         )[:32]
@@ -331,7 +332,7 @@ class ContextSelector:
             content=TACTICAL_SYSTEM,
             protected=True,
             source_type="system_base",
-            source_id="model-loop-v4",
+            source_id="model-loop-" + contract_hash(TACTICAL_SYSTEM),
         )
         self.ledger.append(
             run_id=run_id,
@@ -688,6 +689,7 @@ class ContextSelector:
         )
         return {
             "current_task": current_task(self.service, view, state),
+            "workspace_context": self.service.project_workspaces.model_context(state.session_id),
             "original_goal": {
                 "goal_id": view.goal.goal_id,
                 "objective": view.goal.objective,

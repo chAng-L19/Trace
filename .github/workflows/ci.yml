@@ -60,6 +60,23 @@ jobs:
           python -B scripts/execution_steps_smoke.py
           python -B scripts/execution_evidence_smoke.py
           python -B scripts/resource_loading_smoke.py
+      - name: Verify workbench workflows and integrated runtime
+        run: |
+          python -B scripts/agent_prompt_smoke.py
+          python -B scripts/provider_check_smoke.py
+          python -B scripts/control_migration_smoke.py
+          python -B scripts/skill_import_smoke.py
+          python -B scripts/discussion_smoke.py
+          python -B scripts/reporting_smoke.py
+          python -B scripts/trajectory_smoke.py
+          python -B scripts/user_workflow_smoke.py
+          python -B scripts/workspace_smoke.py
+          python -B scripts/workspace_lifecycle_smoke.py
+          python -B scripts/integrated_tool_smoke.py
+          python -B scripts/web_lab_agent_smoke.py
+          python -B scripts/web_lab_model_agent_smoke.py
+          python -B scripts/tool_bundle_smoke.py
+          node scripts/frontend_controls_unit_smoke.mjs
       - name: Verify tool preparation, MCP lifecycle and Docker worker
         run: |
           python -B scripts/tool_prepare_smoke.py
@@ -70,6 +87,8 @@ jobs:
           node scripts/frontend_layout_smoke.mjs
       - name: Install browser for capture regression
         run: python -m playwright install --with-deps chromium
+      - name: Verify built-in browser MCP
+        run: python -B scripts/browser_mcp_smoke.py
       - name: Verify agent execution and complete local tasks
         run: |
           python -B scripts/agent_execution_smoke.py
@@ -105,7 +124,7 @@ jobs:
           mv -Tf "$TRACE_INSTALL_PREFIX/.rollback" "$TRACE_INSTALL_PREFIX/current"
           "$TRACE_INSTALL_PREFIX/trace-service" cli self-test
       - name: Check deployment shell syntax
-        run: sh -n deploy/install-linux.sh && sh -n deploy/run-trace.sh
+        run: sh -n deploy/install-linux.sh && sh -n deploy/install-tool-bundle.sh && sh -n deploy/run-trace.sh
 
   windows:
     name: Windows worker, model and wheel smoke

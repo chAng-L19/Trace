@@ -10,7 +10,6 @@ import zipfile
 from pathlib import Path
 
 from redteam_agent.runtime.managed_tools import resolve_executable
-from redteam_agent.runtime.tool_prepare import _pip_command
 
 
 def main():
@@ -25,7 +24,7 @@ def main():
             archive.writestr(metadata + "WHEEL", "Wheel-Version: 1.0\nGenerator: trace-smoke\nRoot-Is-Purelib: true\nTag: py3-none-any\n")
             archive.writestr(metadata + "entry_points.txt", "[console_scripts]\ntrace-install-fixture = trace_install_fixture:main\n")
             archive.writestr(metadata + "RECORD", "")
-        subprocess.run(_pip_command(str(wheel), offline=True, proxy=None), check=True)
+        subprocess.run([sys.executable, "-m", "pip", "install", "--no-index", "--upgrade", str(wheel)], check=True)
     importlib.invalidate_caches()
     module = importlib.import_module("trace_install_fixture")
     assert module.VALUE == "installed-live"

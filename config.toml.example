@@ -20,13 +20,12 @@ max_domains = 7
 max_hypothesis_branches = 4
 handoff_ttl_seconds = 900
 
-# Run-scoped Playwright keeps browser state isolated between operations. The
-# preset exposes a focused accessibility/network catalog instead of every MCP
-# tool, which reduces prompt tokens without hiding core browser capabilities.
+# Trace's built-in browser MCP uses the current Python, installed Playwright
+# and existing Chrome/Chromium; it never invokes npx or downloads dependencies.
+# This is not Microsoft's Playwright MCP server. Omit command to use the preset.
 [mcp_servers.playwright]
 preset = "playwright"
 scope = "run"
-command = "npx"
-args = ["-y", "@playwright/mcp@0.0.79", "--isolated", "--headless", "--image-responses=omit", "--codegen=none", "--block-service-workers", "--output-dir={workspace}/playwright-output", "--output-max-size=52428800"]
+args = ["-m", "redteam_agent.runtime.browser_mcp", "--workspace", "{workspace}"]
 startup_timeout_seconds = 120
 tool_timeout_seconds = 120

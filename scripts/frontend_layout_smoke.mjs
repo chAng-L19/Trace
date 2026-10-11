@@ -11,6 +11,7 @@ assert.equal(new Set(ids).size, ids.length);
 assert.equal(ids.filter((id) => id === "new-run").length, 1);
 assert.equal((html.match(/data-control-tab=/g) || []).length, 7);
 assert.doesNotMatch(html, /data-open-control|control-tabs|rail-history|empty-new-run|back-to-runs/);
+assert.match(source, /addEventListener\("trace-cursor"/);
 for (const name of readdirSync(root).filter((name) => name.endsWith(".js"))) {
   const script = readFileSync(`${root}/${name}`, "utf8");
   for (const match of script.matchAll(/\$\("#([\w-]+)"\)/g)) {

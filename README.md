@@ -18,8 +18,10 @@ Trace 是证据驱动、可持久恢复、面向强模型战术能力的专业�
   云区域/资源枚举，以及 ASC 思路的 APK/DEX 按需分析、跨 DEX 引用查询和加固迹象探针；
 - 可选 Sliver C2 RPC：健康检查、Session/Beacon/Listener 清单与显式 Session 命令执行；
 - 通用 run-scoped MCP Capability Plane，支持 roots、取消、目录刷新和资源清理；
-- 统一 `agent:prepare_tools` 按需准备依赖、更新工具可用性，公开 MCP 与内置工具分别展示；
+- 统一 `agent:prepare_tools` 诊断依赖和工具可用性，公开 MCP 与内置工具分别展示；
 - EvidenceGraph、SemanticVerifier、TerminalJudge 和五个公开 MCP 工具。
+- 桌面对话工作台、Skill/MCP 管理、真实 Token 用量、无上限动作预算、Harness 轨迹；
+- 工作区统一组织会话、Facts、Intents 与线索，支持结果追问和可读报告导出。
 
 模型负责假设生成、工具选择、局部搜索和战术优先级；Runtime 只负责确定性不变量、证据晋升、清理和终态裁决。
 
@@ -65,7 +67,7 @@ trace state verify .\state.zip
 trace state restore .\state.zip --root .\restored-state
 ```
 
-备份包含完整状态目录、已合并 WAL 的 SQLite 快照、CAS、工作区、凭据密钥、托管配置和工具清单，
+备份包含完整状态目录、已合并 WAL 的 SQLite 快照、CAS、工作区、凭据与托管配置和工具清单，
 恢复前逐文件校验 SHA-256 与 schema。活动运行/租约、根目录进程锁和快照期间文件变化会使备份失败；
 暂停或取消运行并停止服务后重试。归档含密钥，应按凭据文件保管；外置工具缓存与环境配置另行归档。
 Linux、Docker、systemd 与升级回滚见 [部署说明](deploy/README.md)。
@@ -73,16 +75,20 @@ Linux、Docker、systemd 与升级回滚见 [部署说明](deploy/README.md)。
 发行包名与主命令统一为 `trace-agent` / `trace`。Python 导入路径 `redteam_agent`
 以及原有 `redteam-agent*` 命令继续作为兼容接口保留。
 
-基础发行包只安装 Runtime，工具依赖按需准备。可使用 `trace setup TOOL`，或由模型调用
-`agent:prepare_tools`；一次准备返回安装结果、可用工具和新的目录版本。需要完整常用工具包时
+基础发行包只安装 Runtime，工具依赖按需准备。使用 `trace setup TOOL` 安装依赖；模型调用
+`agent:prepare_tools` 仅诊断依赖状态与可用能力，不安装或下载。需要常用 Python 工具依赖时
 可安装 `trace-agent[tools]`。未安装的依赖会标记为不可用，原生替代能力继续保留。
 
 默认 `OperationRuntime` 直接注册上述工具，不依赖 `config.toml`。Playwright、Capstone
 和 ASC 风格 APK/DEX 查询通过 Python API 调用；radare2/Rizin、Frida 和云 CLI/SDK 在本机存在时
 由内置 Adapter 使用，缺少 radare2/Rizin 时自动回退到原生惰性二进制查询。
 `config.toml.example` 提供可选 Provider 配置与通用 MCP 扩展示例。
-Web MCP 页面统一展示网页托管与配置文件中的外部服务；官方 Playwright MCP 未配置时显示
-待接入并预填官方启动参数，不将内置 Python 浏览器适配器当作 MCP 连接。
+Web MCP 页面统一展示网页托管与配置文件中的服务；默认 Playwright MCP 由项目内
+`redteam_agent.runtime.browser_mcp` 提供 stdio 工具，不通过 npx 临时下载。用户自定义服务配置保持不变。
+
+完整 Linux 离线工具包的构建和安装见 [部署说明](deploy/README.md)。运行提示词位于
+[`src/redteam_agent/prompts/agent.md`](src/redteam_agent/prompts/agent.md)，随包加载，与本地维护者约定分离。
+Provider Key 和托管 MCP 凭据按现有配置明文保存；备份包含这些值。
 
 Docker worker 使用任务指定的 `image` 与 `argv`，共享运行工作区并保存 stdout/stderr 产物；
 支持非零退出、超时、取消、进程中断恢复和容器清理。需要本机 Docker CLI 与可用 daemon。

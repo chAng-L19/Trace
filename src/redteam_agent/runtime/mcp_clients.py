@@ -32,6 +32,7 @@ MAX_ERROR_TEXT_BYTES = 1024
 _CHILD_ENV_KEYS = frozenset({
     "APPDATA", "COMSPEC", "HOME", "LANG", "LC_ALL", "LOCALAPPDATA", "LOGNAME",
     "PATH", "PATHEXT", "SHELL", "SYSTEMROOT", "TEMP", "TMP", "USER", "USERPROFILE",
+    "TRACE_TOOLS_HOME",
 })
 
 
@@ -432,9 +433,16 @@ class StdioMcpClient:
 
     def close(self) -> None:
         if self.process.poll() is None:
-            self.process.terminate()
+            # Our browser module owns a Playwright driver and Chromium children.
+            # EOF lets its finally block close them on Windows as well as Unix.
+            browser_module = list(self.process.args[1:3]) == ["-m", "redteam_agent.runtime.browser_mcp"]
+            if browser_module:
+                self.process.stdin.close()
+            else:
+                self.process.terminate()
             try:
-                self.process.wait(timeout=3.0)
+                # Match BrowserSessions' existing shutdown budget before killing its owner.
+                self.process.wait(timeout=15.0 if browser_module else 3.0)
             except subprocess.TimeoutExpired:
                 self.process.kill()
                 self.process.wait(timeout=3.0)

@@ -1,68 +1,22 @@
-"""Local dependency inventory. No downloads, cloud login, or MCP server startup."""
+"""Read-only capability doctor for Trace's project-native tool plane."""
 from __future__ import annotations
 
-import importlib.metadata
 import os
-import re
 import subprocess
 import sys
 import tomllib
 from pathlib import Path
 from typing import Any
 
-from .managed_tools import (chromium_executable, managed_install, manifest,
-                            platform_key, playwright_chromium, resolve_executable, tools_root)
+from .managed_tools import chromium_executable, managed_install, platform_key, tools_root, resolve_executable
+from .tool_prepare import TOOL_NAMES, module_available, prepare
 from .tool_setup import run_probe
 
 
-def _version(command: list[str]) -> tuple[str, str]:
-    try:
-        code, output = run_probe(command, timeout=5)
-        match = re.search(r"\b\d+\.\d+(?:\.\d+){0,2}\b", output)
-        return (match.group() if match else "", "passed" if code == 0 else "failed")
-    except (OSError, subprocess.SubprocessError):
-        return "", "failed"
-
-
-def _package(name: str, pinned: str) -> dict[str, Any]:
-    row: dict[str, Any] = {"name": name, "status": "missing", "installed": False, "source": "missing",
-                           "version": "", "expected_version": pinned, "path": "",
-                           "checksum_status": "package_manager", "repair": f'python -m pip install "{name}=={pinned}"'}
-    try:
-        distribution = importlib.metadata.distribution(name)
-        row.update(version=distribution.version, path=str(distribution.locate_file(name)))
-        code, _ = run_probe([sys.executable, "-c", f"import {name}"], timeout=5)
-        row.update(installed=code == 0, status="installed" if code == 0 else "missing",
-                   source="system" if code == 0 else "missing", validation="passed" if code == 0 else "import_failed",
-                   version_matches=distribution.version == pinned)
-    except (importlib.metadata.PackageNotFoundError, OSError, subprocess.SubprocessError):
-        pass
-    return row
-
-
-def _mcp_status(configs: list[Path], root: Path) -> list[dict[str, Any]]:
-    from .mcp_config import parse_mcp_server_specs
-
-    rows = []
-    for path in configs:
-        if not path.is_file():
-            continue
-        try:
-            specs = parse_mcp_server_specs(path, tomllib.loads(path.read_text(encoding="utf-8-sig")))
-        except (OSError, ValueError):
-            rows.append({"config": str(path), "status": "invalid_config", "repair": "trace mcp-doctor"})
-            continue
-        for spec in specs:
-            rendered = spec.render()
-            executable = resolve_executable(rendered.command, root=root, path=rendered.env.get("PATH")) if rendered.command else ""
-            # Intentionally omit argv, URL, headers, and environment: they can contain credentials.
-            rows.append({"name": spec.name, "config": str(path), "enabled": spec.enabled,
-                         "transport": spec.transport, "status": "disabled" if not spec.enabled else
-                         "configured_unprobed" if executable or spec.transport == "http" else "missing_launcher",
-                         "launcher_path": executable, "capabilities": "not_discovered",
-                         "repair": ("Install Node.js (includes npx), then " if rendered.command in {"npx", "npx.cmd"} and not executable else "")
-                                   + "trace mcp-doctor --config " + subprocess.list2cmdline([str(path)])})
-    return rows
+def _module(name: str) -> dict[str, Any]:
+    available = module_available(name)
+    return {"name": name, "installed": available, "status": "available" if available else "not_installed",
+            "source": "python_package", "repair": "从完整离线 bundle 安装所需引擎；运行时不下载安装。"}
 
 
 def doctor(*, root: Path | None = None, configs: list[Path] | None = None,
@@ -71,90 +25,88 @@ def doctor(*, root: Path | None = None, configs: list[Path] | None = None,
 
     root = tools_root(root)
     state_root = runtime_root or (Path(os.environ["TRACE_HOME"]) if os.environ.get("TRACE_HOME") else
-                                 Path(os.environ.get("REDTEAM_AGENT_HOME", str(Path.home() / ".redteam-agent"))) / "operations")
+                                  Path(os.environ.get("REDTEAM_AGENT_HOME", str(Path.home() / ".redteam-agent"))) / "operations")
     try:
         configuration = configuration_projection(state_root, configs)
     except (OSError, ValueError, TypeError) as exc:
         configuration = {"status": "invalid", "error": type(exc).__name__}
-    rows = [_package(name, version) for name, version in manifest()["python_packages"].items()]
-    browser = managed_install("chromium", root, verify=True, allow_previous=True)
-    external = chromium_executable(root, include_managed=False)
-    if not browser["installed"] and external:
-        browser.update(installed=True, source="fallback" if external == playwright_chromium() else "system",
-                       managed_checksum_status=browser["checksum_status"],
-                       path=external, version="", checksum_status="external_unverified")
-    browser.update(status="installed" if browser["installed"] else "missing", repair="trace setup chromium",
-                   runtime_validation="not_probed", dependency_repair="python -m playwright install-deps chromium")
-    if browser["installed"] and probe_browser:
-        code = ("import sys; from playwright.sync_api import sync_playwright; p=sync_playwright().start(); "
-                "b=p.chromium.launch(executable_path=sys.argv[1],headless=True); page=b.new_page(); "
-                "page.set_content('<title>trace-doctor</title>'); assert page.title()=='trace-doctor'; "
-                "print(b.version); b.close(); p.stop()")
-        browser["version"], browser["runtime_validation"] = _version([sys.executable, "-c", code, browser["path"]])
-    elif browser["installed"] and browser["source"] != "managed":
-        # Launching Chrome --version on Windows can open a visible user window.
-        browser["version"] = (manifest()["tools"]["chromium"]["version"]
-                                if external == playwright_chromium() else "not_probed")
-    rows.append(browser)
-    reverse = managed_install("rizin", root, verify=True, allow_previous=True)
-    reverse.update(repair="trace setup rizin", status="installed" if reverse["installed"] else "missing")
-    if not reverse["installed"]:
-        executable = resolve_executable("r2", "radare2", "rizin", root=root, include_managed=False)
-        if executable:
-            version, validation = _version([executable, "-v"])
-            reverse.update(installed=validation == "passed", path=executable, version=version,
-                           managed_checksum_status=reverse["checksum_status"],
-                           source="system", status="installed" if validation == "passed" else "missing",
-                           checksum_status="external_unverified", runtime_validation=validation)
-        else:
-            reverse.update(source="fallback", fallback="trace-binary-query",
-                           fallback_capabilities=["binary_metadata", "binary_strings", "disassembly"],
-                           missing_capabilities=["graph_analysis", "radare2_commands", "decompile"])
-    rows.append(reverse)
-    from .tool_prepare import CLOUD_PACKAGES
-    cloud = [(name, values[2], f"trace setup {name}") for name, values in CLOUD_PACKAGES.items()]
-    cloud.extend((("gcp", "gcloud", "trace setup gcp"), ("aliyun", "aliyun", "trace setup aliyun")))
-    for name, command, repair in cloud:
-        if not command:
-            package, module, _ = CLOUD_PACKAGES[name]
-            try:
-                code, _ = run_probe([sys.executable, "-c", f"import {module}"], timeout=5)
-            except (OSError, subprocess.SubprocessError):
-                code = 1
-            rows.append({"name": name, "installed": code == 0, "status": "installed" if code == 0 else "missing",
-                         "source": "python_sdk", "package": package, "runtime_validation": "passed" if code == 0 else "failed",
-                         "authentication": "not_checked", "repair": repair})
-            continue
-        managed = managed_install(name, root, verify=True, allow_previous=True) if name in manifest()["tools"] else {}
-        executable = (str(managed["path"]) if managed.get("installed") else
-                      resolve_executable(command, root=root, include_managed=False))
-        version, validation = _version([executable, "version" if name in {"aliyun", "tencent"} else "--version"]) if executable else ("", "not_installed")
-        installed = bool(executable) and validation == "passed"
-        rows.append({"name": name, "installed": installed, "status": "installed" if installed else "missing",
-                     "source": "managed" if managed.get("installed") else "system" if executable else "missing", "path": executable, "version": version,
-                     "checksum_status": managed.get("checksum_status", "not_installed") if not executable or managed.get("installed") else "external_unverified",
-                     "managed_checksum_status": managed.get("checksum_status", "not_installed"),
-                     "runtime_validation": validation, "authentication": "not_checked", "repair": repair})
-    by_name = {item["name"]: item for item in rows}
-    caps = [
-        {"name": "http_dns_tcp_code_search_binary_metadata", "status": "ready", "provider": "python_stdlib"},
-        {"name": "disassembly", "status": "ready" if by_name["capstone"]["installed"] else "missing", "provider": "capstone"},
-        {"name": "browser_automation", "status": "ready" if browser["runtime_validation"] == "passed" else
-         "installed_unprobed" if browser["installed"] and by_name["playwright"]["installed"] else "missing", "provider": browser["source"]},
-        {"name": "graph_analysis", "status": "ready" if reverse["installed"] else "missing", "provider": reverse["source"]},
-        {"name": "decompile", "status": "plugin_unprobed", "provider": "rizin/radare2", "repair": "rz-pm -i rz-ghidra"},
-        {"name": "frida_local_processes", "status": "installed_unprobed" if by_name["frida"]["installed"] else "missing",
-         "provider": "frida", "repair": by_name["frida"]["repair"]},
-        {"name": "frida_device", "status": "device_unprobed", "provider": "external",
-         "repair": "python -m pip install frida-tools; frida-ls-devices",
-         "note": "Device-side frida-server must match the Python Frida version and device architecture; Trace does not deploy it."},
-        *({"name": f"cloud_{name}", "status": "credentials_unprobed" if by_name[name]["installed"] else "missing",
-           "provider": name, "repair": by_name[name]["repair"]} for name, _, _ in cloud),
+
+    optional = [_module("playwright"), _module("capstone"), _module("frida")]
+    browser_path = chromium_executable(root)
+    chromium = bool(browser_path)
+    browser_validation = "not_probed"
+    if probe_browser and chromium and module_available("playwright"):
+        code = ("import sys; from playwright.sync_api import sync_playwright; "
+                "p=sync_playwright().start(); b=p.chromium.launch(executable_path=sys.argv[1],headless=True); "
+                "page=b.new_page(); page.set_content('<title>trace-doctor</title>'); "
+                "assert page.title()=='trace-doctor'; b.close(); p.stop()")
+        try:
+            exit_code, _ = run_probe([sys.executable, "-c", code, browser_path], timeout=20)
+            browser_validation = "passed" if exit_code == 0 else "failed"
+        except (OSError, subprocess.SubprocessError):
+            browser_validation = "failed"
+    managed_browser = managed_install("chromium", root, allow_previous=True)
+    optional.append({"name": "chromium", "installed": chromium,
+                     "status": "failed" if browser_validation == "failed" else "available" if chromium else "not_installed",
+                     "source": "managed" if chromium and browser_path == managed_browser.get("path") else "system" if chromium else "missing",
+                     "path": browser_path, "runtime_validation": browser_validation,
+                     "repair": "使用随包 Chromium，并预先准备宿主系统库；--probe-browser 可验证本地启动，运行时不安装系统库。"})
+    tools = optional + [item for item in prepare(list(dict.fromkeys(TOOL_NAMES)), root=root)["tools"]
+                        if item["name"] not in {"playwright", "capstone", "frida", "chromium"}] + [
+        {"name": "trace-native", "installed": True, "status": "installed", "source": "project",
+         "capabilities": ["http", "dns", "tcp", "page_fetch", "code_search", "python_ast",
+                          "binary_metadata", "binary_strings", "x86_x64_disassembly", "process_inventory"]},
     ]
-    return {"schema_version": 1, "tools_root": str(root), "platform": platform_key(), "tools": rows,
-            "runtime_root": str(state_root.expanduser().resolve()), "configuration": configuration,
-            "capabilities": caps, "mcp_servers": _mcp_status(configs or [], root),
-            "mcp_note": "Third-party servers are configured separately; run trace mcp-doctor for live discovery.",
-            "ready": browser["runtime_validation"] != "failed" and all(
-                by_name[name]["installed"] and by_name[name].get("version_matches", True)
-                for name in ("capstone", "frida", "playwright", "chromium", "rizin"))}
+    playwright_ready = module_available("playwright") and chromium
+    reverse = bool(resolve_executable("rizin", "r2", "radare2", root=root))
+    frida = module_available("frida")
+    clouds = [item for item in tools if item["name"] in {
+        "aws", "azure", "tencent", "gcp", "aliyun", "huawei", "volcengine", "baidu", "jdcloud"}]
+    caps = [
+        {"name": "http_dns_tcp_code_search_binary_metadata", "status": "ready", "provider": "trace-native"},
+        {"name": "browser_page_fetch", "status": "ready", "provider": "trace-native",
+         "note": "HTML 文本、链接和表单解析完全由项目内置。"},
+        {"name": "disassembly", "status": "ready" if module_available("capstone") else "partial", "provider": "capstone" if module_available("capstone") else "trace-native-x86",
+         "fallback_capabilities": [] if module_available("capstone") else ["x86", "x64"]},
+        {"name": "browser_automation", "status": "ready" if browser_validation == "passed" else "failed" if browser_validation == "failed" else "installed_unprobed" if playwright_ready else "optional_unavailable",
+         "provider": "playwright" if playwright_ready else "trace-native:page-fetch",
+         "note": "使用随包或主机已有引擎；启动失败时检查宿主系统库，运行时不下载浏览器。"},
+        {"name": "graph_analysis", "status": "installed_unprobed" if reverse else "optional_unavailable", "provider": "rizin/radare2" if reverse else "trace-native",
+         "missing_capabilities": ["decompile"] if reverse else ["decompile", "rizin_commands"]},
+        {"name": "frida_local_processes", "status": "installed_unprobed" if frida else "partial", "provider": "frida" if frida else "trace-native-process-inventory",
+         "fallback_capabilities": [] if frida else ["process_inventory"],
+         "missing_capabilities": [] if frida else ["attach", "injection"]},
+        {"name": "cloud_inventory", "status": "external_credentials_required" if all(item["installed"] for item in clouds)
+         else "partial" if any(item["installed"] for item in clouds) else "optional_unavailable", "provider": "read-only adapter",
+         "note": "使用随包或主机已有 CLI/SDK；各提供商是否安装见 tools，云凭据及查询权限需单独配置。"},
+    ]
+    return {"schema_version": 1, "tools_root": str(root), "platform": platform_key(),
+            "tools": tools, "runtime_root": str(state_root.expanduser().resolve()),
+            "configuration": configuration, "capabilities": caps,
+            "mcp_servers": _mcp_status(configs or [], root), "mcp_note": "MCP 服务按配置启停；Trace 不下载第三方服务。",
+            "ready": configuration.get("status") != "invalid" and (not probe_browser or browser_validation == "passed"),
+            "downloads_allowed": False, "installers_enabled": False}
+
+
+def _mcp_status(configs: list[Path], root: Path) -> list[dict[str, Any]]:
+    from .mcp_config import parse_mcp_server_specs
+    rows = []
+    for path in configs:
+        if not path.is_file():
+            continue
+        try:
+            specs = parse_mcp_server_specs(path, tomllib.loads(path.read_text(encoding="utf-8-sig")))
+        except (OSError, ValueError):
+            rows.append({"config": str(path), "status": "invalid_config"})
+            continue
+        for spec in specs:
+            rendered = spec.render()
+            executable = resolve_executable(rendered.command, root=root, path=rendered.env.get("PATH")) if rendered.command else ""
+            rows.append({"name": spec.name, "config": str(path), "enabled": spec.enabled,
+                "transport": spec.transport, "launcher_path": executable,
+                "status": "disabled" if not spec.enabled else "configured_unprobed" if executable or spec.transport == "http" else "missing_launcher",
+                "capabilities": "not_discovered"})
+    return rows
+
+
+__all__ = ["doctor"]

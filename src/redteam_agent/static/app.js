@@ -39,7 +39,20 @@ const state = {
   user: null,
   search: "",
   registryScroll: 0,
+  drafts: new Map(),
 };
+
+function syncSessionUrl() {
+  const url = new URL(location.href);
+  if (state.selectedId) url.searchParams.set("run", state.selectedId);
+  else url.searchParams.delete("run");
+  history.replaceState(null, "", url);
+}
+
+function restoreSessionUrl() {
+  const runId = new URL(location.href).searchParams.get("run");
+  if (runId) openConversation(runId);
+}
 
 function commandId() {
   return (
@@ -153,22 +166,24 @@ function setView(view) {
   document.body.classList.toggle("control-open", view === "control");
   $("#workspace-title").textContent = view === "control"
     ? $$(".control-tab").find((button) => button.classList.contains("active"))?.textContent.trim() || "控制面"
-    : "所有运行";
+    : view === "workspaces" ? "工作区" : "所有对话";
   state.page = view;
   $$(".top-nav .nav-button").forEach((button) => {
     const active = button.dataset.view === view;
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", String(active));
   });
-  $(".app-shell").hidden = view !== "runs";
+  $(".app-shell").hidden = !["runs", "workspaces"].includes(view);
   $("#control-plane").hidden = view !== "control";
   $$(".control-tab").forEach((button) => button.setAttribute("aria-pressed", String(view === "control" && button.classList.contains("active"))));
 }
 
 function showRunRegistry() {
+  if (state.selectedId) state.drafts.set(state.selectedId, $("#message-text").value);
   state.registryScroll = Math.max(0, state.registryScroll || 0);
   state.selectionVersion += 1;
   state.selectedId = "";
+  syncSessionUrl();
   state.view = null;
   state.report = null;
   state.collectionPages = {};
@@ -227,6 +242,7 @@ async function loadRun(runId, resetEvents = true) {
     : state.selectionVersion;
   const epoch = state.authEpoch;
   state.selectedId = runId;
+  syncSessionUrl();
   renderRuns();
   if (resetEvents) {
     $(".tab-content").scrollTop = 0;
@@ -347,9 +363,9 @@ function renderView() {
   $("#event-cursor").textContent = `序号 ${state.eventCursor}`;
 }
 
-async function postCommand(command, body = {}) {
-  if (!state.selectedId) return;
-  const runId = state.selectedId;
+async function postCommand(command, body = {}, runId = state.selectedId) {
+  if (!runId) return;
+  const epoch = state.authEpoch;
   const pendingKey = `${runId}:${command}`;
   if (state.pendingCommands.has(pendingKey)) return;
   state.pendingCommands.add(pendingKey);
@@ -364,17 +380,20 @@ async function postCommand(command, body = {}) {
         body: JSON.stringify(body),
       },
     );
-    if (state.selectedId !== runId) return;
+    if (epoch !== state.authEpoch || state.selectedId !== runId) return;
     applyView(result.run);
     renderView();
     await loadRuns({ keepSelection: false });
     showNotice(`${formatStatus(coreRun(state.view).status)}：命令已提交`);
   } catch (error) {
+    if (epoch !== state.authEpoch) return;
     showNotice(error.message, true);
     if (state.selectedId === runId) await loadRun(runId, false);
   } finally {
-    state.pendingCommands.delete(pendingKey);
-    renderView();
+    if (epoch === state.authEpoch) {
+      state.pendingCommands.delete(pendingKey);
+      renderView();
+    }
   }
 }
 
@@ -384,7 +403,7 @@ async function loadInitialEvents(
 ) {
   if (!runId) return;
   const result = await api(
-    `/api/runs/${encodeURIComponent(runId)}/events?limit=200`,
+    `/api/runs/${encodeURIComponent(runId)}/events?limit=200&channel=trajectory`,
   );
   if (state.selectedId !== runId || state.selectionVersion !== selectionVersion)
     return;
@@ -399,7 +418,7 @@ function openEvents() {
   const query = new URLSearchParams({
     after_sequence: String(state.eventCursor),
     wait_seconds: "20",
-    channel: "ui",
+    channel: "trajectory",
   });
   const source = new EventSource(
     `/api/runs/${encodeURIComponent(state.selectedId)}/events?${query}`,
@@ -422,6 +441,19 @@ function openEvents() {
       );
     } catch (error) {
       showNotice(`事件解析失败：${error.message}`, true);
+    }
+  });
+  source.addEventListener("trace-cursor", (message) => {
+    try {
+      const event = JSON.parse(message.data);
+      if (event.run_id !== state.selectedId) return;
+      const sequence = Number(event.sequence) || 0;
+      if (sequence > state.eventCursor) {
+        state.eventCursor = sequence;
+        renderEvents();
+      }
+    } catch (error) {
+      showNotice(`轨迹游标解析失败：${error.message}`, true);
     }
   });
   source.onerror = async () => {
@@ -497,7 +529,7 @@ async function loadTab(tab, append = false) {
       const moreButton = $(`[data-more="${tab}"]`);
       moreButton.disabled = true;
       const offsets = append ? [prior.length] : Array.from({ length: Math.max(1, Math.ceil(prior.length / 200)) }, (_, index) => index * 200);
-      const pages = await Promise.all(offsets.map((offset) => api(`/api/runs/${id}/${endpoint}?limit=200&offset=${offset}${tab === "transcript" ? "&latest=1" : ""}`)));
+      const pages = await Promise.all(offsets.map((offset) => api(`/api/runs/${id}/${endpoint}?limit=200&offset=${offset}${tab === "transcript" ? "&latest=1" : tab === "evidence" ? "&include_payload=1" : ""}`)));
       if (!current()) return;
       const idKey = { evidence: "evidence_id", artifacts: "artifact_id", transcript: "message_id" }[tab];
       const merged = new Map(prior.map((item) => [item[idKey] || item.entry_id, item]));
@@ -523,8 +555,21 @@ async function loadTab(tab, append = false) {
       if (!current()) return;
       TracePresentation.renderTools($("#tools-view"), result);
     } else if (tab === "attack") {
-      const result = await api(`/api/runs/${id}/asset-attack-graph`);
+      const prior = state.collectionPages.attack;
+      const offset = append ? prior?.next_offset || 0 : 0;
+      const button = $('[data-more="attack"]');
+      button.disabled = true;
+      let result = await api(`/api/runs/${id}/asset-attack-graph?limit=200&offset=${offset}`);
       if (!current()) return;
+      if (append && prior) {
+        for (const [key, identity] of [["assets", "asset_id"], ["findings", "finding_id"], ["attack_paths", "path_id"]])
+          result[key] = [...new Map([...(prior[key] || []), ...(result[key] || [])].map((item) => [item[identity], item])).values()];
+        result.edges = [...new Map([...(prior.edges || []), ...(result.edges || [])].map((item) => [JSON.stringify(item), item])).values()];
+        result.source_evidence_ids = [...new Set([...(prior.source_evidence_ids || []), ...(result.source_evidence_ids || [])])];
+      }
+      state.collectionPages.attack = result;
+      button.hidden = !result.truncated;
+      button.disabled = false;
       TracePresentation.renderAttack($("#attack-view"), result);
     } else if (tab === "transparency") {
       const result = await api(`/api/runs/${id}/transparency?limit=1000`);
@@ -558,6 +603,10 @@ function renderTranscript(messages) {
 
 function bind() {
   bindRunControls();
+  document.addEventListener("click", (event) => {
+    const link = event.target.closest("[data-evidence-ref]");
+    if (link) { event.preventDefault(); openEvidence(link.dataset.evidenceRef); }
+  });
   $$(".top-nav .nav-button, .control-tab").forEach((button) =>
     button.setAttribute("aria-pressed", String(button.classList.contains("active") && (button.dataset.view === state.page || state.page === "control"))),
   );
@@ -566,7 +615,15 @@ function bind() {
     dialog.querySelector(".dialog-feedback")?.remove();
   }));
   $$(".top-nav .nav-button").forEach((button) =>
-    button.addEventListener("click", () => { setView("runs"); showRunRegistry(); }),
+    button.addEventListener("click", () => {
+      if (button.dataset.view === "workspaces") {
+        setView("workspaces");
+        globalThis.TraceWorkspace?.open();
+        return;
+      }
+      setView("runs");
+      showRunRegistry();
+    }),
   );
   $$(".control-tab").forEach((button) =>
     button.addEventListener("click", async () => {
@@ -593,6 +650,8 @@ function bind() {
   $("#provider-form").addEventListener("submit", submitProvider);
   $("#skill-form").addEventListener("submit", submitSkill);
   $("#add-skill").addEventListener("click", () => openSkillEditor());
+  $("#skill-import-form").addEventListener("submit", submitSkillImport);
+  $("#import-skill").addEventListener("click", openSkillImportDialog);
   $("#add-mcp").addEventListener("click", () => openMcpEditor());
   $("#mcp-form").addEventListener("submit", submitMcp);
   $("#mcp-form").elements.transport.addEventListener("change", syncMcpTransport);
@@ -695,6 +754,7 @@ async function start() {
   try {
     if (await loadAuth()) {
       await Promise.all([loadSystem(), loadRuns({ keepSelection: false })]);
+      restoreSessionUrl();
     }
   } catch (error) {
     showNotice(error.message, true);
@@ -702,3 +762,28 @@ async function start() {
 }
 
 start();
+
+globalThis.TraceApp = { api, showNotice, setView, commandHeaders, openConversation };
+
+async function openEvidence(evidenceId) {
+  const runId = state.selectedId, epoch = state.authEpoch;
+  if (!runId) return;
+  const dialog = $("#evidence-dialog"), body = $("#evidence-detail");
+  const requestId = commandId();
+  dialog.dataset.requestId = requestId;
+  const current = () => runId === state.selectedId && epoch === state.authEpoch && dialog.open && dialog.dataset.requestId === requestId;
+  body.textContent = "正在读取证据";
+  if (!dialog.open) dialog.showModal();
+  try {
+    const result = await api(`/api/runs/${encodeURIComponent(runId)}/evidence-graph/${encodeURIComponent(evidenceId)}`);
+    if (!current()) return;
+    TracePresentation.renderEvidence(body, [result.node]);
+    for (const [key, title] of [["ancestors", "上游证据"], ["descendants", "下游证据"]]) {
+      const heading = document.createElement("h3");
+      heading.textContent = title;
+      body.append(heading, TracePresentation.readableValue((result[key] || []).map((item) => item.evidence_id), "evidence_ids"));
+    }
+  } catch (error) {
+    if (current()) body.textContent = error.message;
+  }
+}

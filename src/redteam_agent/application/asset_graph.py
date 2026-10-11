@@ -14,22 +14,66 @@ def project_asset_attack_graph(
     limit: int = 1000,
     offset: int = 0,
 ) -> dict[str, Any]:
-    """Project typed graph objects from the trusted evidence view only."""
+    """Page typed entities, including their referenced assets/findings as context.
+
+    ``page.items`` identifies the primary entities counted against limit; context
+    objects may repeat across pages and do not consume the limit. Offsets refer
+    to entities (paths, findings, assets), never raw evidence.
+    """
 
     service.status(run_id)
     bounded = max(1, min(10000, int(limit)))
     start = max(0, int(offset))
+    graph = _project_typed_graph(run_id, _eligible_evidence(service, run_id))
+    collections = (("attack_paths", "path_id"), ("findings", "finding_id"), ("assets", "asset_id"))
+    entities = [(key, item[id_key]) for key, id_key in collections for item in graph[key]]
+    selected = entities[start : start + bounded]
+    included = set(selected)
+    for path in graph["attack_paths"]:
+        if ("attack_paths", path["path_id"]) in included:
+            included.update(("findings", identity) for identity in path["finding_ids"])
+            included.update(("assets", identity) for identity in path["asset_ids"])
+    for finding in graph["findings"]:
+        if ("findings", finding["finding_id"]) in included:
+            included.update(("assets", identity) for identity in finding["asset_ids"])
+    for key, id_key in collections:
+        graph[key] = [item for item in graph[key] if (key, item[id_key]) in included]
+    graph["materialized"] = any(graph[key] for key, _ in collections)
+    path_ids = {item["path_id"] for item in graph["attack_paths"]}
+    graph["edges"] = [edge for edge in graph["edges"] if edge["to"] in path_ids]
+    graph["entity_sources"] = {
+        key: {identity: refs for identity, refs in sources.items() if (key, identity) in included}
+        for key, sources in graph["entity_sources"].items()
+    }
+    graph["source_evidence_ids"] = list(dict.fromkeys(
+        ref for sources in graph["entity_sources"].values() for refs in sources.values() for ref in refs
+    ))
+    more = start + len(selected) < len(entities)
+    graph.update(truncated=more, next_offset=start + len(selected) if more else None)
+    graph["page"] = {
+        "offset": start, "limit": bounded, "total": len(entities), "count": len(selected),
+        "has_more": more, "next_offset": graph["next_offset"],
+        "items": [{"collection": key, "id": identity} for key, identity in selected],
+    }
+    return graph
+
+
+def _eligible_evidence(service: Any, run_id: str) -> tuple[Any, ...]:
     state = service.runtime.store.load_operation(run_id)
-    all_nodes = EvidenceGate.eligible_evidence(
+    return EvidenceGate.eligible_evidence(
         service.runtime.evidence_graph.list(run_id), run_id=run_id,
         branch_id=state.branch_id, max_plan_revision=state.plan_revision,
     )
-    nodes = all_nodes[start : start + bounded]
-    trusted = {node.evidence_id: node for node in all_nodes}
+
+
+def _project_typed_graph(run_id: str, nodes: Sequence[Any]) -> dict[str, Any]:
+    """Extract once from the complete eligible set; shared by pages and reports."""
+    trusted = {node.evidence_id: node for node in nodes}
     assets: dict[str, Asset] = {}
     findings: dict[str, Finding] = {}
     paths: dict[str, AttackPath] = {}
     source_ids: list[str] = []
+    entity_sources: dict[str, dict[str, list[str]]] = {"assets": {}, "findings": {}, "attack_paths": {}}
 
     def typed_items(source: Any, key: str, factory: Any) -> list[Any]:
         payload = source.payload
@@ -86,12 +130,15 @@ def project_asset_attack_graph(
         typed = False
         for value in typed_items(node, "assets", Asset):
             assets[value.asset_id] = value
+            entity_sources["assets"][value.asset_id] = [node.evidence_id]
             typed = True
         for value in typed_items(node, "findings", Finding):
             findings[value.finding_id] = value
+            entity_sources["findings"][value.finding_id] = [node.evidence_id]
             typed = True
         for value in typed_items(node, "attack_paths", AttackPath):
             paths[value.path_id] = value
+            entity_sources["attack_paths"][value.path_id] = [node.evidence_id]
             typed = True
         if typed:
             source_ids.append(node.evidence_id)
@@ -112,7 +159,6 @@ def project_asset_attack_graph(
             {"from": evidence_id, "to": path.path_id, "kind": "evidence_to_path"}
             for evidence_id in path.evidence_ids
         )
-    truncated = start + bounded < len(all_nodes)
     return {
         "schema_version": 1,
         "run_id": run_id,
@@ -122,7 +168,8 @@ def project_asset_attack_graph(
         "attack_paths": [item.to_dict() for item in paths.values()],
         "edges": edges,
         "source_evidence_ids": list(dict.fromkeys(source_ids)),
-        "truncated": truncated,
-        "next_offset": start + len(nodes) if truncated else None,
+        "entity_sources": entity_sources,
+        "truncated": False,
+        "next_offset": None,
         "note": "仅展示带 Core contract version 的显式资产、发现和攻击路径；普通工具输出不会被推断为攻击路径。",
     }

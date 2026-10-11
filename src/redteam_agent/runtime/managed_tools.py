@@ -122,7 +122,16 @@ def resolve_executable(*names: str, root: Path | None = None, path: str | None =
             managed = managed_install(tool, root, allow_previous=True)
             if managed["installed"]:
                 return str(managed["path"])
-    search_path = path if path is not None else os.pathsep.join((sysconfig.get_path("scripts"), os.environ.get("PATH", "")))
+    if path is not None:
+        search_path = path
+    else:
+        script_paths = [sysconfig.get_path("scripts")]
+        pip_target = os.environ.get("PIP_TARGET")
+        if pip_target:
+            target = Path(pip_target).expanduser()
+            script_paths.extend((str(target / "Scripts"), str(target / "bin")))
+        script_paths.append(os.environ.get("PATH", ""))
+        search_path = os.pathsep.join(item for item in script_paths if item)
     return next((found for name in names if (found := shutil.which(name, path=search_path))), "")
 
 

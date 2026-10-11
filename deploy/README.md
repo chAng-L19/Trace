@@ -26,8 +26,10 @@ docker compose logs --tail=30 trace
 已持久化的账户。所有成员共享运行工作台，管理员管理全局配置，不是多租户部署。模型配置为
 `TRACE_MODEL`、`TRACE_API_BASE_URL`、`OPENAI_API_KEY`；也可先留空，在 Web 中配置。
 可选 `TRACE_*` Provider 项留空时使用 Web 持久配置，再回落到应用默认值；显式填写
-宿主环境或 `.env` 的值会在重启时优先于 Web 配置。Web 录入的 API Key 仅驻留当前
-进程，重启后需重新输入，或在 Web 中填写凭据环境变量名并通过容器环境注入该变量。
+宿主环境或 `.env` 的值会在重启时优先于 Web 配置。Web 录入的 API Key 持久保存在
+状态数据库，重启无需重新输入；也可填写凭据环境变量名并通过容器环境注入该变量。
+
+完整工具包的构建、宿主依赖和离线安装见 [离线工具包说明](TOOLS_BUNDLE.md)。
 示例直接传入 `OPENAI_API_KEY`；使用其他名称时，在自定义 Compose 中一并传入对应变量。
 `.env` 必须留在本机，排除在构建上下文之外；镜像构建不接收密钥。容器运行环境对有
 Docker 管理权的用户可见；密钥也支持 `TRACE_ADMIN_PASSWORD_FILE`、`OPENAI_API_KEY_FILE`
@@ -68,8 +70,13 @@ MCP/CLI 是短命令或 stdio 服务，不使用 Web 健康检查；长期运行
 仍在镜像中，运行时工具 setup 可以在可写缓存卷中安装浏览器。浏览器缓存卷跨版本
 升级后如缺少新 revision，可运行 `trace setup chromium` 补齐；`trace doctor`/`trace setup`
 负责工具准备，镜像不在启动时执行 apt 或修改系统包。内置 Python Playwright
-不需要 Node.js；外接 `config.toml.example` 的 `npx @playwright/mcp` 需要另外安装
-Node.js，该可选 MCP 不属于基础镜像默认入口。
+不需要另装 Node.js；`config.toml.example` 的浏览器 MCP 预设使用当前 Python
+运行 Trace 内置模块，复用已安装的 Playwright 和 Chromium，不执行 npx 下载。
+它是 Trace 自带实现，不是微软的 Playwright MCP 服务。用户自定义 MCP 命令不变。
+更新后需刷新已安装的 wheel；版本号相同也应重新安装新 wheel，避免继续加载旧预设。
+已有数据库导出的 managed-mcp.toml 和 config.toml 中，完整匹配旧项目默认
+`npx @playwright/mcp@0.0.79` 参数的 preset 会在加载时使用新内置入口；不改写原始
+配置或数据库。自定义命令、版本或参数不作替换。
 
 容器升级先停止服务，归档旧镜像和四个卷。下面的归档经 stdout 写入宿主机，
 不需要让容器写宿主机目录：
@@ -86,7 +93,7 @@ docker compose build
 docker compose up -d --wait
 ```
 
-回滚恢复该次升级前的完整快照，包含 SQLite/WAL、CAS 和 `trace-secrets.key`。
+回滚恢复该次升级前的完整快照，包含 SQLite/WAL、CAS 和配置；旧加密版本的快照还需保留其 `trace-secrets.key`。
 使用新 Compose project 创建独立卷，保留升级后的数据供排查；不假定旧版本理解新
 数据库结构。`backup_dir` 必须指向刚才备份的位置：
 

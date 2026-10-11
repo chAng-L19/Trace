@@ -83,7 +83,6 @@ def main() -> None:
         (root / "empty-directory").mkdir()
         (root / "tools").mkdir()
         (root / "tools" / "active.json").write_text('{"fixture":"1"}', encoding="utf-8")
-        original_key = (root / "trace-secrets.key").read_bytes()
         (root / "managed-mcp.toml").write_text("# SENTINEL_CREDENTIAL_DO_NOT_PRINT\n", encoding="utf-8")
         with closing(sqlite3.connect(root / "runtime.sqlite3")) as connection:
             connection.execute("PRAGMA journal_mode=WAL")
@@ -99,11 +98,10 @@ def main() -> None:
         assert json.loads(cli("state", "verify", archive))["ok"]
         cli("state", "backup", archive, success=False)
         with zipfile.ZipFile(archive) as bundle:
-            assert bundle.read("state/trace-secrets.key") == original_key
             assert b"SENTINEL_CREDENTIAL_DO_NOT_PRINT" in bundle.read("state/managed-mcp.toml")
             manifest = json.loads(bundle.read("manifest.json"))
             assert f"artifact-store/cas/sha256/{cas_digest[:2]}/{cas_digest[2:]}" in manifest["files"]
-            assert {"runtime.sqlite3", "trace-secrets.key", "managed-mcp.toml"} <= manifest["files"].keys()
+            assert {"runtime.sqlite3", "managed-mcp.toml"} <= manifest["files"].keys()
 
         def corrupted(name, transform):
             output = base / name
@@ -164,10 +162,8 @@ def main() -> None:
             bundle.writestr("state/bomb", b"0" * (2 * 1024**2))
         assert json.loads(cli("state", "verify", bomb, success=False))["error"] == "archive_size_limit_exceeded"
         cli("state", "restore", archive, "--root", root, success=False)
-        assert (root / "trace-secrets.key").read_bytes() == original_key
         cli("state", "restore", archive, "--root", restored)
         assert (restored / "empty-directory").is_dir()
-        assert (restored / "trace-secrets.key").read_bytes() == original_key
         assert (restored / "tools/active.json").read_text() == '{"fixture":"1"}'
         assert (restored / f"artifact-store/cas/sha256/{cas_digest[:2]}/{cas_digest[2:]}").read_bytes() == cas_payload
         assert (restored / "workspaces/snapshot-fixture/state.txt").read_text() == "workspace content"

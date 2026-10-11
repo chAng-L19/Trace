@@ -18,6 +18,7 @@ from ..application import AgentService
 from ..application.contracts import BudgetDelta
 from ..core import ModelPort, contract_hash
 from ..application.bootstrap import resolve_provider, add_model_options, model_options
+from ..application.trajectory import project_event
 from ..runtime.store_common import ImmutableRecordError, StoreConflictError
 from .web_routes import ControlRoutesMixin
 from .web_projection import MAX_SEARCH_RECORDS, search_graph_projection, search_record_projection
@@ -33,7 +34,7 @@ _STATIC_FILES = {
     **{f"/{name}.css": (f"{name}.css", "text/css; charset=utf-8")
        for name in ("app", "base", "registry", "workbench", "control")},
     **{f"/{name}.js": (f"{name}.js", "text/javascript; charset=utf-8")
-       for name in ("ui", "presentation", "layout", "control", "session", "profile", "run-controls", "app", "theme", "lucide.min")},
+       for name in ("ui", "presentation", "layout", "control", "session", "profile", "run-controls", "app", "workspace", "theme", "lucide.min")},
     "/trace-mark.png": ("trace-mark.png", "image/png"),
     "/barlow-condensed-bold.ttf": ("barlow-condensed-bold.ttf", "font/ttf"),
     **{f"/{name}.ttf": (f"{name}.ttf", "font/ttf")
@@ -188,6 +189,15 @@ class WebApi(ControlRoutesMixin):
             return self._control_request(method, "mcp", segments[2:], payload, request_headers)
         if segments[:2] == ["api", "conversations"]:
             return self._control_request(method, "conversations", segments[2:], query if method == "GET" else payload, request_headers)
+        if segments[:2] == ["api", "workspaces"]:
+            try:
+                return self._workspace_request(method, segments[2:], query if method == "GET" else payload)
+            except KeyError as exc:
+                return self._error(404, str(exc))
+            except StoreConflictError as exc:
+                return self._error(409, str(exc))
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                return self._error(400, str(exc))
         if segments == ["api", "system", "reload"]:
             if method != "POST":
                 return self._error(405, "method_not_allowed")
@@ -208,6 +218,76 @@ class WebApi(ControlRoutesMixin):
             return self._error(400, str(exc))
         except Exception as exc:  # pragma: no cover - defensive protocol boundary
             return self._internal_error(exc)
+
+    def _workspace_request(self, method: str, tail: list[str], body: Mapping[str, Any]) -> WebResponse:
+        manager = self.service.project_workspaces
+        if not tail:
+            if method == "GET":
+                return self._ok(manager.list(
+                    search=str(body.get("search") or ""), status=str(body.get("status") or ""),
+                    limit=self._int_query(body, "limit", 100, 1, 1000),
+                    offset=self._int_query(body, "offset", 0, 0, 1_000_000),
+                ))
+            if method == "POST":
+                return self._ok({"workspace": manager.create(body)}, status=201)
+            return self._error(405, "method_not_allowed")
+        workspace_id = tail[0]
+        if len(tail) == 1:
+            if method == "GET":
+                return self._ok(manager.detail(workspace_id))
+            if method == "DELETE":
+                manager.delete(workspace_id)
+                return self._ok({"deleted": workspace_id})
+            if method == "POST":
+                action = str(body.get("action") or "").strip()
+                if action == "rename":
+                    return self._ok({"workspace": manager.rename(workspace_id, str(body.get("title") or ""))})
+                if action in {"active", "stopped", "completed"}:
+                    return self._ok({"workspace": manager.set_status(workspace_id, action)})
+                return self._error(400, "workspace_action_required")
+            return self._error(405, "method_not_allowed")
+        if len(tail) == 2 and tail[1] == "hints" and method == "POST":
+            return self._ok({"workspace": manager.add_hint(workspace_id, body)})
+        if len(tail) == 2 and tail[1] == "intents" and method == "POST":
+            return self._ok(manager.add_intent(workspace_id, body), status=201)
+        if len(tail) == 4 and tail[1] == "intents" and tail[3] in {"claim", "heartbeat", "release", "conclude"} and method == "POST":
+            intent_id, action = tail[2], tail[3]
+            worker = str(body.get("worker") or "operator")
+            if action == "claim":
+                return self._ok(manager.claim_intent(workspace_id, intent_id, worker))
+            if action == "heartbeat":
+                return self._ok(manager.heartbeat_intent(workspace_id, intent_id, worker))
+            if action == "release":
+                return self._ok(manager.release_intent(workspace_id, intent_id, worker))
+            return self._ok(manager.conclude_intent(workspace_id, intent_id, worker, str(body.get("description") or "")))
+        if len(tail) == 3 and tail[1] == "reason" and tail[2] in {"claim", "heartbeat", "release"} and method == "POST":
+            action, worker = tail[2], str(body.get("worker") or "operator")
+            if action == "claim":
+                return self._ok(manager.claim_reason(workspace_id, worker, str(body.get("trigger") or "operator")))
+            if action == "heartbeat":
+                return self._ok(manager.heartbeat_reason(workspace_id, worker))
+            return self._ok(manager.release_reason(workspace_id, worker))
+        if len(tail) == 2 and tail[1] == "export" and method == "GET":
+            exported = manager.export(workspace_id)
+            if str(body.get("format") or "") == "markdown":
+                workspace = exported["workspace"]
+                lines = [f"# {workspace['title']}", "", f"状态：{workspace['status']}",
+                         f"目标：{workspace['goal']}", "", "## 线索"]
+                lines.extend(f"- {item['content']}（{item['creator']}）" for item in exported["hints"])
+                lines.append("\n## 事实与结论")
+                lines.extend(f"- {item['description']}（来源：{item['source']}；"
+                             f"{'已验证' if item.get('verified') else '未核验'}；编号：{item['id']}）"
+                             for item in exported["facts"])
+                lines.append("\n## 探索意图")
+                lines.extend(f"- {item['description']}（{'已收敛' if item['status'] == 'concluded' else '待探索'}；"
+                             f"负责人：{item.get('worker') or '未认领'}；结论：{item.get('to') or '尚无'}）"
+                             for item in exported["intents"])
+                lines.append("\n## 执行")
+                lines.extend(f"- {item['run']['run_id']}：{item['run']['status']}，{item['run']['objective']}" for item in exported["runs"])
+                return WebResponse(200, ("\n".join(lines) + "\n").encode("utf-8"), "text/markdown; charset=utf-8",
+                                   {"Content-Disposition": 'attachment; filename="trace-workspace.md"'})
+            return self._ok(exported)
+        return self._error(404, "workspace_resource_not_found")
 
     def _control_request(
         self,
@@ -299,20 +379,26 @@ class WebApi(ControlRoutesMixin):
         if resource == "events":
             if len(tail) != 2:
                 return self._error(404, "resource_not_found")
-            events = self.service.events(
-                run_id,
-                after_sequence=self._int_query(query, "after_sequence", 0, 0, 2**63 - 1),
-                limit=self._int_query(query, "limit", DEFAULT_EVENT_LIMIT, 1, 1000),
-            )
-            items = [
-                self._event_projection(item, include_payload=query.get("include_payload") == "1")
-                for item in events
-            ]
+            if query.get("channel") == "trajectory":
+                after = self._int_query(query, "after_sequence", 0, 0, 2**63 - 1)
+                items, cursor = self._trajectory_events(
+                    run_id, after, self._int_query(query, "limit", DEFAULT_EVENT_LIMIT, 1, 1000)
+                )
+            else:
+                events = self.service.events(
+                    run_id,
+                    after_sequence=self._int_query(query, "after_sequence", 0, 0, 2**63 - 1),
+                    limit=self._int_query(query, "limit", DEFAULT_EVENT_LIMIT, 1, 1000),
+                )
+                items = [
+                    self._event_projection(item, include_payload=query.get("include_payload") == "1")
+                    for item in events
+                ]
             return self._ok(
                 {
                     "run_id": run_id,
                     "events": items,
-                    "next_sequence": items[-1]["sequence"] if items else None,
+                    "next_sequence": cursor if query.get("channel") == "trajectory" else (items[-1]["sequence"] if items else None),
                 }
             )
         if resource == "search-graph":
@@ -327,6 +413,8 @@ class WebApi(ControlRoutesMixin):
                 "records_truncated": len(records) > len(visible_records),
             })
         if resource == "evidence-graph":
+            if len(tail) == 3:
+                return self._ok(self.service.evidence_lineage(run_id, tail[2]))
             if len(tail) != 2:
                 return self._error(404, "resource_not_found")
             return self._ok(self._evidence_graph(
@@ -398,16 +486,16 @@ class WebApi(ControlRoutesMixin):
         if resource == "report":
             if len(tail) != 2:
                 return self._error(404, "resource_not_found")
-            projection = self.service.inspect_session(run_id, event_limit=self._int_query(query, "limit", 1000, 1, 10000))
-            return self._ok(
-                {
-                    "run": projection.get("run", {}),
-                    "terminal": projection.get("terminal", {}),
-                    "evidence": projection.get("evidence", {}),
-                    "artifacts": projection.get("artifacts", []),
-                    "report_hash": projection.get("report_hash", ""),
-                }
-            )
+            from ..application.reporting import build_report, render_report_markdown
+            report = build_report(self.service, run_id)
+            if query.get("format") == "markdown":
+                return WebResponse(200, render_report_markdown(report).encode("utf-8"),
+                    "text/markdown; charset=utf-8", {"Content-Disposition": 'attachment; filename="trace-report.md"'})
+            if query.get("format") == "html":
+                from ..application.reporting import render_report_html
+                return WebResponse(200, render_report_html(report).encode("utf-8"),
+                    "text/html; charset=utf-8", {"Content-Disposition": 'attachment; filename="trace-report.html"'})
+            return self._ok(report)
         return self._error(404, "resource_not_found")
 
     def _post(
@@ -500,6 +588,9 @@ class WebApi(ControlRoutesMixin):
         if len(tail) > 2:
             return self._error(404, "command_not_found")
         command = tail[1] if len(tail) > 1 else "run"
+        if command == "discussion":
+            result = self.service.discuss(run_id, body.get("text"), message_id=command_id)
+            return self._ok({"run": self._run_projection(self.service.status(run_id)), **_jsonable(result)})
         if command == "message":
             message = self.service.submit_message(run_id, body.get("text"), message_id=command_id)
             return self._ok({"run": self._run_projection(self.service.status(run_id)), "message": _jsonable(message)})
@@ -589,7 +680,7 @@ class WebApi(ControlRoutesMixin):
         if not tail:
             return False
         command = tail[1] if len(tail) > 1 else "run"
-        return command in {"run", "resume", "observation", "fork", "message"}
+        return command in {"run", "resume", "observation", "fork", "message", "discussion"}
 
     def _evidence_graph(self, run_id: str, *, include_payload: bool, limit: int = 1000, offset: int = 0) -> dict[str, Any]:
         self.service.status(run_id)
@@ -679,7 +770,8 @@ class WebApi(ControlRoutesMixin):
             status=status,
         )
 
-    def sse_events(self, run_id: str, *, after_sequence: int = 0, wait_seconds: float = 0.0) -> list[dict[str, Any]]:
+    def sse_events(self, run_id: str, *, after_sequence: int = 0, wait_seconds: float = 0.0,
+                   channel: str = "") -> list[dict[str, Any]]:
         """Return event deltas for an SSE connection, with bounded polling."""
 
         wait = float(wait_seconds)
@@ -687,10 +779,35 @@ class WebApi(ControlRoutesMixin):
             raise ValueError("wait_seconds_must_be_finite")
         deadline = time.monotonic() + max(0.0, min(30.0, wait))
         while True:
-            events = self.service.events(run_id, after_sequence=after_sequence, limit=1000)
-            if events or time.monotonic() >= deadline:
-                return [self._event_projection(item) for item in events]
+            if channel == "trajectory":
+                projected, cursor = self._trajectory_events(run_id, after_sequence, 1000)
+                if projected or cursor > after_sequence or time.monotonic() >= deadline:
+                    if cursor > after_sequence:
+                        projected.append({"run_id": run_id, "sequence": cursor, "event_type": "trace-cursor"})
+                    return projected
+            else:
+                events = self.service.events(run_id, after_sequence=after_sequence, limit=1000)
+                if events or time.monotonic() >= deadline:
+                    return [self._event_projection(item) for item in events]
             time.sleep(0.1)
+
+    def _trajectory_events(self, run_id: str, after_sequence: int, limit: int) -> tuple[list[dict[str, Any]], int]:
+        """Read durable events until a visible page is full or the log ends."""
+        projected: list[dict[str, Any]] = []
+        cursor = after_sequence
+        while len(projected) < limit:
+            events = self.service.events(run_id, after_sequence=cursor, limit=1000)
+            for item in events:
+                cursor = item.sequence
+                step = project_event(item)
+                if step is not None:
+                    projected.append({"run_id": item.run_id, "sequence": item.sequence, "event_type": "trajectory",
+                                      "trajectory": step, "created_at": item.created_at})
+                    if len(projected) == limit:
+                        return projected, cursor
+            if len(events) < 1000:
+                break
+        return projected, cursor
 
 
 def model_provider_from_environment(

@@ -13,6 +13,8 @@ import base64
 import threading
 import time
 import tomllib
+import urllib.parse
+import urllib.request
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Mapping
@@ -35,32 +37,6 @@ def _toml_array(values: Any) -> str:
     return "[" + ", ".join(_toml_string(item) for item in (values or ())) + "]"
 
 
-def _secret_stream(key: bytes, nonce: bytes, length: int) -> bytes:
-    chunks = []
-    for counter in range((length + 31) // 32):
-        chunks.append(hashlib.sha256(key + nonce + counter.to_bytes(4, "big")).digest())
-    return b"".join(chunks)[:length]
-
-
-def _seal_secret(key: bytes, value: str) -> str:
-    nonce = secrets.token_bytes(16)
-    plain = value.encode("utf-8")
-    cipher = bytes(left ^ right for left, right in zip(plain, _secret_stream(key, nonce, len(plain))))
-    tag = hmac.new(key, nonce + cipher, hashlib.sha256).digest()
-    return base64.urlsafe_b64encode(nonce + tag + cipher).decode("ascii")
-
-
-def _open_secret(key: bytes, value: str) -> str:
-    raw = base64.urlsafe_b64decode(value.encode("ascii"))
-    if len(raw) < 48:
-        raise ValueError("secret_ciphertext_invalid")
-    nonce, tag, cipher = raw[:16], raw[16:48], raw[48:]
-    if not hmac.compare_digest(tag, hmac.new(key, nonce + cipher, hashlib.sha256).digest()):
-        raise ValueError("secret_ciphertext_invalid")
-    plain = bytes(left ^ right for left, right in zip(cipher, _secret_stream(key, nonce, len(cipher))))
-    return plain.decode("utf-8")
-
-
 def _local_provider(base_url: str) -> bool:
     import ipaddress
     from urllib.parse import urlsplit
@@ -71,23 +47,56 @@ def _local_provider(base_url: str) -> bool:
         return hostname.casefold() == "localhost"
 
 
+def _import_skill_source(source: str) -> tuple[str, str]:
+    """Read one external Markdown skill without adding a package dependency."""
+    source = str(source or "").strip()
+    if not source:
+        raise ValueError("skill_import_source_required")
+    if source.casefold().startswith(("http://", "https://")):
+        request = urllib.request.Request(source, headers={"User-Agent": "Trace-Skill-Importer/1"})
+        with urllib.request.urlopen(request, timeout=20) as response:
+            raw = response.read(64 * 1024 + 1)
+        url_name = Path(urllib.parse.unquote(urllib.parse.urlsplit(source).path)).name
+        name = Path(url_name).stem if url_name else "external"
+    else:
+        try:
+            path = Path(source).expanduser().resolve(strict=True)
+        except FileNotFoundError:
+            raise ValueError("skill_import_file_not_found") from None
+        if path.is_dir():
+            candidates = [path / "SKILL.md", path / "skill.md"]
+            path = next((candidate for candidate in candidates if candidate.is_file()), None)
+            if path is None:
+                raise ValueError("skill_import_file_not_found")
+        try:
+            raw = path.read_bytes()
+        except OSError as exc:
+            raise ValueError(f"skill_import_read_failed:{exc.strerror or type(exc).__name__}") from None
+        name = path.parent.name if path.name.casefold() == "skill.md" else path.stem
+    if len(raw) > 64 * 1024:
+        raise ValueError("skill_import_too_large")
+    try:
+        content = raw.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
+    except UnicodeDecodeError:
+        raise ValueError("skill_import_encoding_invalid") from None
+    name = name.strip() or "external"
+    return name, content
+
+
 class ControlPlane:
-    """Durable, redacted settings with process-local secret bindings."""
+    """Durable, redacted control-plane settings."""
 
     def __init__(self, store: Any, root: Path) -> None:
         self.store = store
         self.root = root
         self._lock = threading.RLock()
         self._secrets: dict[str, str] = {}
-        self._mcp_secret_values: dict[str, str] = {}
-        self._mcp_secret_envs: dict[tuple[str, str, str], str] = {}
         self._managed_mcp = root / "managed-mcp.toml"
-        self._secret_key = self._load_secret_key()
         with self.store.transaction(immediate=True) as connection:
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS trace_providers (
                     provider_id TEXT PRIMARY KEY, name TEXT NOT NULL, base_url TEXT NOT NULL,
-                    model TEXT NOT NULL, api_key_env TEXT NOT NULL DEFAULT '',
+                    model TEXT NOT NULL, api_key_env TEXT NOT NULL DEFAULT '', api_key TEXT NOT NULL DEFAULT '',
                     timeout_seconds REAL NOT NULL, max_context_tokens INTEGER NOT NULL,
                     enabled INTEGER NOT NULL DEFAULT 1, active INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -106,6 +115,7 @@ class ControlPlane:
                 "reasoning_effort": "TEXT NOT NULL DEFAULT ''",
                 "thinking_type": "TEXT NOT NULL DEFAULT ''",
                 "thinking_budget_tokens": "INTEGER NOT NULL DEFAULT 0",
+                "api_key": "TEXT NOT NULL DEFAULT ''",
             }.items():
                 if name not in columns:
                     connection.execute(f"ALTER TABLE trace_providers ADD COLUMN {name} {declaration}")
@@ -123,126 +133,86 @@ class ControlPlane:
                 for name, declaration in additions.items():
                     if name not in columns:
                         connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
-            connection.execute(
-                """CREATE TABLE IF NOT EXISTS trace_secrets (
-                    secret_name TEXT PRIMARY KEY, ciphertext TEXT NOT NULL, updated_at TEXT NOT NULL
-                )"""
-            )
         from .web_accounts import Accounts
         self.accounts = Accounts(self.store)
-        self._migrate_mcp_secret_rows()
-        self._load_secret_values()
+        self._migrate_legacy_secret_storage()
 
     @staticmethod
     def _now() -> str:
         return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
-    def _load_secret_key(self) -> bytes:
-        self.root.mkdir(parents=True, exist_ok=True)
-        path = self.root / "trace-secrets.key"
+    def _migrate_legacy_secret_storage(self) -> None:
+        """Upgrade the previous encrypted store, then keep credentials plaintext.
+
+        This is intentionally one-way compatibility code. New installations do
+        not create a key file or a secret table; Provider keys stay in
+        ``trace_providers.api_key`` and MCP values stay in their JSON spec.
+        """
+        key_path = self.root / "trace-secrets.key"
+        with self.store.transaction(immediate=True) as connection:
+            has_table = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='trace_secrets'"
+            ).fetchone() is not None
+            if not has_table:
+                self._secrets = {
+                    str(row["provider_id"]): str(row["api_key"] or "")
+                    for row in connection.execute("SELECT provider_id,api_key FROM trace_providers")
+                    if str(row["api_key"] or "")
+                }
+                if key_path.exists():
+                    try:
+                        key_path.unlink()
+                    except OSError:
+                        pass
+                return
+            secret_rows = {
+                str(row["secret_name"]): str(row["ciphertext"])
+                for row in connection.execute("SELECT secret_name,ciphertext FROM trace_secrets")
+            }
+            values: dict[str, str] = {}
+            if secret_rows:
+                key = key_path.read_bytes()
+                if len(key) != 32:
+                    raise ValueError("legacy_secret_key_invalid")
+                for name, ciphertext in secret_rows.items():
+                    raw = base64.urlsafe_b64decode(ciphertext.encode("ascii"))
+                    nonce, tag, cipher = raw[:16], raw[16:48], raw[48:]
+                    if not hmac.compare_digest(tag, hmac.new(key, nonce + cipher, hashlib.sha256).digest()):
+                        raise ValueError("legacy_secret_ciphertext_invalid:" + name)
+                    stream = b"".join(hashlib.sha256(key + nonce + n.to_bytes(4, "big")).digest() for n in range((len(cipher) + 31) // 32))[:len(cipher)]
+                    values[name] = bytes(a ^ b for a, b in zip(cipher, stream)).decode("utf-8")
+            for row in connection.execute("SELECT provider_id,api_key,api_key_env FROM trace_providers"):
+                provider_id = str(row["provider_id"])
+                value = str(row["api_key"] or "") or values.get("provider:" + provider_id, "")
+                api_key_env = str(row["api_key_env"] or "")
+                if not value and api_key_env.startswith("sk-"):
+                    value, api_key_env = api_key_env, ""
+                if value != str(row["api_key"] or "") or api_key_env != str(row["api_key_env"] or ""):
+                    connection.execute("UPDATE trace_providers SET api_key=?,api_key_env=?,updated_at=? WHERE provider_id=?", (value, api_key_env, self._now(), provider_id))
+            for row in connection.execute("SELECT server_id,spec_json FROM trace_mcp_servers"):
+                spec = json.loads(str(row["spec_json"]))
+                changed = False
+                for field in ("env", "headers"):
+                    source = dict(spec.get(field) or {})
+                    for name, value in list(source.items()):
+                        text = str(value)
+                        if text.startswith("${TRACE_MCP_SECRET_") and text.endswith("}"):
+                            source[str(name)] = values[text[2:-1]]
+                            changed = True
+                    spec[field] = source
+                if changed:
+                    connection.execute("UPDATE trace_mcp_servers SET spec_json=?,updated_at=? WHERE server_id=?", (_json(spec), self._now(), str(row["server_id"])))
+            connection.execute("DROP TABLE trace_secrets")
         try:
-            key = path.read_bytes()
-            if len(key) == 32:
-                return key
+            key_path.unlink(missing_ok=True)
         except OSError:
             pass
-        key = secrets.token_bytes(32)
-        try:
-            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0), 0o600)
-            try:
-                os.write(fd, key)
-            finally:
-                os.close(fd)
-        except FileExistsError:
-            key = path.read_bytes()
-        if len(key) != 32:
-            raise ValueError("trace_secret_key_invalid")
-        os.chmod(path, 0o600)
-        return key
-
-    def _load_secret_values(self) -> None:
-        with self._lock:
-            with self.store.connection() as connection:
-                rows = connection.execute("SELECT secret_name,ciphertext FROM trace_secrets").fetchall()
-                servers = connection.execute("SELECT server_id,spec_json FROM trace_mcp_servers").fetchall()
-            values: dict[str, str] = {}
-            for row in rows:
-                try:
-                    values[str(row["secret_name"])] = _open_secret(self._secret_key, str(row["ciphertext"]))
-                except (ValueError, UnicodeError):
-                    continue
-            self._mcp_secret_values = values
-            self._mcp_secret_envs = {
-                (str(row["server_id"]), field, key): name
-                for row in servers
-                for (field, key), name in self._mcp_secret_references(json.loads(row["spec_json"])).items()
-            }
-
-    def _persist_secret_values(self, connection: sqlite3.Connection, values: Mapping[str, str]) -> None:
-        """Write ciphertexts in the caller's configuration transaction."""
-        for name, value in values.items():
-            connection.execute(
-                "INSERT INTO trace_secrets(secret_name,ciphertext,updated_at) VALUES(?,?,?) ON CONFLICT(secret_name) DO UPDATE SET ciphertext=excluded.ciphertext,updated_at=excluded.updated_at",
-                (name, _seal_secret(self._secret_key, value), self._now()),
-            )
-
-    @staticmethod
-    def _mcp_secret_references(spec: Mapping[str, Any]) -> dict[tuple[str, str], str]:
-        return {
-            ("env" if field == "env" else "header", str(key)): str(value)[2:-1]
-            for field in ("env", "headers")
-            for key, value in dict(spec.get(field) or {}).items()
-            if str(value).startswith("${TRACE_MCP_SECRET_") and str(value).endswith("}")
-        }
-
-    def _delete_unreferenced_secrets(self, connection: sqlite3.Connection, names: set[str]) -> None:
-        if not names:
-            return
-        referenced = {
-            name
-            for row in connection.execute("SELECT spec_json FROM trace_mcp_servers")
-            for name in self._mcp_secret_references(json.loads(row["spec_json"])).values()
-        }
-        connection.executemany("DELETE FROM trace_secrets WHERE secret_name=?", ((name,) for name in names - referenced))
-
-    def _migrate_mcp_secret_rows(self) -> None:
         with self.store.connection() as connection:
-            rows = connection.execute("SELECT server_id,spec_json FROM trace_mcp_servers").fetchall()
-        updates: list[tuple[str, str, dict[str, str]]] = []
-        for row in rows:
-            server_id = str(row["server_id"])
-            spec = json.loads(str(row["spec_json"]))
-            values: dict[str, str] = {}
-            changed = False
-            for field in ("env", "headers"):
-                source = dict(spec.get(field) or {})
-                for key, value in source.items():
-                    value_text = str(value)
-                    if value_text.startswith("${") and value_text.endswith("}"):
-                        continue
-                    kind = "env" if field == "env" else "header"
-                    env_name = "TRACE_MCP_SECRET_" + hashlib.sha256(f"{server_id}:{kind}:{key}".encode()).hexdigest()[:24].upper()
-                    source[str(key)] = "${" + env_name + "}"
-                    values[env_name] = value_text
-                    changed = True
-                spec[field] = source
-            if changed:
-                updates.append((server_id, _json(spec), values))
-        if not updates:
-            return
-        now = self._now()
-        with self.store.transaction(immediate=True) as connection:
-            for server_id, spec_json, values in updates:
-                self._persist_secret_values(connection, values)
-                connection.execute(
-                    "UPDATE trace_mcp_servers SET spec_json=?,updated_at=? WHERE server_id=?",
-                    (spec_json, now, server_id),
-                )
-        try:
-            with self.store.connection() as connection:
-                connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        except sqlite3.DatabaseError:
-            pass
+            self._secrets = {
+                str(row["provider_id"]): str(row["api_key"] or "")
+                for row in connection.execute("SELECT provider_id,api_key FROM trace_providers")
+                if str(row["api_key"] or "")
+            }
 
     @staticmethod
     def _provider_payload(row: Mapping[str, Any], secret: bool = False) -> dict[str, Any]:
@@ -274,7 +244,7 @@ class ControlPlane:
             return [
                 self._provider_payload(
                     row,
-                    bool(self._secrets.get(str(row["provider_id"])))
+                    bool(str(row["api_key"] or ""))
                     or bool(str(row["api_key_env"]) and os.environ.get(str(row["api_key_env"]))),
                 )
                 for row in rows
@@ -289,8 +259,13 @@ class ControlPlane:
     def provider_secret(self, provider_id: str, *, include_environment: bool = True) -> str:
         item = self.provider(provider_id)
         environment = os.environ.get(item["api_key_env"], "") if include_environment and item["api_key_env"] else ""
-        with self._lock:
-            return environment or self._secrets.get(provider_id, "")
+        with self.store.connection() as connection:
+            row = connection.execute("SELECT api_key FROM trace_providers WHERE provider_id=?", (provider_id,)).fetchone()
+        return environment or (str(row["api_key"] or "") if row else "")
+
+    def provider_secrets(self) -> list[str]:
+        with self.store.connection() as connection:
+            return [str(row["api_key"] or "") for row in connection.execute("SELECT api_key FROM trace_providers")]
 
     def save_provider(self, payload: Mapping[str, Any], *, on_active: Any = None) -> dict[str, Any]:
         provider_id = str(payload.get("provider_id") or payload.get("id") or secrets.token_hex(8)).strip()
@@ -327,20 +302,19 @@ class ControlPlane:
         clear_secret = bool(payload.get("clear_api_key")) or bool(existing_item and (
             existing_item["base_url"] != base_url
             or existing_item["provider"] != kind
-            or existing_item["model"] != model
             or existing_item["api_key_env"] != api_key_env
         ) and not secret)
-        candidate_secret = secret or ("" if clear_secret else self._secrets.get(provider_id, ""))
+        candidate_secret = secret or ("" if clear_secret else (existing_item and self._secrets.get(provider_id, "") or ""))
         now = self._now()
         with self.store.transaction(immediate=True) as connection:
             existing = connection.execute("SELECT created_at FROM trace_providers WHERE provider_id=?", (provider_id,)).fetchone()
             connection.execute(
-                """INSERT INTO trace_providers(provider_id,name,base_url,model,api_key_env,timeout_seconds,max_context_tokens,enabled,active,created_at,updated_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                """INSERT INTO trace_providers(provider_id,name,base_url,model,api_key_env,api_key,timeout_seconds,max_context_tokens,enabled,active,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(provider_id) DO UPDATE SET name=excluded.name,base_url=excluded.base_url,model=excluded.model,
-                   api_key_env=excluded.api_key_env,timeout_seconds=excluded.timeout_seconds,max_context_tokens=excluded.max_context_tokens,
+                   api_key_env=excluded.api_key_env,api_key=excluded.api_key,timeout_seconds=excluded.timeout_seconds,max_context_tokens=excluded.max_context_tokens,
                    enabled=excluded.enabled,updated_at=excluded.updated_at""",
-                (provider_id, name, base_url, model, api_key_env, timeout, context, int(payload.get("enabled", True) is not False), 0, str(existing["created_at"]) if existing else now, now),
+                (provider_id, name, base_url, model, api_key_env, candidate_secret, timeout, context, int(payload.get("enabled", True) is not False), 0, str(existing["created_at"]) if existing else now, now),
             )
             connection.execute(
                 "UPDATE trace_providers SET provider=?,max_output_tokens=?,reasoning_effort=?,thinking_type=?,thinking_budget_tokens=? WHERE provider_id=?",
@@ -351,11 +325,17 @@ class ControlPlane:
             if saved["active"] and on_active is not None:
                 on_active(saved, api_key=candidate_secret)
         with self._lock:
-            if secret:
-                self._secrets[provider_id] = secret
-            elif clear_secret:
+            if candidate_secret:
+                self._secrets[provider_id] = candidate_secret
+            else:
                 self._secrets.pop(provider_id, None)
         return saved
+
+    def test_provider(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Explicit, read-only model check; never called automatically on save."""
+        from .provider_check import test_provider
+
+        return test_provider(self, payload)
 
     def activate_provider(self, provider_id: str) -> dict[str, Any]:
         item = self.provider(provider_id)
@@ -418,6 +398,23 @@ class ControlPlane:
                 (skill_id, int(enabled is not False), _json(dict(config or {})), self._now(), str(path)),
             )
         return self.skill(skill_id)
+
+    def import_skill(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        if "content" in payload:
+            content = str(payload["content"]).lstrip("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
+            name = Path(str(payload.get("file_name") or "external.md")).stem or "external"
+            if len(content.encode("utf-8")) > 64 * 1024:
+                raise ValueError("skill_import_too_large")
+        else:
+            name, content = _import_skill_source(str(payload.get("source") or ""))
+        skill_id = str(payload.get("resource_id") or payload.get("skill_id") or f"skill:external/{name}").strip()
+        config = payload.get("config") if isinstance(payload.get("config"), Mapping) else {}
+        return self.save_skill({
+            "resource_id": skill_id,
+            "content": content,
+            "enabled": payload.get("enabled", True),
+            "config": config,
+        })
 
     def delete_skill(self, skill_id: str) -> None:
         self.skill(skill_id)
@@ -482,16 +479,8 @@ class ControlPlane:
         return self.save_mcp({**spec, "server_id": server_id, "enabled": enabled})
 
     def mcp_secret_bindings(self) -> dict[str, dict[str, str]]:
-        with self._lock:
-            with self.store.connection() as connection:
-                rows = connection.execute("SELECT server_id,spec_json FROM trace_mcp_servers").fetchall()
-            bindings: dict[str, dict[str, str]] = {}
-            for row in rows:
-                names = self._mcp_secret_references(json.loads(row["spec_json"])).values()
-                scoped = {name: self._mcp_secret_values[name] for name in names if name in self._mcp_secret_values}
-                if scoped:
-                    bindings[str(row["server_id"])] = scoped
-            return bindings
+        # Plain values are already in the spec; references resolve from the environment.
+        return {}
 
     def save_mcp(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         server_id = str(payload.get("server_id") or payload.get("name") or "").strip()
@@ -509,7 +498,6 @@ class ControlPlane:
             with self.store.transaction(immediate=True) as connection:
                 row = connection.execute("SELECT spec_json FROM trace_mcp_servers WHERE server_id=?", (server_id,)).fetchone()
                 existing_spec = json.loads(row["spec_json"]) if row is not None else {}
-                old_names = set(self._mcp_secret_references(existing_spec).values())
                 spec = {**existing_spec,
                     **{key: payload[key] for key in ("startup_timeout_seconds", "tool_timeout_seconds",
                         "include_tools", "exclude_tools", "read_only_tools", "write_tools", "read_only") if key in payload},
@@ -522,36 +510,15 @@ class ControlPlane:
                     "url": str(payload.get("url") or ""),
                     "enabled": payload.get("enabled") is not False,
                 }
-                new_values: dict[str, str] = {}
-                # Omitted secret fields preserve references; an explicit empty
+                # Omitted fields preserve existing values; an explicit empty
                 # mapping clears them in the same transaction as the settings.
                 for field in ("env", "headers"):
                     source = dict((payload[field] if field in payload else existing_spec.get(field)) or {})
-                    target: dict[str, str] = {}
-                    kind = "env" if field == "env" else "header"
-                    for key, value in source.items():
-                        key_text, value_text = str(key), str(value)
-                        if value_text.startswith("${") and value_text.endswith("}"):
-                            target[key_text] = value_text
-                            continue
-                        name = "TRACE_MCP_SECRET_" + hashlib.sha256(f"{server_id}:{kind}:{key_text}".encode()).hexdigest()[:24].upper()
-                        target[key_text] = "${" + name + "}"
-                        new_values[name] = value_text
-                    spec[field] = target
-                self._persist_secret_values(connection, new_values)
-                for name in self._mcp_secret_references(spec).values():
-                    secret = connection.execute("SELECT ciphertext FROM trace_secrets WHERE secret_name=?", (name,)).fetchone()
-                    if secret is None:
-                        raise ValueError("mcp_secret_unavailable")
-                    _open_secret(self._secret_key, secret["ciphertext"])
+                    spec[field] = {str(key): str(value) for key, value in source.items()}
                 connection.execute(
                     "INSERT INTO trace_mcp_servers(server_id,spec_json,enabled,updated_at) VALUES(?,?,?,?) ON CONFLICT(server_id) DO UPDATE SET spec_json=excluded.spec_json,enabled=excluded.enabled,deleted=0,updated_at=excluded.updated_at",
                     (server_id, _json(spec), int(spec["enabled"]), self._now()),
                 )
-                self._delete_unreferenced_secrets(connection, old_names)
-            # Cache publication follows successful COMMIT; every failure leaves
-            # the old bindings intact, including failures while pruning secrets.
-            self._load_secret_values()
             return next(item for item in self.mcp_servers() if item["server_id"] == server_id)
 
     def delete_mcp(self, server_id: str, spec: Mapping[str, Any] | None = None) -> None:
@@ -560,14 +527,11 @@ class ControlPlane:
                 row = connection.execute("SELECT spec_json FROM trace_mcp_servers WHERE server_id=?", (server_id,)).fetchone()
                 if row is None and spec is None:
                     raise KeyError(f"mcp_server_not_found:{server_id}")
-                names = set(self._mcp_secret_references(json.loads(row["spec_json"])).values()) if row else set()
                 connection.execute(
                     "INSERT INTO trace_mcp_servers(server_id,spec_json,enabled,updated_at,deleted) VALUES(?,'{}',0,?,1) "
                     "ON CONFLICT(server_id) DO UPDATE SET spec_json='{}',enabled=0,deleted=1,updated_at=excluded.updated_at",
                     (server_id, self._now()),
                 )
-                self._delete_unreferenced_secrets(connection, names)
-            self._load_secret_values()
 
     def write_mcp_config(self) -> Path:
         with self.store.connection() as connection:

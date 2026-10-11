@@ -4,11 +4,12 @@ import assert from "node:assert/strict";
 import { readFileSync, mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { chromiumLaunchOptions } from "./playwright_smoke_support.mjs";
 
 const { chromium } = createRequire(import.meta.url)("playwright");
 const root = fileURLToPath(new URL("../", import.meta.url));
 const staticFile = (name) => root + "src/redteam_agent/static/" + name;
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch(chromiumLaunchOptions());
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   const errors = [];
@@ -68,11 +69,16 @@ try {
     { message_id: "m2", role: "assistant", source_type: "model_response", content: { text: "正在检查实际响应。", tool_calls: [{ name: "http.fetch", arguments: '{"url":"http://localhost/login"}' }], status: "ok" } },
     { message_id: "m3", role: "tool", run_id: "run/1", source_type: "tool_result", content: { tool_name: "http.fetch", status: "ok", projection: { status_code: 403, body: { preview: "Forbidden", truncated: false, byte_count: 9 }, structured_summary: { status_code: 403 } }, raw: { artifact }, output: { artifact } } },
     { message_id: "m4", role: "system", content: '{"objective":"继续检查","targets":["localhost"]}' },
+    { message_id: "m5", role: "assistant", source_type: "model_response", content: {
+      text: '{"decision":{"status":"waiting_input","summary":"已采集四组响应"}}',
+      structured_output: { decision: { status: "waiting_input", summary: "已采集四组响应" } } } },
   ];
   await page.evaluate((messages) => TraceUI.renderTranscriptList(document.querySelector("#view"), messages), transcript);
   assert.match(await page.locator("#view").innerText(), /检查会话边界.*正在检查实际响应.*请求执行.*Forbidden.*继续检查/s);
   assert.equal(await page.locator("#view pre").count(), 0);
   assert.doesNotMatch(await page.locator("#view").textContent(), /"url":|"objective":|\[object Object\]/);
+  assert.match(await page.locator("#view").innerText(), /已采集四组响应/);
+  assert.doesNotMatch(await page.locator("#view").textContent(), /"decision"\s*:|"summary"\s*:/);
   await page.locator("#view .transcript-message").nth(2).locator("details").first().evaluate((detail) => { detail.open = true; });
   await page.evaluate((messages) => TraceUI.renderTranscriptList(document.querySelector("#view"), messages), transcript);
   assert.equal(await page.locator("#view .transcript-message").nth(2).locator("details").first().getAttribute("open"), "");

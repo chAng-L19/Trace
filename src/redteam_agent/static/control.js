@@ -100,14 +100,21 @@ async function loadProviders() {
     activate.textContent = item.active ? "当前模型" : "切换";
     activate.disabled = item.active;
     activate.addEventListener("click", async () => {
-      await api("/api/providers/active", {
-        method: "POST",
-        headers: commandHeaders(),
-        body: JSON.stringify({ provider_id: item.provider_id }),
-      });
-      showNotice("Provider 已切换");
-      await loadControl();
-      await loadSystem();
+      const epoch = state.authEpoch;
+      activate.disabled = true;
+      try {
+        await api("/api/providers/active", {
+          method: "POST", headers: commandHeaders(),
+          body: JSON.stringify({ provider_id: item.provider_id }),
+        });
+        if (epoch !== state.authEpoch) return;
+        showNotice("Provider 已切换");
+        await loadProviders();
+        if (epoch !== state.authEpoch) return;
+        await loadSystem();
+      } catch (error) {
+        if (epoch === state.authEpoch) showNotice(error.message, true);
+      } finally { activate.disabled = item.active; }
     });
     const remove = document.createElement("button");
     remove.type = "button";
@@ -115,11 +122,17 @@ async function loadProviders() {
     remove.textContent = "删除";
     remove.addEventListener("click", async () => {
       if (!confirm("确认删除此 Provider？")) return;
-      await api(`/api/providers/${encodeURIComponent(item.provider_id)}`, {
-        method: "DELETE",
-        headers: commandHeaders(),
-      });
-      await loadProviders();
+      const epoch = state.authEpoch;
+      remove.disabled = true;
+      try {
+        await api(`/api/providers/${encodeURIComponent(item.provider_id)}`, {
+          method: "DELETE", headers: commandHeaders(),
+        });
+        if (epoch !== state.authEpoch) return;
+        await loadProviders();
+      } catch (error) {
+        if (epoch === state.authEpoch) showNotice(error.message, true);
+      } finally { remove.disabled = false; }
     });
     actions.append(edit, activate, remove);
     cell("provider-actions", "").append(actions);
@@ -129,6 +142,9 @@ async function loadProviders() {
 
 function openProviderEditor(item = null) {
   const form = $("#provider-form");
+  form.dataset.testVersion = String(Number(form.dataset.testVersion || 0) + 1);
+  $("#provider-test-result").textContent = "";
+  $("#provider-test").disabled = false;
   form.reset();
   for (const [name, value] of Object.entries(item || {})) {
     const field = form.elements.namedItem(name);
@@ -246,6 +262,48 @@ async function submitSkill(event) {
     showNotice(error.message, true);
   }
 }
+
+function openSkillImportDialog() {
+  const form = $("#skill-import-form");
+  form.reset();
+  form.elements.enabled.checked = true;
+  $("#skill-import-dialog").showModal();
+  form.elements.file.focus();
+}
+
+async function submitSkillImport(event) {
+  event.preventDefault();
+  if (event.submitter?.value === "cancel") return $("#skill-import-dialog").close();
+  const form = $("#skill-import-form");
+  const submit = event.submitter || form.querySelector('button[value="default"]');
+  submit.disabled = true;
+  try {
+    const file = form.elements.file.files[0];
+    const payload = {
+      source: String(form.elements.source.value || "").trim(),
+      resource_id: String(form.elements.resource_id.value || "").trim(),
+      enabled: form.elements.enabled.checked,
+    };
+    if (file) {
+      payload.content = new TextDecoder("utf-8", { fatal: true }).decode(await file.arrayBuffer());
+      payload.file_name = file.name;
+      if (!$("#skill-import-dialog").open) return;
+    }
+    const result = await api("/api/skills/import", {
+      method: "POST",
+      headers: commandHeaders(),
+      body: JSON.stringify(payload),
+    });
+    $("#skill-import-dialog").close();
+    await loadSkills();
+    showNotice(`已导入 Skill：${result.skill?.resource_id || "完成"}`);
+  } catch (error) {
+    showNotice(error.message, true);
+  } finally {
+    submit.disabled = false;
+  }
+}
+
 async function loadMcp() {
   const epoch = state.authEpoch;
   $("#mcp-list").setAttribute("aria-busy", "true");
@@ -259,12 +317,12 @@ async function loadMcp() {
     main.className = "setting-main";
     const title = document.createElement("strong");
     title.textContent = item.source === "catalog" && item.preset === "playwright"
-      ? "Playwright MCP" : item.server_id;
+      ? "Trace 内置浏览器 MCP · Playwright" : item.server_id;
     const meta = document.createElement("code");
     const statuses = { available: "待接入", configured: "已配置", connected: "已连接",
       catalogued: "按运行连接", disabled: "已停用", failed: "连接失败", duplicate: "重复配置" };
     const status = item.status?.status || "configured";
-    const source = { managed: "网页托管", config: "配置文件", catalog: "公开 MCP" }[item.source] || "网页托管";
+    const source = { managed: "网页托管", config: "配置文件", catalog: "内置预设" }[item.source] || "网页托管";
     const toolCount = Number(item.status?.tool_count || 0);
     meta.textContent = `${item.transport || "-"} · ${statuses[status] || status} · ${toolCount} tools · ${source}`;
     main.append(title, meta);
@@ -274,6 +332,11 @@ async function loadMcp() {
       ? (status === "connected" ? `已连接 · ${toolCount} 个工具` : status === "catalogued" ? `已启用 · 每次运行按需连接 · ${toolCount} 个工具` : "已开启，等待连接")
       : "已停用，不会注入运行";
     main.append(detail);
+    if (item.source === "catalog" && item.preset === "playwright") {
+      const note = document.createElement("small");
+      note.textContent = "使用当前 Python、已安装的 Playwright 和 Chrome/Chromium，无需 npx 下载。Trace 自带实现。";
+      main.append(note);
+    }
     if (item.status?.error) {
       const error = document.createElement("small");
       error.className = "setting-detail";
@@ -446,25 +509,50 @@ async function loadConversations(append = false) {
 }
 
 async function openForkEditor(runId) {
+  const form = $("#fork-form");
+  form.dataset.requestId = String(Number(form.dataset.requestId || 0) + 1);
+  $("#fork-entry").replaceChildren();
+  $("#fork-run-id").value = runId;
+  $("#fork-branch-id").value = `branch-${Date.now().toString(36)}`;
+  $("#fork-more").dataset.offset = "0";
+  $("#fork-more").hidden = true;
+  $("#fork-submit").disabled = true;
+  $("#fork-dialog").showModal();
+  await loadForkEntries();
+}
+
+async function loadForkEntries(append = false) {
+  const runId = $("#fork-run-id").value;
+  const form = $("#fork-form");
+  const requestId = form.dataset.requestId;
+  const epoch = state.authEpoch;
+  const button = $("#fork-more");
+  const current = () => epoch === state.authEpoch && form.dataset.requestId === requestId && $("#fork-dialog").open;
+  button.disabled = true;
   try {
-    const result = await api(`/api/conversations/${encodeURIComponent(runId)}`);
-    const nodes = result.tree?.nodes || {};
+    const offset = append ? button.dataset.offset : "0";
+    const result = await api(`/api/conversations/${encodeURIComponent(runId)}/entries?limit=200&offset=${offset}`);
+    if (!current()) return;
     const select = $("#fork-entry");
-    select.replaceChildren();
-    for (const [entryId, node] of Object.entries(nodes)) {
-      const entry = node?.entry || {};
+    if (!append) select.replaceChildren();
+    for (const entry of result.entries || []) {
       const option = document.createElement("option");
-      option.value = entryId;
-      const roles = { user: "用户消息", assistant: "助手回复", tool: "工具结果", observation: "观察结果" };
-      option.textContent = `第 ${entry.sequence ?? "?"} 条 · ${roles[entry.entry_type] || "会话记录"}`;
+      option.value = entry.entry_id;
+      const roles = { user: "用户消息", assistant: "助手回复", tool: "工具结果", observation: "观察结果", system: "系统消息" };
+      const summary = String(entry.text || "").replace(/\s+/g, " ").trim();
+      option.textContent = `第 ${entry.sequence} 条 · ${roles[entry.role] || entry.role} · ${summary.slice(0, 160)} · ${formatTime(entry.created_at)} · ${entry.branch_id || "main"}`;
+      option.title = summary;
       select.append(option);
     }
-    $("#fork-run-id").value = runId;
-    $("#fork-branch-id").value = `branch-${Date.now().toString(36)}`;
-    $("#fork-dialog").showModal();
+    button.dataset.offset = String(result.next_offset ?? 0);
+    button.hidden = !result.truncated;
+    $("#fork-submit").disabled = !select.options.length;
   } catch (error) {
-    showNotice(error.message, true);
-  }
+    if (current()) {
+      button.hidden = false;
+      showNotice(error.message, true);
+    }
+  } finally { if (current()) button.disabled = false; }
 }
 async function submitFork(event) {
   event.preventDefault();
@@ -501,10 +589,7 @@ async function loadSystemSettings() {
   TracePresentation.renderSystem($("#system-view"), result);
 }
 
-async function submitProvider(event) {
-  event.preventDefault();
-  if (event.submitter?.value === "cancel") return $("#provider-dialog").close();
-  const form = event.currentTarget;
+function providerFormPayload(form) {
   const data = new FormData(form);
   const payload = Object.fromEntries(data.entries());
   payload.timeout_seconds = Number(payload.timeout_seconds);
@@ -512,6 +597,37 @@ async function submitProvider(event) {
   payload.max_output_tokens = Number(payload.max_output_tokens);
   payload.thinking_budget_tokens = Number(payload.thinking_budget_tokens);
   payload.clear_api_key = data.get("clear_api_key") === "on";
+  return payload;
+}
+
+async function testProvider() {
+  const form = $("#provider-form");
+  if (!form.reportValidity()) return;
+  const epoch = state.authEpoch;
+  const version = String(Number(form.dataset.testVersion || 0) + 1);
+  form.dataset.testVersion = version;
+  const current = () => epoch === state.authEpoch && form.dataset.testVersion === version && $("#provider-dialog").open;
+  const output = $("#provider-test-result");
+  $("#provider-test").disabled = true;
+  output.textContent = "正在测试连接…";
+  output.classList.remove("error");
+  try {
+    const result = await api("/api/providers/test", {
+      method: "POST", headers: commandHeaders(), body: JSON.stringify(providerFormPayload(form)),
+    });
+    if (!current()) return;
+    output.classList.toggle("error", !result.success);
+    output.textContent = `${result.success ? "连接成功" : "连接失败"}\n模型：${result.model ?? "—"} · 耗时：${result.latency_ms ?? "—"} ms\n${result.reply || ""}${result.error ? `\n错误：${result.error}` : ""}`;
+  } catch (error) {
+    if (current()) { output.textContent = `连接失败：${error.message}`; output.classList.add("error"); }
+  } finally { if (current()) $("#provider-test").disabled = false; }
+}
+
+async function submitProvider(event) {
+  event.preventDefault();
+  if (event.submitter?.value === "cancel") return $("#provider-dialog").close();
+  const form = event.currentTarget;
+  const payload = providerFormPayload(form);
   try {
     await api("/api/providers", {
       method: "POST",

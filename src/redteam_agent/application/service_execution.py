@@ -41,6 +41,13 @@ class ServiceExecutionMixin:
         return self.conversation.append(run_id=run_id, role="user", content={"text": text},
             protected=False, source_type="operator_message", source_id=message_id)
 
+    @service_write
+    def discuss(self, run_id: str, text: str, *, message_id: str) -> dict[str, Any]:
+        """One durable, tool-free follow-up on a terminal run; never resume it."""
+        from .discussion import discuss
+
+        return discuss(self, run_id, text, message_id=message_id)
+
     @contextmanager
     def _write_scope(self):
         with self._model_condition:
@@ -68,6 +75,7 @@ class ServiceExecutionMixin:
                 self._shutdown_error = ""
                 self._shutdown_errors = []
                 run_ids = tuple(self._active_runs)
+                discussion_ids = tuple(getattr(self, "_discussion_runs", ()))
                 # Persist the pause before cancellation can race a successful response.
                 for run_id in run_ids:
                     try:
@@ -82,7 +90,7 @@ class ServiceExecutionMixin:
                         })
                     except Exception as exc:
                         self._shutdown_errors.append(exc)
-                threading.Thread(target=self._close_resources, args=(run_ids,),
+                threading.Thread(target=self._close_resources, args=(run_ids, discussion_ids),
                                  name="agent-service-shutdown", daemon=True).start()
             remaining = max(0.0, self._shutdown_deadline - time.monotonic())
         if not self._close_complete.wait(remaining):
@@ -99,7 +107,7 @@ class ServiceExecutionMixin:
         elif self._shutdown_error:
             raise RuntimeError(f"agent_service_cleanup_failed:{self._shutdown_error}") from None
 
-    def _close_resources(self, run_ids: tuple[str, ...]) -> None:
+    def _close_resources(self, run_ids: tuple[str, ...], discussion_ids: tuple[str, ...] = ()) -> None:
         errors: list[Exception] = self._shutdown_errors
 
         def attempt(operation, *args, **kwargs) -> None:
@@ -109,6 +117,8 @@ class ServiceExecutionMixin:
                 errors.append(exc)
 
         try:
+            for run_id in discussion_ids:
+                attempt(self._interrupt_model_loops, run_id)
             for run_id in run_ids:
                 attempt(self._interrupt_model_loops, run_id)
                 attempt(self._cancel_run_workers, run_id, include_waiting=False)
@@ -116,6 +126,9 @@ class ServiceExecutionMixin:
                 self._model_condition.wait_for(lambda: not self._active_runs and not self._active_writes,
                     timeout=max(0.0, self._shutdown_deadline - time.monotonic()))
                 unresolved = set(self._active_runs)
+                # close() reports its deadline; keep transports alive until an
+                # admitted discussion has persisted its cancellation outcome.
+                self._model_condition.wait_for(lambda: not getattr(self, "_discussion_runs", {}))
             for run_id in run_ids:
                 attempt(self.runtime.store.append_event, run_id, "service_shutdown_settled", {
                     "status": "unknown" if run_id in unresolved else "interrupted",

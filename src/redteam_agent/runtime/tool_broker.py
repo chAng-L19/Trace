@@ -384,9 +384,9 @@ class ToolBroker(McpBrokerMixin):
             adapter = self._adapters.get(qualified)
         capture = None
         if self._artifacts is not None and run_id:
-            from .open_source_tools import http_request
+            from .open_source_tools import http_request, page_fetch
             from .tool_capture import ToolCapture
-            if adapter is http_request or (isinstance(adapter, BrowserAdapter) and adapter.operation == "screenshot"):
+            if adapter in {http_request, page_fetch} or (isinstance(adapter, BrowserAdapter) and adapter.operation == "screenshot"):
                 capture = ToolCapture(
                     self._artifacts, run_id,
                     {"tool_name": qualified, "call_id": external_call_id or call_id,
@@ -401,6 +401,10 @@ class ToolBroker(McpBrokerMixin):
                 output = self._browser_sessions.call(
                     adapter.operation, arguments, run_id=run_id,
                     workspace=self._workspace_for(run_id), timeout=timeout, capture=capture,
+                )
+            elif capture is not None and adapter is page_fetch:
+                output = self._invoke_adapter(
+                    lambda args: page_fetch(args, capture=capture), arguments, timeout=timeout,
                 )
             elif capture is not None:
                 output = self._invoke_adapter(

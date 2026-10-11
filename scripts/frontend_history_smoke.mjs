@@ -1,8 +1,9 @@
 // Real frontend, paginated API fixtures; no server business data is modified.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import { chromiumLaunchOptions } from "./playwright_smoke_support.mjs";
 const { chromium } = createRequire(import.meta.url)("playwright");
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch(chromiumLaunchOptions());
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
 const errors = [];
 page.on("pageerror", (error) => errors.push(error.message));
@@ -15,6 +16,7 @@ const views = Array.from({ length: 245 }, (_, index) => ({
 const messages = Array.from({ length: 450 }, (_, index) => ({ message_id: `message-${index + 1}`,
   sequence: index + 1, role: "assistant", content: { text: `History message ${index + 1}` } }));
 const historyRequests = [];
+const entryRequests = [];
 await page.route("**/api/**", async (route) => {
   const request = route.request(), url = new URL(request.url()), path = url.pathname;
   const reply = (payload) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true, ...payload }) });
@@ -27,6 +29,13 @@ await page.route("**/api/**", async (route) => {
     const data = filtered.slice(offset, offset + limit);
     return reply(path === "/api/runs" ? { runs: data, truncated: filtered.length > offset + limit }
       : { conversations: data.map((view) => ({ run: view, message_count: 450, session: { branches: { main: "entry" } } })), truncated: filtered.length > offset + limit });
+  }
+  if (path.endsWith("/entries")) {
+    const offset = Number(url.searchParams.get("offset") || 0), limit = Number(url.searchParams.get("limit") || 200);
+    entryRequests.push({ offset, limit });
+    const entries = messages.slice(offset, offset + limit).map((message) => ({ entry_id: message.message_id,
+      sequence: message.sequence, role: message.role, text: message.content.text, created_at: "2026-10-10T08:30:00Z", branch_id: "main" }));
+    return reply({ entries, truncated: messages.length > offset + limit, next_offset: messages.length > offset + limit ? offset + limit : null });
   }
   if (path.startsWith("/api/conversations/") && request.method() === "DELETE") {
     views.splice(views.findIndex((view) => view.run.run_id === path.split("/").at(-1)), 1);
@@ -83,6 +92,18 @@ try {
   await page.waitForFunction(() => document.querySelectorAll("#conversation-list .setting-row").length === 200);
   await page.fill("#conversation-search", "fixture-244.invalid");
   await page.waitForFunction(() => document.querySelectorAll("#conversation-list .setting-row").length === 1);
+  await page.click('#conversation-list button[aria-label="分支"]');
+  await page.waitForFunction(() => document.querySelector("#fork-entry").options.length === 200);
+  assert.match(await page.locator("#fork-entry option").first().textContent(), /助手回复.*History message 1/);
+  await page.selectOption("#fork-entry", "message-12");
+  await page.click("#fork-more");
+  await page.waitForFunction(() => document.querySelector("#fork-entry").options.length === 400);
+  assert.equal(await page.inputValue("#fork-entry"), "message-12", "pagination preserves selected branch point");
+  await page.click("#fork-more");
+  await page.waitForFunction(() => document.querySelector("#fork-entry").options.length === 460);
+  assert.equal(await page.locator("#fork-more").isVisible(), false);
+  assert.deepEqual(entryRequests, [{ offset: 0, limit: 200 }, { offset: 200, limit: 200 }, { offset: 400, limit: 200 }]);
+  await page.locator('#fork-form button[value="cancel"]').first().click();
   page.once("dialog", (dialog) => dialog.accept());
   await page.click('#conversation-list button[aria-label="删除"]');
   await page.waitForFunction(() => document.querySelectorAll("#conversation-list .setting-row").length === 0);

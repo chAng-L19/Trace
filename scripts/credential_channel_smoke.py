@@ -11,13 +11,14 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from redteam_agent import AgentService
 from redteam_agent.adapters.runtime import RuntimeToolAdapter
 from redteam_agent.application.context import ConversationLedger
 from redteam_agent.application.model_loop import AgentLoop, ModelIntegrityError
 from redteam_agent.application.model_stream import invoke_model_stream
 from redteam_agent.core import ModelRequest, ModelResponse, ModelStreamEvent, ToolCall, contract_hash
 from redteam_agent.runtime.operation_runtime import OperationRuntime
-from redteam_agent.runtime.security import CredentialVault, secret_reference
+from redteam_agent.runtime.security import CredentialVault, ImmutableRecordError, redact_sensitive, secret_reference
 from redteam_agent.runtime.session_journal import ModelRequestRecord
 
 
@@ -58,16 +59,83 @@ def request_for(runtime, run_id, identity):
     return request
 
 
-def expect_rejected(action, message):
+def expect_rejected(action, message, error_type=ValueError):
     try:
         action()
-    except ValueError as error:
+    except error_type as error:
         assert str(error) == message, str(error)
     else:
         raise AssertionError("expected rejection: " + message)
 
 
+def initial_goal_regression():
+    objective = "Inspect fixture password=opaque-initial-goal-password"
+    with tempfile.TemporaryDirectory(prefix="trace-initial-goal-") as directory:
+        root = Path(directory)
+        with AgentService(root=root, load_external_configuration=False) as service:
+            view = service.start({"session_id": "initial-goal", "objective": objective,
+                                  "targets": ["https://fixture.invalid"]}).single
+            run_id = view.run.run_id
+            # This used to fail before the first model request or tool execution.
+            assert service.context_selector.prepare_model_context(view).messages
+            original = next(item for item in service.transcript(run_id)
+                            if item.source_type == "original_goal")
+            assert original.content["objective"] == redact_sensitive(objective)
+            content = {"text": objective, "nested": [{"password": "fixture-nested-password"}],
+                       "reference": secret_reference(SECRET)}
+            arguments = dict(run_id=run_id, role="user", content=content, protected=False,
+                             source_type="operator_message", source_id="credential-order",
+                             metadata={"password": "fixture-metadata-password"})
+            ledger_record = service.conversation.append(**arguments)
+            assert service.conversation.append(**arguments) == ledger_record
+            # Direct store callers may still supply a valid hash of raw content.
+            raw_record = replace(ledger_record, message_id="direct-credential-order",
+                                 source_id="direct-credential-order", content=content,
+                                 content_hash=contract_hash(content), metadata=arguments["metadata"])
+            store = service.runtime.store
+            direct = store.append_conversation_message(raw_record)
+            assert direct.content == redact_sensitive(content)
+            assert direct.metadata == redact_sensitive(arguments["metadata"])
+            assert store.append_conversation_message(raw_record) == direct
+            assert store.append_conversation_message(direct) == direct
+            expect_rejected(lambda: store.append_conversation_message(replace(raw_record, content_hash="bad-hash")),
+                            f"conversation_content_hash_mismatch:{raw_record.message_id}", ImmutableRecordError)
+            changed = {"text": "different conversation"}
+            expect_rejected(lambda: store.append_conversation_message(replace(
+                raw_record, content=changed, content_hash=contract_hash(changed))),
+                f"immutable_conversation_message:{raw_record.message_id}", ImmutableRecordError)
+
+        # Reopen the same on-disk state, not just the in-memory vault.
+        with AgentService(root=root, load_external_configuration=False) as service:
+            store = service.runtime.store
+            assert service.context_selector.prepare_model_context(service.status(run_id)).messages
+            messages = store.conversation_messages(run_id)
+            assert service.transcript(run_id) == messages
+            assert service.journal.conversation_messages(run_id) == messages
+            assert ledger_record in messages and direct in messages
+            assert service.conversation.append(**arguments) == ledger_record
+            with store.connection() as connection:
+                rows = connection.execute("SELECT content_hash,message_json FROM conversation_messages WHERE run_id=?",
+                                          (run_id,)).fetchall()
+            for row in rows:
+                saved = json.loads(row["message_json"])
+                assert contract_hash(saved["content"]) == saved["content_hash"] == row["content_hash"]
+            for entry in service.journal.entries(run_id):
+                service.journal.raw(run_id, entry.entry_id)
+            # Keep the existing corruption check effective; never rehash damaged rows on read.
+            damaged = {**original.to_dict(), "content": {"objective": "tampered"}}
+            with store.transaction(immediate=True) as connection:
+                connection.execute("UPDATE conversation_messages SET message_json=? WHERE message_id=?",
+                                   (json.dumps(damaged), original.message_id))
+            expect_rejected(lambda: service.transcript(run_id),
+                            f"conversation_record_integrity:{original.message_id}", ImmutableRecordError)
+            entry = next(item for item in service.journal.entries(run_id) if item.raw_id == original.message_id)
+            expect_rejected(lambda: service.journal.raw(run_id, entry.entry_id),
+                            f"journal_raw_hash_mismatch:{entry.entry_id}", ImmutableRecordError)
+
+
 def main():
+    initial_goal_regression()
     with tempfile.TemporaryDirectory(prefix="trace-credential-channel-") as directory:
         root = Path(directory)
         runtime = OperationRuntime(root=root, register_builtins=False)
@@ -179,7 +247,9 @@ def main():
         runtime.broker.close()
     print(json.dumps({"status": "passed", "checks": ["native_json_arguments", "split_stream_secret",
         "scoped_resolve", "cross_run_rejected", "raw_wire_hash", "durable_replay_hash",
-        "restart_rebind", "tool_echo_projection", "reconcile_projection", "large_stream_artifact", "partial_stream_diagnostic", "projection_limit_omission", "disk_secret_absent"]}))
+        "restart_rebind", "tool_echo_projection", "reconcile_projection", "large_stream_artifact", "partial_stream_diagnostic", "projection_limit_omission", "disk_secret_absent",
+        "initial_goal_password", "conversation_restart_integrity", "conversation_append_replay",
+        "direct_store_projection", "conversation_invalid_hash", "conversation_tamper_rejected"]}))
 
 
 if __name__ == "__main__":

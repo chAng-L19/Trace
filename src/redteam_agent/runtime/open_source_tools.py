@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import ast
+import csv
 import hashlib
+from html.parser import HTMLParser
 import http.client
+import io
 import json
 import re
 import socket
@@ -167,6 +170,94 @@ def http_request(arguments: Mapping[str, Any], *, capture=None) -> Mapping[str, 
     }
 
 
+class _PageParser(HTMLParser):
+    """Extract the small, user-facing page projection without a browser."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.title_parts: list[str] = []
+        self.text_parts: list[str] = []
+        self.links: list[dict[str, str]] = []
+        self.forms: list[dict[str, Any]] = []
+        self._title_depth = 0
+        self._form: dict[str, Any] | None = None
+        self._select_depth = 0
+        self._active_link: int | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = {str(key).casefold(): str(value or "") for key, value in attrs}
+        tag = tag.casefold()
+        if tag == "title":
+            self._title_depth += 1
+        elif tag == "a" and values.get("href"):
+            self.links.append({"text": "", "href": values["href"]})
+            self._active_link = len(self.links) - 1
+        elif tag == "form":
+            self._form = {"method": (values.get("method") or "GET").upper(), "action": values.get("action", ""), "fields": []}
+            self.forms.append(self._form)
+        elif tag in {"input", "textarea", "select", "button"} and self._form is not None:
+            name = values.get("name", "")
+            if name or tag == "button":
+                self._form["fields"].append({"name": name, "type": values.get("type", tag), "value": values.get("value", "")})
+            if tag == "select":
+                self._select_depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.casefold()
+        if tag == "a":
+            self._active_link = None
+        elif tag == "title" and self._title_depth:
+            self._title_depth -= 1
+        elif tag == "form":
+            self._form = None
+        elif tag == "select" and self._select_depth:
+            self._select_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if not data.strip():
+            return
+        text = " ".join(data.split())
+        if self._title_depth:
+            self.title_parts.append(text)
+        self.text_parts.append(text)
+        if self._active_link is not None and not self.links[self._active_link]["text"]:
+            self.links[self._active_link]["text"] = text
+
+
+def page_fetch(arguments: Mapping[str, Any], *, capture=None) -> Mapping[str, Any]:
+    """Fetch and project HTML with only the Python standard library.
+
+    This is the project-native browser fallback: it is intentionally a page
+    reader, not a claim of JavaScript/browser automation support.
+    """
+    response = http_request(arguments, capture=capture)
+    parser = _PageParser()
+    content_type = str(response.get("headers", {}).get("content-type", ""))
+    if "html" in content_type.casefold() or "<html" in str(response.get("body", "")).casefold():
+        parser.feed(str(response.get("body", "")))
+    base_url = str(response.get("final_url") or response.get("url") or "")
+    links = [
+        {**link, "href": urllib.parse.urljoin(base_url, link["href"])}
+        for link in parser.links[:MAX_RESULTS]
+    ]
+    text, text_truncated = _bounded(" ".join(parser.text_parts))
+    return {
+        "url": response.get("url", ""),
+        "final_url": response.get("final_url", ""),
+        "status_code": response.get("status_code", 0),
+        "title": " ".join(parser.title_parts),
+        "text": text,
+        "text_truncated": text_truncated,
+        "links": links,
+        "forms": parser.forms[:MAX_RESULTS],
+        "body_bytes": response.get("body_bytes", 0),
+        "body_sha256": response.get("body_sha256", ""),
+        "truncated": response.get("truncated", False),
+        "error": response.get("error", ""),
+        **{key: response[key] for key in ("artifact_refs", "exchange_artifacts", "capture_policy") if key in response},
+    }
+
+
 def dns_resolve(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
     value = _required_text(arguments, "host")
     parsed = urllib.parse.urlsplit(value if "://" in value else f"//{value}")
@@ -320,13 +411,25 @@ def _capstone_architecture(name: str) -> tuple[Any, Any, str]:
 def binary_disassemble(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
     path, data = _read_path(arguments)
     requested = str(arguments.get("architecture") or arguments.get("arch") or "x64")
-    arch, mode, normalized = _capstone_architecture(requested)
     try:
         offset = max(0, int(arguments.get("offset", 0)))
         max_bytes = max(1, min(1_048_576, int(arguments.get("max_bytes", 4096))))
         max_instructions = max(1, min(MAX_RESULTS, int(arguments.get("max_instructions", 200))))
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError("disassembly_limits_invalid") from exc
+    try:
+        arch, mode, normalized = _capstone_architecture(requested)
+    except RuntimeError as exc:
+        normalized = requested.casefold()
+        if normalized not in {"x86", "i386", "x64", "amd64"}:
+            raise
+        return _native_x86_disassemble(
+            path, data, offset=offset, max_bytes=max_bytes,
+            max_instructions=max_instructions,
+            architecture="x86" if normalized in {"x86", "i386"} else "x64",
+            dependency_error=str(exc),
+        )
+
     from capstone import Cs
 
     engine = Cs(arch, mode)
@@ -341,6 +444,87 @@ def binary_disassemble(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
         for item in list(engine.disasm(data[offset:offset + max_bytes], offset))[:max_instructions]
     ]
     return {"path": str(path), "architecture": normalized, "offset": offset, "instructions": instructions, "count": len(instructions)}
+
+
+_X86_REGISTERS = ("eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi")
+
+
+def _native_x86_disassemble(
+    path: Path,
+    data: bytes,
+    *,
+    offset: int,
+    max_bytes: int,
+    max_instructions: int,
+    architecture: str,
+    dependency_error: str,
+) -> Mapping[str, Any]:
+    """Decode a small, deterministic x86 subset without third-party packages.
+
+    This is intentionally an inventory fallback, not a replacement decompiler.
+    It keeps basic triage usable in a clean install while reporting exactly which
+    engine was used and which bytes could not be decoded semantically.
+    """
+    window = data[offset:offset + max_bytes]
+    instructions: list[Mapping[str, Any]] = []
+    index = 0
+
+    def add(size: int, mnemonic: str, operands: str = "") -> None:
+        nonlocal index
+        raw = window[index:index + size]
+        instructions.append({
+            "address": offset + index,
+            "bytes": raw.hex(),
+            "mnemonic": mnemonic,
+            "operands": operands,
+        })
+        index += size
+
+    while index < len(window) and len(instructions) < max_instructions:
+        opcode = window[index]
+        if opcode == 0x90:
+            add(1, "nop")
+        elif opcode == 0xC3:
+            add(1, "ret")
+        elif opcode == 0xCC:
+            add(1, "int3")
+        elif opcode == 0xC9:
+            add(1, "leave")
+        elif opcode == 0xC2 and index + 2 < len(window):
+            add(3, "ret", f"0x{int.from_bytes(window[index + 1:index + 3], 'little'):x}")
+        elif 0x50 <= opcode <= 0x57:
+            add(1, "push", _X86_REGISTERS[opcode - 0x50])
+        elif 0x58 <= opcode <= 0x5F:
+            add(1, "pop", _X86_REGISTERS[opcode - 0x58])
+        elif 0xB8 <= opcode <= 0xBF and index + 4 < len(window):
+            add(5, "mov", f"{_X86_REGISTERS[opcode - 0xB8]}, 0x{int.from_bytes(window[index + 1:index + 5], 'little'):x}")
+        elif opcode == 0x68 and index + 4 < len(window):
+            add(5, "push", f"0x{int.from_bytes(window[index + 1:index + 5], 'little'):x}")
+        elif opcode in {0xE8, 0xE9} and index + 4 < len(window):
+            displacement = int.from_bytes(window[index + 1:index + 5], "little", signed=True)
+            target = offset + index + 5 + displacement
+            add(5, "call" if opcode == 0xE8 else "jmp", f"0x{target:x}")
+        elif opcode == 0xEB and index + 1 < len(window):
+            displacement = int.from_bytes(window[index + 1:index + 2], "little", signed=True)
+            add(2, "jmp", f"0x{offset + index + 2 + displacement:x}")
+        elif window[index:index + 2] == b"\x31\xc0":
+            add(2, "xor", "eax, eax")
+        elif window[index:index + 2] == b"\x89\xe5":
+            add(2, "mov", "ebp, esp")
+        elif opcode == 0x83 and index + 2 < len(window) and window[index + 1] in {0xEC, 0xC4}:
+            add(3, "sub" if window[index + 1] == 0xEC else "add", f"esp, 0x{window[index + 2]:x}")
+        else:
+            add(1, "db", f"0x{opcode:02x}")
+    return {
+        "path": str(path),
+        "architecture": architecture,
+        "offset": offset,
+        "instructions": instructions,
+        "count": len(instructions),
+        "backend": "trace-native-x86",
+        "fallback": True,
+        "dependency_error": dependency_error,
+    }
 
 
 def binary_radare2(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -377,7 +561,7 @@ def binary_backend() -> Mapping[str, Any]:
         metadata = None
     if metadata is None:
         return {"capabilities": ("binary_reverse", "binary_inventory", "disassemble"),
-                "description": "Native fallback: binary metadata, strings and optional Capstone disassembly. trace setup rizin installs a full graph-analysis engine.",
+                "description": "Native fallback: binary metadata, strings and x86/x64 disassembly. The integrated tool bundle supplies Rizin for full graph analysis.",
                 "version": "native-binary-query-v1"}
     identity = f"{executable}:{metadata.st_size}:{metadata.st_mtime_ns}"
     return {"capabilities": ("binary_reverse", "binary_inventory", "disassemble", "graph_analysis"),
@@ -433,8 +617,8 @@ def frida_processes(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
     del arguments
     try:
         import frida
-    except ImportError as exc:
-        raise RuntimeError("frida_python_package_missing") from exc
+    except ImportError:
+        return _native_process_inventory()
     # Frida 17 exposes process enumeration on the local Device; older
     # releases kept a module-level helper. Support both without shelling out.
     device = getattr(frida, "get_local_device", lambda: None)()
@@ -445,6 +629,44 @@ def frida_processes(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
         raise RuntimeError("frida_process_inventory_unavailable")
     processes = enumerate_processes()
     return {"processes": [{"pid": int(item.pid), "name": str(item.name)} for item in processes[:MAX_RESULTS]], "count": len(processes)}
+
+
+def _native_process_inventory() -> Mapping[str, Any]:
+    """Provide process inventory when Frida is not installed.
+
+    The fallback deliberately exposes no attach or injection surface. Callers
+    can still inventory a host and the result tells them instrumentation is not
+    available in this backend.
+    """
+    processes: list[Mapping[str, Any]] = []
+    if Path("/proc").is_dir():
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                name = (entry / "comm").read_text(encoding="utf-8", errors="replace").strip()
+            except OSError:
+                continue
+            processes.append({"pid": int(entry.name), "name": name})
+    else:
+        try:
+            completed = subprocess.run(
+                ["tasklist", "/FO", "CSV", "/NH"], capture_output=True,
+                text=True, errors="replace", timeout=10, check=False,
+            )
+            for row in csv.reader(io.StringIO(completed.stdout)):
+                if len(row) >= 2 and row[1].isdigit():
+                    processes.append({"pid": int(row[1]), "name": row[0]})
+        except (OSError, subprocess.SubprocessError):
+            pass
+    processes.sort(key=lambda item: int(item["pid"]))
+    return {
+        "processes": processes[:MAX_RESULTS],
+        "count": min(len(processes), MAX_RESULTS),
+        "backend": "trace-native-process-inventory",
+        "instrumentation_available": False,
+        "note": "Frida is not installed; inventory only, no attach or injection.",
+    }
 
 
 def code_search(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -524,6 +746,12 @@ def register_open_source_tools(broker: ToolBroker) -> None:
         input_schema=_schema(("url",), {"url": text, "method": text, "headers": {"type": "object"}, "body": {}, "timeout": {"type": "number"}}),
     )
     broker.register_adapter(
+        name="page-fetch", capabilities=("page_fetch", "dom_snapshot", "web_recon"), adapter=page_fetch,
+        description="Project-native HTML page reader using the Python standard library; returns readable text, links and form fields without Playwright.", priority=615,
+        side_effecting=True,
+        input_schema=_schema(("url",), {"url": text, "method": text, "headers": {"type": "object"}, "body": {}, "timeout": {"type": "number"}}),
+    )
+    broker.register_adapter(
         name="dns-resolve", capabilities=("dns_resolve", "target_intake"), adapter=dns_resolve,
         description="Direct socket DNS resolution using the Python standard library.", priority=620,
         input_schema=_schema(("host",), {"host": text}),
@@ -561,7 +789,7 @@ def register_open_source_tools(broker: ToolBroker) -> None:
     )
     broker.register_adapter(
         name="binary-disassemble", capabilities=("binary_reverse", "disassemble"), adapter=binary_disassemble,
-        description="Direct Capstone disassembly adapter for x86/ARM/MIPS/PowerPC samples.", priority=620,
+        description="Integrated disassembly adapter. Uses Capstone when installed and a native x86/x64 triage decoder otherwise; fallback output is explicitly labelled.", priority=620,
         input_schema=_schema(("path",), {"path": text, "architecture": text, "offset": {"type": "integer"}, "max_bytes": {"type": "integer"}, "max_instructions": {"type": "integer"}}),
     )
     broker.register_adapter(
@@ -580,7 +808,7 @@ def register_open_source_tools(broker: ToolBroker) -> None:
     )
     broker.register_adapter(
         name="frida-processes", capabilities=("binary_reverse", "binary_debug"), adapter=frida_processes,
-        description="Direct Frida process inventory adapter when the open-source Python package is installed.", priority=620,
+        description="Integrated process inventory. Uses Frida when installed and a native OS process-table fallback otherwise; fallback is inventory-only.", priority=620,
         input_schema={"type": "object", "additionalProperties": False},
     )
     broker.register_adapter(
@@ -627,6 +855,7 @@ __all__ = [
     "frida_processes",
     "http_request",
     "port_probe",
+    "page_fetch",
     "python_ast_audit",
     "register_open_source_tools",
 ]

@@ -4,12 +4,13 @@ import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { chromiumLaunchOptions } from "./playwright_smoke_support.mjs";
 
 const { chromium } = createRequire(import.meta.url)("playwright");
 const base = process.argv[2] || "http://127.0.0.1:8766";
 const output = fileURLToPath(new URL("../playwright-output/", import.meta.url));
 mkdirSync(output, { recursive: true });
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch(chromiumLaunchOptions());
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
 const errors = [];
 const posts = [];
@@ -55,6 +56,7 @@ await page.route("**/api/**", async (route) => {
   if (path === "/api/auth/profile") return reply({ user: user() });
   if (path === "/api/auth/users") return reply({ users: [user()] });
   if (path === "/api/system") return reply({ platform: "Windows", schema_version: 1, provider: { configured: true, name: "TRACE_PRIMARY", model: "gpt-4o" }, control_plane: { status: "ready" } });
+  if (path === "/api/providers/test") return reply({ success: true, reply: "fixture pong", model: body.model, latency_ms: 12 });
   if (path === "/api/providers") {
     if (request.method() === "POST") providers = [{ ...body, active: true, api_key_set: false }];
     return reply({ providers });
@@ -62,6 +64,12 @@ await page.route("**/api/**", async (route) => {
   if (path === "/api/skills") {
     if (request.method() === "POST") skills.push({ ...body, enabled: true, byte_count: body.content.length, content_hash: "b".repeat(64) });
     return reply({ skills });
+  }
+  if (path === "/api/skills/import") {
+    const imported = { resource_id: body.resource_id || "skill:external/fixture", byte_count: 64,
+      content_hash: "c".repeat(64), enabled: body.enabled !== false, config: {}, content: "# Imported\nFixture source" };
+    skills.push(imported);
+    return reply({ skill: imported }, 201);
   }
   if (path.startsWith("/api/skills/")) {
     const id = decodeURIComponent(path.slice("/api/skills/".length));
@@ -86,6 +94,7 @@ await page.route("**/api/**", async (route) => {
     return reply({ server });
   }
   if (path === "/api/conversations") return reply({ conversations });
+  if (path === "/api/conversations/created/entries") return reply({ entries: [{ entry_id: "entry-1", sequence: 1, role: "user", text: "验证登录边界", created_at: "2026-10-10T08:30:00Z", branch_id: "main" }], truncated: false, next_offset: null });
   if (path === "/api/conversations/created") {
     if (request.method() === "DELETE") { conversations.splice(0); runs.splice(0, 1); return reply({ deleted: true }); }
     return reply({ tree: { nodes: { "entry-1": { entry: { sequence: 1, entry_type: "user", branch_id: "main" } } } } });
@@ -103,13 +112,19 @@ await page.route("**/api/**", async (route) => {
   const run = runs.find((item) => item.run.run_id === match[1]) || runs[0];
   const endpoint = match[2];
   if (holdReads && (!endpoint || endpoint === "events") && !url.searchParams.has("channel")) await new Promise((resolve) => releaseReads.push(resolve));
-  if (endpoint === "message" && request.method() === "POST") {
+  if (["message", "discussion"].includes(endpoint) && request.method() === "POST") {
     messages.push({ entry_id: `message-${messages.length + 1}`, role: "user", content: { text: body.text }, sequence: messages.length + 1 });
-    return reply({ run, message: messages.at(-1) });
+    const message = messages.at(-1);
+    if (endpoint === "discussion") {
+      messages.push({ entry_id: `message-${messages.length + 1}`, role: "assistant", content: { text: "根据已有证据回答，不执行工具。" }, sequence: messages.length + 1 });
+      return reply({ run, message, response: messages.at(-1) });
+    }
+    return reply({ run, message });
   }
   if (!endpoint || request.method() === "POST") return reply({ run });
   if (endpoint === "events") {
-    if (url.searchParams.has("channel")) return route.fulfill({ contentType: "text/event-stream", body: ": fixture stream\n\n" });
+    if (url.searchParams.has("channel") && request.headers()["accept"]?.includes("text/event-stream"))
+      return route.fulfill({ contentType: "text/event-stream", body: ": fixture stream\n\n" });
     return reply({ events: [{ run_id: run.run.run_id, sequence: 1, event_type: "run.created", created_at: "2026-10-10T08:30:00Z", payload: { summary: "Fixture event" } }], next_sequence: 1 });
   }
   if (endpoint === "search-graph") return reply({ records: [{ record_id: "hypothesis-1", record_kind: "hypothesis", status: "active", statement: "验证会话边界", target: "localhost", confidence: .5 }], search_graph: { record_count: 1 } });
@@ -182,6 +197,11 @@ try {
   await page.fill('#provider-form [name="provider_id"]', "test-provider");
   await page.fill('#provider-form [name="name"]', "Test Provider");
   await page.fill('#provider-form [name="model"]', "test-model");
+  await page.fill('#provider-form [name="api_key"]', "test-current-key");
+  await page.click("#provider-test");
+  await page.waitForFunction(() => document.querySelector("#provider-test-result").textContent.includes("fixture pong"));
+  assert.equal(posts.filter((post) => post.path === "/api/providers").length, 0, "test must not save");
+  assert.equal(posts.find((post) => post.path === "/api/providers/test").body.api_key, "test-current-key");
   await page.click('#provider-form button[value="default"]');
   await hidden("#provider-dialog");
   await page.waitForFunction(() => document.querySelector("#provider-list").textContent.includes("Test Provider"));
@@ -204,6 +224,28 @@ try {
   await page.waitForFunction(() => document.querySelector('#skill-content').disabled === false);
   assert.match(await page.inputValue('#skill-content'), /Verify local/);
   await page.click('#skill-form button[value="cancel"]');
+  await page.click("#import-skill");
+  await page.fill('#skill-import-form [name="source"]', "https://example.test/SKILL.md");
+  await page.fill('#skill-import-form [name="resource_id"]', "skill:external/imported");
+  await page.click('#skill-import-form button[value="default"]');
+  await page.waitForFunction(() => document.querySelector("#skill-list").textContent.includes("skill:external/imported"));
+  assert.equal(posts.find((post) => post.path === "/api/skills/import").body.resource_id, "skill:external/imported");
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.locator('#skill-list .setting-row').filter({ hasText: "skill:external/imported" }).locator('button[aria-label="删除"]').click();
+    await page.waitForFunction(() => !document.querySelector("#skill-list").textContent.includes("skill:external/imported"));
+    await page.click("#import-skill");
+    await page.locator('#skill-import-form [name="file"]').setInputFiles({
+      name: "local-skill.md", mimeType: "text/markdown", buffer: Buffer.from("# Local Upload\nUse built-in HTTP."),
+    });
+    await page.fill('#skill-import-form [name="resource_id"]', "skill:external/uploaded");
+    await page.click('#skill-import-form button[value="default"]');
+    await page.waitForFunction(() => document.querySelector("#skill-list").textContent.includes("skill:external/uploaded"));
+    const upload = posts.find((post) => post.path === "/api/skills/import" && post.body.file_name);
+    assert.equal(upload.body.content, "# Local Upload\nUse built-in HTTP.");
+    assert.equal(upload.body.file_name, "local-skill.md");
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.locator('#skill-list .setting-row').filter({ hasText: "skill:external/uploaded" }).locator('button[aria-label="删除"]').click();
+    await page.waitForFunction(() => !document.querySelector("#skill-list").textContent.includes("skill:external/uploaded"));
   holdSkillRead = true;
   const editSkill = page.locator('#skill-list .setting-row').last().locator('button[aria-label="配置"]');
   await editSkill.click();
@@ -251,6 +293,7 @@ try {
   await navigate("conversations");
   await page.click('#conversation-list button[aria-label="分支"]');
   await visible("#fork-dialog");
+  await page.waitForFunction(() => document.querySelector("#fork-entry").textContent.includes("用户消息 · 验证登录边界"));
   await page.click('#fork-form button[value="default"]');
   await hidden("#fork-dialog");
   assert.ok(posts.find((post) => post.path.endsWith("/fork")).body.from_entry_id);
@@ -292,6 +335,13 @@ try {
     await page.waitForFunction((id) => document.querySelector("#run-id").textContent === id, runId);
     assert.equal(await page.locator(`[data-command="${command}"]`).isEnabled(), enabled);
   }
+  assert.equal(await page.locator("#message-text").isEnabled(), true, "terminal results remain discussable");
+  assert.equal(await page.locator("#message-resume").isVisible(), false);
+  await page.fill("#message-text", "结束后解释证据");
+  await page.click("#message-submit");
+  await page.waitForFunction(() => document.querySelector("#transcript-list").textContent.includes("根据已有证据回答"));
+  assert.ok(posts.some((post) => post.path === "/api/runs/complete/discussion"));
+  assert.equal(posts.some((post) => /complete\/(run|resume)$/.test(post.path)), false);
   await page.click("#new-run");
   await visible("#create-dialog");
   await page.fill('#create-form [name="objective"]', "Browser fixture goal");

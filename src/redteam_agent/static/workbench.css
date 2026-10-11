@@ -521,3 +521,6 @@ progress::-moz-progress-bar { background: var(--accent); }
 .search-inspector .presentation-fields { grid-template-columns: minmax(0, 78px) minmax(0, 1fr); gap: 8px; font-size: 11px; }
 .search-inspector .presentation-fields .presentation-fields { display: block; }
 .search-inspector .presentation-fields .presentation-fields dd { margin-bottom: 9px; }
+
+.composer-actions { gap: 10px; }
+#message-state { flex: 1; }

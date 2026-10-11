@@ -39,4 +39,4 @@ package-dir = { "" = "src" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-redteam_agent = ["workflows/*.toml", "workflows/skills/*/*.md", "static/*", "tool_manifest.json"]
+redteam_agent = ["prompts/*.md", "workflows/*.toml", "workflows/skills/*/*.md", "static/*", "tool_manifest.json"]

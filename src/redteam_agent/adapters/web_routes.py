@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import platform
+from pathlib import Path
 from typing import Any, Mapping
 from uuid import uuid4
 
@@ -17,14 +18,22 @@ from ..runtime.durable_store import StoreConflictError
 class ControlRoutesMixin:
     """Management routes kept separate so the HTTP adapter stays small."""
 
+    def _mcp_config_paths(self):
+        paths = list(self.service.config_paths)
+        managed = Path(self.control._managed_mcp).resolve(strict=False)
+        paths.extend(
+            path for path in getattr(self.service.runtime.broker, "_config_paths", ())
+            if Path(path).resolve(strict=False) != managed
+        )
+        return tuple(dict.fromkeys(Path(path) for path in paths))
+
     def _internal_error(self, exc: Exception):
         from .web import WebResponse, WEB_SCHEMA_VERSION
 
         correlation_id = uuid4().hex
         reason = str(exc)
         secrets = [value for name, value in os.environ.items() if SENSITIVE_KEY_RE.search(name)]
-        secrets.extend(self.control._secrets.values())
-        secrets.extend(self.control._mcp_secret_values.values())
+        secrets.extend(self.control.provider_secrets())
         loop = self.service.model_loop
         if loop is not None:
             secrets.append(str(getattr(loop.model, "_api_key", "")))
@@ -132,6 +141,9 @@ class ControlRoutesMixin:
     def _control_dispatch(self, method: str, domain: str, tail: list[str], body: Mapping[str, Any]):
         identifier = "/".join(tail) if domain == "skills" else (tail[0] if tail else "")
         if domain == "providers":
+            if method == "POST" and identifier == "test":
+                result = self.control.test_provider(body)
+                return self._ok({**result, "ok": True, "success": result["ok"]})
             if method == "GET" and not identifier:
                 return self._ok({"providers": self.control.providers()})
             if method == "POST" and not identifier:
@@ -155,6 +167,8 @@ class ControlRoutesMixin:
                 return self._ok({"skill": self.control.skill(identifier)})
             if method == "POST" and not identifier:
                 return self._ok({"skill": self.service.control_write(self.control.save_skill, body)}, status=201)
+            if method == "POST" and identifier == "import":
+                return self._ok({"skill": self.service.control_write(self.control.import_skill, body)}, status=201)
             if method == "POST" and identifier:
                 if "content" in body:
                     return self._ok({"skill": self.service.control_write(self.control.save_skill,
@@ -178,7 +192,7 @@ class ControlRoutesMixin:
                 for name, status in statuses.items():
                     if name in configured_ids or name in deleted_ids:
                         continue
-                    spec = self.control.mcp_source_spec(name, self.service.config_paths)
+                    spec = self.control.mcp_source_spec(name, self._mcp_config_paths())
                     spec.pop("env", None)
                     spec.pop("headers", None)
                     items.append({**spec, "server_id": name, "source": "config",
@@ -224,7 +238,7 @@ class ControlRoutesMixin:
                 payload = body
                 if (server_id in self.service.runtime.broker.server_statuses()
                         and not any(item["server_id"] == server_id for item in self.control.mcp_servers())):
-                    payload = {**self.control.mcp_source_spec(server_id, self.service.config_paths), **body}
+                    payload = {**self.control.mcp_source_spec(server_id, self._mcp_config_paths()), **body}
                 saved = self.service.control_write(self.control.save_mcp, payload)
                 self._reload_control_plane()
                 return self._ok({"server": saved}, status=201)
@@ -232,16 +246,40 @@ class ControlRoutesMixin:
                 return self._ok(self._reload_control_plane())
             if method == "POST" and identifier:
                 saved = self.service.control_write(self.control.set_mcp, identifier,
-                    enabled=bool(body.get("enabled", True)), paths=self.service.config_paths)
+                    enabled=bool(body.get("enabled", True)), paths=self._mcp_config_paths())
                 self._reload_control_plane()
                 return self._ok({"server": saved})
             if method == "DELETE" and identifier:
                 managed = any(item["server_id"] == identifier for item in self.control.mcp_servers())
-                spec = None if managed else self.control.mcp_source_spec(identifier, self.service.config_paths)
+                spec = None if managed else self.control.mcp_source_spec(identifier, self._mcp_config_paths())
                 self.service.control_write(self.control.delete_mcp, identifier, spec)
                 self._reload_control_plane()
                 return self._ok({"deleted": identifier})
         if domain == "conversations":
+            if identifier and method == "GET" and tail[1:] == ["entries"]:
+                self.service.status(identifier)
+                limit = self._int_query(body, "limit", 200, 1, 1000)
+                offset = self._int_query(body, "offset", 0, 0, 1000000)
+                with self.service.runtime.store.connection() as connection:
+                    rows = connection.execute(
+                        "SELECT j.entry_id,j.sequence,j.branch_id,m.role,m.message_json "
+                        "FROM session_journal_entries j JOIN conversation_messages m ON m.message_id=j.raw_id "
+                        "WHERE j.run_id=? AND j.raw_table='conversation_messages' "
+                        "AND m.source_type!='model_request_projection' "
+                        "ORDER BY j.sequence DESC LIMIT ? OFFSET ?", (identifier, limit + 1, offset),
+                    ).fetchall()
+                entries = []
+                for row in rows[:limit]:
+                    message = json.loads(row["message_json"])
+                    content = message.get("content", {})
+                    summary = (content.get("text") or content.get("objective") or content.get("summary")
+                        or content.get("tool_name") or content.get("status") or "") if isinstance(content, Mapping) else content
+                    entries.append({"entry_id": row["entry_id"], "sequence": row["sequence"],
+                        "branch_id": row["branch_id"], "role": row["role"],
+                        "text": str(summary)[:300],
+                        "created_at": message.get("created_at", "")})
+                return self._ok({"entries": entries, "truncated": len(rows) > limit,
+                    "next_offset": offset + limit if len(rows) > limit else None})
             if method == "GET" and not identifier:
                 limit = self._int_query(body, "limit", 100, 1, 1000)
                 summaries = self.service.conversation_summaries(limit=limit + 1,

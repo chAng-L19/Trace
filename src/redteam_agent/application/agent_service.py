@@ -49,6 +49,7 @@ from .model_loop import AgentLoop
 from .context import ContextSelection, ContextSelector, ConversationLedger, TraceableCompactor
 from .resources import ResourceIndex, ResourceResolver, ResourceSelection, builtin_resource_root
 from .transparency import TransparencyProjector
+from .workspaces import WorkspaceManager as ProjectWorkspaceManager
 class AgentService(ServiceExecutionMixin, WorkerServiceMixin):
     """The canonical application entry point for durable agent operations."""
 
@@ -103,6 +104,7 @@ class AgentService(ServiceExecutionMixin, WorkerServiceMixin):
         self.transparency = TransparencyProjector(self)
         self.worker_records = WorkerStore(self.runtime.store)
         self.workspaces = WorkspaceManager(self.runtime.root, self.runtime.store)
+        self.project_workspaces = ProjectWorkspaceManager(self)
         if worker_port is not None:
             self.workers = worker_port
         else:

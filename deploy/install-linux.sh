@@ -19,6 +19,10 @@ release=$(mktemp -d "$prefix/releases/release-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX"
 "$release/bin/trace" self-test
 cp "$script_dir/run-trace.sh" "$release/trace-service"
 chmod 700 "$release/trace-service"
+# Root installs must leave the release executable by the service account.
+if [ "$(id -u)" -eq 0 ]; then
+    chown --reference="$prefix" -R "$release"
+fi
 ln -sfn current/trace-service "$prefix/trace-service"
 if [ -L "$prefix/current" ]; then
     ln -sfn "$(readlink "$prefix/current")" "$prefix/previous"

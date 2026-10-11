@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -110,14 +111,21 @@ PUBLIC_MCP_PRESETS: dict[str, Mapping[str, Any]] = {
         "transport": "stdio",
         "preset": "playwright",
         "scope": "run",
-        "command": "npx",
+        "command": sys.executable,
         "args": (
-            "-y", "@playwright/mcp@0.0.79", "--isolated", "--headless",
-            "--image-responses=omit", "--codegen=none", "--block-service-workers",
-            "--output-dir={workspace}/playwright-output", "--output-max-size=52428800",
+            "-m", "redteam_agent.runtime.browser_mcp", "--workspace", "{workspace}",
         ),
     },
 }
+
+# The exact command previously emitted by Trace's catalog and example config.
+# Resolve it at load time for both managed DB exports and config.toml; custom
+# commands, package versions and flags retain their original meaning.
+_LEGACY_PLAYWRIGHT_ARGS = (
+    "-y", "@playwright/mcp@0.0.79", "--isolated", "--headless",
+    "--image-responses=omit", "--codegen=none", "--block-service-workers",
+    "--output-dir={workspace}/playwright-output", "--output-max-size=52428800",
+)
 
 
 PRESET_DEFAULTS: dict[str, Mapping[str, Any]] = {
@@ -185,6 +193,15 @@ def parse_mcp_server_specs(path: Path, payload: Mapping[str, Any]) -> tuple[McpS
         if not name:
             continue
         preset = str(raw.get("preset") or "").strip().casefold()
+        if (preset == "playwright" and raw.get("command") == "npx"
+                and raw.get("args") in (_LEGACY_PLAYWRIGHT_ARGS, list(_LEGACY_PLAYWRIGHT_ARGS))
+                and not (raw.get("url") or raw.get("http_url"))
+                and str(raw.get("transport") or raw.get("type") or "stdio").casefold() in {"stdio", "local"}):
+            current = PUBLIC_MCP_PRESETS[preset]
+            raw = {**raw, "command": current["command"], "args": current["args"]}
+        if (preset in PUBLIC_MCP_PRESETS and not (raw.get("command") or raw.get("url") or raw.get("http_url"))
+                and str(raw.get("transport") or raw.get("type") or "stdio").casefold() in {"stdio", "local"}):
+            raw = {**PUBLIC_MCP_PRESETS[preset], **raw}
         defaults = PRESET_DEFAULTS.get(preset, {})
         command = str(raw.get("command") or "").strip()
         url = str(raw.get("url") or raw.get("http_url") or "").strip()

@@ -54,6 +54,17 @@ def recoveries(service, run_id):
 
 def main():
     checks = []
+    for decision in ("waiting_input", {"status": "waiting_input", "summary": "Collected HTTP observations"}):
+        with scenario([response(text=json.dumps({"decision": decision}),
+                                structured_output={"decision": decision})]) as (service, provider, run_id):
+            result = service.run(run_id)
+            assert result.run.status == "paused_budget" and result.run.budget.pause_reason == "waiting_input"
+            assert len(provider.requests) == 1 and not nudges(service, run_id)
+            if isinstance(decision, dict):
+                finished = next(item["payload"] for item in service.journal.operation_events(run_id)
+                                if item["event_type"] == "harness_step_finished")
+                assert finished["text"] == decision["summary"]
+    checks.append("deepseek_object_decision_and_readable_summary")
     with scenario([response(), response(text="Recovered")]) as (service, provider, run_id):
         service.run(run_id)
         assert len(provider.requests) == 2 and len(nudges(service, run_id)) == 1

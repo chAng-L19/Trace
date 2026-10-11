@@ -81,12 +81,26 @@ def request_payload(provider: Any, request: ModelRequest) -> tuple[dict, dict]:
                 for call in message.get("tool_calls", ()):
                     call.update(next((item for item in opaque.get("tool_calls", ()) if item.get("id") == call["id"]), {}))
                 break
+        if request.response_schema and getattr(provider, "_response_format_type", "json_schema") == "json_object":
+            instruction = "Return the model decision as a valid JSON object."
+            system_message = next((item for item in messages if item.get("role") == "system"), None)
+            if system_message is not None:
+                content = system_message.get("content")
+                system_message["content"] = f"{content}\n\n{instruction}" if content else instruction
+            else:
+                user_message = next((item for item in messages if item.get("role") == "user"), None)
+                if user_message is not None:
+                    content = user_message.get("content")
+                    user_message["content"] = f"{content}\n\n{instruction}" if content else instruction
         payload["messages"] = messages
         if tools:
             payload["tools"] = tools
         if request.response_schema:
-            payload["response_format"] = {"type": "json_schema", "json_schema": {
-                "name": "trace_response", "strict": False, "schema": dict(request.response_schema)}}
+            if getattr(provider, "_response_format_type", "json_schema") == "json_object":
+                payload["response_format"] = {"type": "json_object"}
+            else:
+                payload["response_format"] = {"type": "json_schema", "json_schema": {
+                    "name": "trace_response", "strict": False, "schema": dict(request.response_schema)}}
     if tools:
         payload.update(tool_choice="auto", parallel_tool_calls=bool(request.allow_parallel_tools))
     output_limit = token_limit(getattr(provider, "max_output_tokens", 0) or

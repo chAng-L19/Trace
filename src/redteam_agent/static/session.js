@@ -70,6 +70,7 @@ async function login(event) {
     setView("runs");
     $("#logout").hidden = false;
     await Promise.all([loadSystem(), loadRuns({ keepSelection: false })]);
+    restoreSessionUrl();
     showNotice("已登录 Trace");
   } catch (error) {
     errorNode.textContent = error.message === "invalid_credentials"
@@ -102,6 +103,8 @@ async function logout() {
 }
 
 function clearSessionView() {
+  state.drafts.clear();
+  state.pendingCommands.clear();
   document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close());
   applyUser(null);
   $("#user-list").replaceChildren();

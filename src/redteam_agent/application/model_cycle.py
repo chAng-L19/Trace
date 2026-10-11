@@ -22,10 +22,17 @@ _EXECUTION_PLAN = re.compile(
 )
 
 
+def decision_name(response):
+    value = response.structured_output.get("decision")
+    if isinstance(value, Mapping):
+        value = value.get("status")
+    return value if isinstance(value, str) else ""
+
+
 def nudge_execution_stall(loop, view, request, response):
     """Correct a declared next action once; ordinary answers are not retries."""
     envelope = view.goal.metadata.get("intent_envelope", {})
-    decision = str(response.structured_output.get("decision") or "")
+    decision = decision_name(response)
     if (envelope.get("execution_required") is not True or response.tool_calls
             or response.structured_output.get("tactical_update") is not None
             or response.metadata.get("refusal") or response.metadata.get("refusal_text")
@@ -218,7 +225,7 @@ def run_cycle(loop, run_id: str, *, max_actions: int | None = None) -> AgentRunV
             if (loop._is_cancelled(run_id) or loop._is_interrupted(run_id)
                     or current.terminal.terminal or current.run.status == "paused_budget"):
                 return current
-            loop.service.runtime.pause_run(run_id, reason="waiting_input" if response.structured_output.get("decision") in {"waiting_input", "request_input", "need_input"} else "model_no_progress")
+            loop.service.runtime.pause_run(run_id, reason="waiting_input" if decision_name(response) in {"waiting_input", "request_input", "need_input"} else "model_no_progress")
             return loop.service.status(run_id)
         try:
             results = loop._execute_tool_calls(

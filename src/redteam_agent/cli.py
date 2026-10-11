@@ -124,7 +124,7 @@ def _tools_command(arguments: argparse.Namespace) -> int:
         if arguments.command == "setup":
             from .runtime.tool_prepare import prepare as setup
 
-            payload = setup(arguments.tools or ["chromium", "rizin"], root=arguments.tools_dir,
+            payload = setup(arguments.tools or ["page-fetch", "binary-disassemble"], root=arguments.tools_dir,
                             offline=arguments.offline, proxy=arguments.proxy, timeout=arguments.timeout,
                             progress=lambda message: print(message, file=sys.stderr, flush=True))
             success = payload["success"]
@@ -136,7 +136,7 @@ def _tools_command(arguments: argparse.Namespace) -> int:
                              probe_browser=arguments.probe_browser, runtime_root=arguments.root)
             success = payload["ready"]
     except KeyboardInterrupt:
-        print("trace setup/doctor cancelled; previous active tools preserved", file=sys.stderr)
+        print("trace capability inspection cancelled; active tools preserved", file=sys.stderr)
         return 130
     except (OSError, ValueError) as exc:
         # Paths/proxy values in exception messages may contain credentials.
@@ -333,13 +333,13 @@ def _main(argv: list[str] | None = None) -> int:
         if name != "verify":
             command.add_argument("--root", type=Path)
 
-    setup = subcommands.add_parser("setup", help="Explicitly install missing pinned portable tools in a user directory")
+    setup = subcommands.add_parser("setup", help="Inspect project-native capabilities; Trace does not install or download tools")
     from .runtime.tool_prepare import TOOL_NAMES
     setup.add_argument("tools", nargs="*", choices=TOOL_NAMES, metavar="TOOL")
     setup.add_argument("--tools-dir", type=Path, help="Override TRACE_TOOLS_HOME for this command")
-    setup.add_argument("--offline", action="store_true", help="Only use verified cached archives; never access the network")
-    setup.add_argument("--proxy", help="HTTP(S) proxy; defaults to HTTPS_PROXY/HTTP_PROXY environment settings")
-    setup.add_argument("--timeout", type=float, default=600, help="Total setup timeout in seconds (default: 600)")
+    setup.add_argument("--offline", action="store_true", help="Compatibility flag; no network access is performed")
+    setup.add_argument("--proxy", help="Compatibility flag; ignored because no installer is available")
+    setup.add_argument("--timeout", type=float, default=600, help="Compatibility flag; no installer is available")
     setup.add_argument("--json", action="store_true")
 
     doctor = subcommands.add_parser("doctor", help="Inspect local tools and capability readiness without downloads")

@@ -444,6 +444,50 @@ def _migration_11_web_command_receipts(context: Any, connection: sqlite3.Connect
         )
 
 
+def _migration_12_workspace_catalog(context: Any, connection: sqlite3.Connection) -> None:
+    del context
+    execute_sql_script(
+        connection,
+        """
+        CREATE TABLE IF NOT EXISTS workspace_meta (
+            workspace_id TEXT PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL,
+            origin TEXT NOT NULL DEFAULT '', goal TEXT NOT NULL DEFAULT '',
+            bootstrap_enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS workspace_hints (
+            hint_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+            content TEXT NOT NULL, creator TEXT NOT NULL, created_at TEXT NOT NULL,
+            FOREIGN KEY(workspace_id) REFERENCES workspace_meta(workspace_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_workspace_hint_order
+            ON workspace_hints(workspace_id, created_at, hint_id);
+        """,
+    )
+
+
+def _migration_13_workspace_intent_lifecycle(context: Any, connection: sqlite3.Connection) -> None:
+    columns = context._columns(connection, "workspace_meta")
+    for name in ("reason_worker", "reason_trigger", "reason_started_at", "reason_last_heartbeat_at"):
+        if name not in columns:
+            connection.execute(f"ALTER TABLE workspace_meta ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
+    execute_sql_script(
+        connection,
+        """
+        CREATE TABLE IF NOT EXISTS workspace_intents (
+            intent_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, run_id TEXT NOT NULL,
+            description TEXT NOT NULL, creator TEXT NOT NULL, worker TEXT NOT NULL DEFAULT '',
+            last_heartbeat_at TEXT NOT NULL DEFAULT '', from_json TEXT NOT NULL DEFAULT '[]',
+            to_fact TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, concluded_at TEXT NOT NULL DEFAULT '',
+            FOREIGN KEY(workspace_id) REFERENCES workspace_meta(workspace_id) ON DELETE CASCADE,
+            FOREIGN KEY(run_id) REFERENCES operations(run_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_workspace_intent_order
+            ON workspace_intents(workspace_id, created_at, intent_id);
+        """,
+    )
+
+
 MIGRATIONS = (
     Migration(1, "base_runtime_schema", _migration_1_base),
     Migration(2, "operation_cas_and_lease_fencing", _migration_2_cas_and_fencing),
@@ -456,6 +500,8 @@ MIGRATIONS = (
     Migration(9, "thin_tactical_exploration_ledger", _migration_9_tactical_exploration),
     Migration(10, "transparent_session_journal", _migration_10_session_journal),
     Migration(11, "web_command_receipts", _migration_11_web_command_receipts),
+    Migration(12, "workspace_catalog_and_hints", _migration_12_workspace_catalog),
+    Migration(13, "workspace_intent_lifecycle", _migration_13_workspace_intent_lifecycle),
 )
 
 

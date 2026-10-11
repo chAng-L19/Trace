@@ -143,20 +143,47 @@
     }
   }
 
+  function trajectoryDetails(step) {
+    const labels = { ...statusLabels, success: "执行成功", paused: "已暂停", interrupted: "已中断",
+      integrity_error: "完整性校验失败", unknown: "结果未知", waiting_input: "等待输入",
+      retry: "重试", transport: "连接异常", rate_limit: "请求限流", auth: "认证失败",
+      tool_result_hash_mismatch: "工具结果校验不一致", stop: "正常结束", end_turn: "本轮结束",
+      tool_calls: "继续调用工具", tool_use: "继续调用工具", length: "输出达到上限" };
+    const readable = (value) => labels[value] || value;
+    const details = [step.model, step.provider, step.tool_name];
+    if (step.target) details.push(`目标：${step.target}`);
+    if (step.method || step.path) details.push(`请求：${[step.method, step.path].filter(Boolean).join(" ")}`);
+    if (step.status) details.push(readable(step.status));
+    if (step.http_status !== undefined && step.http_status !== "") details.push(`HTTP ${step.http_status}`);
+    if (step.exit_code !== undefined && step.exit_code !== "") details.push(`退出码 ${step.exit_code}`);
+    if (step.text) details.push(step.text);
+    if (step.reason) details.push(`原因：${readable(step.reason)}`);
+    if (step.error) details.push(`错误：${readable(step.error)}`);
+    if (step.finish_reason) details.push(`结束原因：${readable(step.finish_reason)}`);
+    if (step.tool_count !== undefined) details.push(`请求 ${step.tool_count} 个工具`);
+    const usage = step.usage || {};
+    for (const [label, count] of [["输入", usage.input_tokens ?? usage.prompt_tokens],
+      ["输出", usage.output_tokens ?? usage.completion_tokens], ["总计", usage.total_tokens]]) {
+      if (count !== undefined && count !== null) details.push(`${label} ${count} token`);
+    }
+    return details.filter(Boolean).join(" · ");
+  }
+
   function renderEventTimeline(container, events) {
     container.replaceChildren();
     for (const event of [...events].reverse()) {
+      const trajectory = event.trajectory || {};
       const item = document.createElement("li");
-      item.className = "event-item";
+      item.className = `event-item trajectory-item trajectory-${trajectory.kind || "event"}`;
       const sequence = document.createElement("span");
       sequence.className = "event-sequence";
       sequence.textContent = `#${event.sequence}`;
       const name = document.createElement("span");
       name.className = "event-name";
-      name.textContent = event.event_type;
+      name.textContent = trajectory.title || event.event_type;
       const summary = document.createElement("span");
       summary.className = "event-summary";
-      summary.textContent = compactPayload(event.payload);
+      summary.textContent = trajectoryDetails(trajectory) || "轨迹步骤已记录";
       item.append(sequence, name, summary);
       container.append(item);
     }
@@ -164,6 +191,7 @@
     terminal.replaceChildren();
     $("#terminal-message").parentElement.hidden = events.length > 0;
     for (const event of events.slice(-30)) {
+      const trajectory = event.trajectory || {};
       const line = document.createElement("div");
       line.className = "terminal-line";
       const time = document.createElement("span");
@@ -173,7 +201,8 @@
       const sequence = document.createElement("b");
       sequence.textContent = `#${event.sequence}`;
       const message = document.createElement("em");
-      message.textContent = `${event.event_type} ${compactPayload(event.payload)}`;
+      const detail = trajectoryDetails(trajectory);
+      message.textContent = `${trajectory.title || event.event_type}${detail ? `：${detail}` : ""}`;
       line.append(time, sequence, message);
       terminal.append(line);
     }

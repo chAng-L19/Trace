@@ -59,10 +59,10 @@ def _definition(name: str, description: str, properties: dict, required=(), *, w
 
 
 _TOOLS = (
-    _definition("prepare_tools", "Install requested supported dependencies on demand, validate results and refresh this run's tool catalog. Failed installs return diagnostics; choose only dependencies needed for the task.", {
+    _definition("prepare_tools", "Inspect local Trace capabilities and report which optional host engines are already available. Trace never installs packages or downloads tools during a run.", {
         "tools": {"type": "array", "minItems": 1, "items": {"type": "string", "enum": list(TOOL_NAMES)}},
         "offline": {"type": "boolean"}, "timeout": {"type": "number", "minimum": 1, "maximum": 3600},
-    }, ("tools",), write=True, capability="tool_preparation"),
+    }, ("tools",), capability="tool_diagnostics"),
     *RESOURCE_TOOLS,
     _definition("search_execution_steps", "Search actual model tool calls, Runtime attempts and all workers, including failed/cancelled records. Follow read_execution_step for raw details.", {
         **_PAGE, "query": _TEXT, "kind": {"type": "string", "enum": ["model", "attempt", "worker"]},
@@ -124,7 +124,6 @@ class AgentToolAdapter(ToolPort):
         self.service = service
         self.delegate = delegate
         self._active: dict[str, list[tuple[str, str]]] = {}
-        self._preparing: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
 
     def discover(self) -> tuple[ToolDefinition, ...]:
@@ -162,17 +161,8 @@ class AgentToolAdapter(ToolPort):
                 from ..runtime.tool_prepare import prepare
                 if reconcile:
                     return None
-                cancellation_id = str(call.metadata.get("cancellation_id") or call.call_id)
-                event = threading.Event()
-                with self._lock:
-                    self._preparing[cancellation_id] = event
-                try:
-                    output = prepare(arguments["tools"], offline=arguments.get("offline", False),
-                                     timeout=min(arguments.get("timeout", 600), call.timeout_seconds or 600),
-                                     cancel_event=event)
-                finally:
-                    with self._lock:
-                        self._preparing.pop(cancellation_id, None)
+                output = prepare(arguments["tools"], offline=arguments.get("offline", False),
+                                 timeout=min(arguments.get("timeout", 600), call.timeout_seconds or 600))
                 catalog = self.service.tools.catalog(call.run_id)
                 output["catalog_revision"] = catalog.revision
                 output["available_tools"] = [tool.qualified_name for tool in catalog.tools]
@@ -293,10 +283,6 @@ class AgentToolAdapter(ToolPort):
 
     def cancel(self, call_id: str) -> bool:
         with self._lock:
-            preparing = self._preparing.get(call_id)
-            if preparing is not None:
-                preparing.set()
-                return True
             active = tuple(set(self._active.get(call_id, ())))
         if len(active) > 1:
             return False
