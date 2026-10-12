@@ -142,7 +142,9 @@ def _tools_command(arguments: argparse.Namespace) -> int:
         # Paths/proxy values in exception messages may contain credentials.
         payload, success = {"success": False, "error": type(exc).__name__}, False
     if arguments.json:
-        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        # JSON CLI output must survive legacy Windows code pages; callers decode
+        # the JSON value, so escaping non-ASCII text does not change its data.
+        print(json.dumps(payload, ensure_ascii=True, sort_keys=True))
     else:
         print(f"Tools: {payload.get('tools_root', '')}")
         for item in payload.get("tools", []):

@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import subprocess
+import os
 from unittest.mock import patch
 
 sys.dont_write_bytecode = True
@@ -41,6 +43,17 @@ def main():
         assert cli(["setup", "page-fetch", "--json", "--tools-dir", str(root)]) == 0
         assert cli(["setup", "browser-automation", "--json", "--tools-dir", str(root)]) == 1
         checks.append("cli_reports_actual_capability_readiness")
+
+    # GitHub Windows runners can expose a legacy code page on stdout.
+    with tempfile.TemporaryDirectory() as directory:
+        env = {**os.environ, "PYTHONIOENCODING": "cp1252"}
+        completed = subprocess.run(
+            [sys.executable, "-B", "-m", "redteam_agent", "setup", "page-fetch", "--json",
+             "--tools-dir", directory], env=env, capture_output=True, text=True,
+            encoding="cp1252", check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert json.loads(completed.stdout)["success"] is True
 
     with scenario([]) as (service, _, run_id):
         catalog = service.tools.catalog(run_id)
