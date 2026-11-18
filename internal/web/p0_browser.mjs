@@ -40,7 +40,7 @@ async function overlayState(page){
  return page.evaluate(()=>{
   const describe=el=>el?{tag:el.tagName,id:el.id,class:typeof el.className==='string'?el.className:''}:null;
   const box=selector=>{const el=document.querySelector(selector),r=el.getBoundingClientRect(),s=getComputedStyle(el);return {...describe(el),top:r.top,bottom:r.bottom,left:r.left,right:r.right,position:s.position,cssTop:s.top,focused:el===document.activeElement}};
-  const pane=document.querySelector('.conversation'),r=pane.getBoundingClientRect(),nav=pane.querySelector('.conversation-pages')?.getBoundingClientRect(),tabs=document.querySelector('.task-tabs').getBoundingClientRect();
+  const pane=document.querySelector('.conversation'),r=pane.getBoundingClientRect(),nav=document.querySelector('.workspace-dialogue-head')?.getBoundingClientRect(),tabs=document.querySelector('.task-tabs').getBoundingClientRect();
   const top=Math.max(0,r.top,nav?.bottom||0,tabs.top<=1?tabs.bottom:0)+8,bottom=Math.min(innerHeight,r.bottom)-8,left=Math.max(0,r.left)+16,right=Math.min(innerWidth,r.right)-16,hits=[];
   if(bottom>top&&right>left)for(const ratio of [.1,.5,.9])for(const xRatio of [.25,.75]){const x=left+(right-left)*xRatio,y=top+(bottom-top)*ratio,hit=document.elementFromPoint(x,y);hits.push({x,y,inside:hit===pane||pane.contains(hit),hit:describe(hit)})}
   const skip=document.querySelector('.skip');let range=document.createRange();range.selectNodeContents(skip);const sr=range.getBoundingClientRect(),skipHit=sr.bottom>0&&sr.top<innerHeight?document.elementFromPoint(Math.max(0,Math.min(innerWidth-1,sr.left+sr.width/2)),Math.max(0,Math.min(innerHeight-1,sr.top+sr.height/2))):null;
@@ -58,7 +58,7 @@ async function layout(page,label){
  assert.ok(await preview.locator('svg a').count()>=10,label+': inline graph nodes missing');
  assert.equal(await preview.locator('a.child_report').count(),1,label+': child report absent from workspace graph');
  assert.equal(await preview.locator('a.source').count(),1,label+': fixed source absent from workspace graph');
- assert.ok(await preview.locator('.edge').count()>=9,label+': persisted graph edges missing');
+ assert.ok(await preview.locator('.exploration-edge').count()>=9,label+': persisted graph edges missing');
  const graphBox=await preview.locator('.graph-shell').evaluate(el=>({height:el.getBoundingClientRect().height,width:el.clientWidth,scrollWidth:el.scrollWidth,overflow:getComputedStyle(el).overflow}));
  assert.ok(graphBox.height>=200&&graphBox.height<=245,label+': preview height is unstable');
  assert.equal(graphBox.overflow,'auto',label+': graph has no independent scroll owner');
@@ -71,7 +71,7 @@ async function layout(page,label){
   const pane=document.querySelector('.conversation'),composer=document.querySelector('.workspace-composer'),inspector=document.querySelector('.workspace-secondary');
   const overflows=[...document.querySelectorAll('body *')].map(el=>{const r=el.getBoundingClientRect(),s=getComputedStyle(el);return {tag:el.tagName,id:el.id,class:typeof el.className==='string'?el.className:'',left:r.left,right:r.right,width:r.width,height:r.height,overflowX:s.overflowX,position:s.position,minWidth:s.minWidth,display:s.display}}).filter(r=>r.width&&r.height&&(r.right>innerWidth+3||r.left< -3)).slice(0,40);
   const panel=pane.closest('.workspace-panel'),column=pane.closest('.workspace-column'),graph=document.querySelector('.task-exploration');
-  return {viewport:{width:innerWidth,height:innerHeight,dpr:devicePixelRatio,documentWidth:document.documentElement.scrollWidth},masthead:box('.masthead'),rail:box('.rail'),conversation:box('.conversation'),composer:box('.workspace-composer'),secondary:box('.workspace-secondary'),overflows,ownership:{composerBelowConversation:!!panel&&composer.parentElement===panel&&!pane.contains(composer)&&!!(pane.compareDocumentPosition(composer)&Node.DOCUMENT_POSITION_FOLLOWING),graphAfterComposer:!!column&&graph.parentElement===column&&!!(composer.compareDocumentPosition(graph)&Node.DOCUMENT_POSITION_FOLLOWING),statusSeparate:!!inspector.closest('.task-inspector')&&!inspector.contains(composer)},messages:pane.querySelectorAll('[data-message-id]').length};
+  return {viewport:{width:innerWidth,height:innerHeight,dpr:devicePixelRatio,documentWidth:document.documentElement.scrollWidth},masthead:box('.masthead'),rail:box('.rail'),conversation:box('.conversation'),composer:box('.workspace-composer'),secondary:box('.workspace-secondary'),overflows,ownership:{composerAboveConversation:!!panel&&composer.parentElement===panel.querySelector('.workspace-dialogue-head')&&!pane.contains(composer)&&!!(composer.compareDocumentPosition(pane)&Node.DOCUMENT_POSITION_FOLLOWING),graphAfterComposer:!!column&&graph.parentElement===column&&!!(composer.compareDocumentPosition(graph)&Node.DOCUMENT_POSITION_FOLLOWING),statusSeparate:!!inspector.closest('.task-inspector')&&!inspector.contains(composer)},messages:pane.querySelectorAll('[data-message-id]').length};
  });
  result.initialGraph=initialGraph;
  report.layoutChecks??=[];report.layoutChecks.push({label,...result});
@@ -81,7 +81,7 @@ async function layout(page,label){
  assert.ok(!overlaps(result.composer,result.secondary),label+': secondary status covers composer');
  for(const key of ['conversation','composer','secondary']){const r=result[key];assert.ok(r.width>100&&r.height>40,label+': collapsed '+key);assert.ok(!['absolute','fixed'].includes(r.position),label+': overlay '+key)}
  assert.ok(['auto','scroll'].includes(result.conversation.overflow),label+': missing conversation scroll owner');
- for(const key of ['composer','secondary']){const r=result[key];assert.equal(r.overflow,'visible',label+': unexpected inner scroll owner '+key);assert.ok(r.scrollHeight<=r.clientHeight+1,label+': clipped '+key)}
+ for(const key of ['composer','secondary'])assert.ok(['auto','scroll'].includes(result[key].overflow),label+': missing independent scroll owner '+key);
  assert.ok(result.conversation.scrollHeight>result.conversation.clientHeight+200,label+': no scrollable history');
  assert.ok(result.messages>0&&result.messages<=40,label+': unbounded message window');
  assert.ok(result.viewport.documentWidth<=result.viewport.width+3,label+': document horizontal overflow '+JSON.stringify(result.viewport));

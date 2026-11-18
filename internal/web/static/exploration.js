@@ -129,7 +129,7 @@ export function explorationRoutes(layout,edges,{nodeWidth,port,columnGap}){
     const x=a.x+nodeWidth,y=a.y+port+offset,tx=b.x,ty=b.y+port+offset;
     const gutter=(columnGap-nodeWidth)/2;
     if(!isDetour(a,b))return {d:`M${x} ${y} C${x+gutter} ${y},${tx-gutter} ${ty},${tx} ${ty}`,x:(x+tx)/2,y:(y+ty)/2-6};
-    const top=inset-10*(++lane),out=x+gutter+offset,into=tx-gutter-offset;
+    const top=inset-10*(++lane),out=Math.min(width-8,x+gutter+offset),into=Math.max(8,tx-gutter-offset);
     return {d:`M${x} ${y} H${out} V${top} H${into} V${ty} H${tx}`,x:(out+into)/2,y:top-4,detour:true};
   });
   return {positions:placed,width,height:height+inset,routes};
@@ -204,7 +204,8 @@ export function mountExploration(){
 function paintExplorationChain(root){
   const view=rootView(root),nodeElements=[...root.querySelectorAll('[data-exploration-search],[data-chain-node]')],edgeElements=[...root.querySelectorAll('[data-action="exploration-chain"]')];
   const nodes=nodeElements.map(n=>({id:n.dataset.id,title:n.dataset.chainTitle||n.querySelector('.exploration-node-title')?.textContent||n.getAttribute('aria-label')||n.dataset.id})),edges=edgeElements.map(e=>({from:e.dataset.from,to:e.dataset.to,relation:e.dataset.relation}));
-  if(view.selection&&(!nodes.some(n=>n.id===view.selection.from)||!nodes.some(n=>n.id===view.selection.to)))view.selection=null;
+  const picked=view.selection;
+  if(picked&&(picked.from===picked.to?!nodes.some(n=>n.id===picked.from):!edges.some(e=>e.from===picked.from&&e.to===picked.to&&e.relation===picked.relation)))view.selection=null;
   const {active,linked}=explorationChain(nodes,edges,view.selection),selected=view.selection;
   nodeElements.forEach(n=>{n.classList.toggle('chain-active',active.has(n.dataset.id));n.classList.toggle('chain-muted',!!selected&&!active.has(n.dataset.id));n.classList.toggle('chain-selected',!!selected&&(selected.from===n.dataset.id||selected.to===n.dataset.id))});
   edgeElements.forEach((e,i)=>{const exact=!!selected&&e.dataset.from===selected.from&&e.dataset.to===selected.to&&(selected.relation===undefined||e.dataset.relation===selected.relation);e.classList.toggle('chain-active',linked.has(i));e.classList.toggle('chain-muted',!!selected&&!linked.has(i));e.classList.toggle('chain-selected',exact);e.setAttribute('aria-pressed',String(exact))});

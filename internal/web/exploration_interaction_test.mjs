@@ -25,6 +25,9 @@ for(const route of routed.routes.slice(4)){
   assert.ok(route.detour&&route.y<Math.min(...[...routed.positions.values()].map(p=>p.y)));
   assert.match(route.d,/ H[0-9.]+ V[0-9.]+ H[0-9.]+ V[0-9.]+ H[0-9.]+$/);
 }
+const boundary=explorationRoutes(layout,[{from:'y',to:'goal'}],{nodeWidth:246,port:65,columnGap:340});
+const [,,out,,into]=boundary.routes[0].d.match(/[0-9.]+/g).map(Number);
+assert.ok(out<boundary.width&&into>0,'a last-column return to the first column stays in the viewBox');
 const parallel=[{from:'a',to:'y',relation:'first'},{from:'a',to:'y',relation:'second'}];
 assert.notEqual(...explorationRoutes(layout,parallel,{nodeWidth:246,port:65,columnGap:340}).routes.map(route=>route.d));
 assert.deepEqual([...explorationChain(nodes,parallel,parallel[1]).linked],[1]);
@@ -47,6 +50,11 @@ assert.equal(edgeElements[2]['aria-pressed'],'true');
 assert.equal(nodeElements[2].classList.values.has('chain-muted'),true);
 assert.match(selection.innerHTML,/data-action="exploration-detail" data-id="a"/);
 assert.match(selection.innerHTML,/data-action="exploration-detail" data-id="y"/,'edge highlighting preserves source-detail navigation');
+edgeElements[2].dataset={...edgeElements[2].dataset,relation:'replacement'};
+selectExplorationChain({closest:()=>root,dataset:{action:'exploration-chain',from:'a',to:'y',relation:'removed'}});
+assert.doesNotMatch(selection.innerHTML,/已高亮/,'a replaced or deleted edge cannot remain selected');
+selectExplorationChain({closest:()=>root,dataset:{id:'a'}});
+assert.match(selection.innerHTML,/已高亮/,'node selection does not require a self-edge');
 explorationControl({closest:()=>root,dataset:{command:'clear'}});
 assert.ok(nodeElements.every(n=>!n.classList.values.has('chain-muted')));
 assert.ok(edgeElements.every(e=>e['aria-pressed']==='false'));
