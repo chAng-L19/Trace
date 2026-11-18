@@ -1,0 +1,16 @@
+[
+  {
+    "name": "droidasc",
+    "description": "Droid ASC Android APK/DEX on-demand analysis (local CLI)",
+    "github_url": "https://github.com/MG1937/ASC",
+    "local_path": "E:/cli/_refs/ASC",
+    "command": "C:/Python314/python.exe",
+    "args": ["-m", "droidasc", "{{argv...}}"],
+    "env": {"PYTHONIOENCODING": "utf-8", "PYTHONPATH": "E:/cli/_refs/ASC"},
+    "input_schema": {
+      "type": "object",
+      "properties": {"argv": {"type": "array", "items": {"type": "string"}}},
+      "required": ["argv"]
+    }
+  }
+]

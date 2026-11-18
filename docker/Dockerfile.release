@@ -1,0 +1,44 @@
+# Server-only product update on an accepted, immutable CloakBrowser image ID.
+# Inherit frozen dependencies; flatten the accepted release rootfs below.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE} AS updated
+USER root
+RUN command -v flock && test -x /usr/bin/tini && test -x /usr/bin/xvfb-run
+# Build context supplies the tiny, hash-locked offline bundle; never fetch at startup.
+COPY runtime/capabilities/ /tmp/trace-capabilities/
+COPY docker/install-capabilities.sh docker/capabilities.sha256 /tmp/trace-capability-build/
+RUN sh /tmp/trace-capability-build/install-capabilities.sh /tmp/trace-capabilities /tmp/trace-capability-build/capabilities.sha256 \
+    && rm -rf /tmp/trace-capabilities /tmp/trace-capability-build
+COPY bin/trace /usr/local/bin/trace
+COPY prompts/agent.md /opt/trace/prompts/agent.md
+COPY licenses/ /opt/trace/licenses/
+COPY examples/tsecbench-task.md /opt/trace/examples/tsecbench-task.md
+COPY examples/tsecbench_api.py /opt/trace/examples/tsecbench_api.py
+COPY docker/entrypoint.sh /opt/trace/docker/entrypoint.sh
+RUN chmod 0755 /usr/local/bin/trace /opt/trace/docker/entrypoint.sh
+USER trace
+
+# Preserve the established single-layer release contract.
+FROM scratch
+COPY --from=updated / /
+# scratch inherits no metadata. Preserve non-browser config from the old image.
+LABEL org.opencontainers.image.version="22.04"
+ENV PATH="/opt/trace/runtime/python/bin:/opt/trace/runtime/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+    DEBIAN_FRONTEND=noninteractive \
+    PYTHONPATH="/opt/trace/runtime/cloakbrowser/site-packages:/opt/trace/runtime/site-packages:/opt/trace/runtime/ASC" \
+    PYTHONIOENCODING=utf-8 PYTHONUTF8=1 PYTHONDONTWRITEBYTECODE=1 \
+    TRACE_DATA_DIR=/state TRACE_PROMPT_FILE=/opt/trace/prompts/agent.md \
+    TRACE_SKILL_PATHS=/opt/trace/.trace/skills \
+    TRACE_WEB_ANALYSIS_DIR=/opt/trace/tools/web-analysis \
+    CLOAKBROWSER_BINARY_PATH=/opt/trace/runtime/cloakbrowser/binary/chrome \
+    CLOAKBROWSER_AUTO_UPDATE=false \
+    TRACE_BROWSER_NO_SANDBOX=1 \
+    REA_BROWSER_NO_SANDBOX=true \
+    NO_UPDATE_NOTIFIER=1 \
+    TRACE_PI_RUNTIME=/opt/trace/runtime/pi
+USER trace
+WORKDIR /workspace
+STOPSIGNAL SIGINT
+ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/opt/trace/docker/entrypoint.sh"]
+CMD ["benchmark"]
+

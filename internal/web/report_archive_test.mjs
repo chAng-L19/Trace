@@ -1,0 +1,28 @@
+import assert from 'node:assert/strict';
+import {artifactsPanel} from './static/workspace.js';
+import {resultPanel} from './static/workforms.js';
+import {renderPage} from './static/views.js';
+
+const report={id:'version-1',kind:'final',subject_id:'result',version:1,source_digest:'source-hash',translation_status:'complete',source_status:'current',files:[{name:'summary.zh-CN.md',hash:'zh'},{name:'summary.en.md',hash:'en'}]};
+const snap={run:{id:'run'},reports:[report],actions:[{name:'exec',call_id:'call',request_id:'request',result:{artifacts:[{kind:'stdout',name:'RAW_STDOUT',hash:'stdout',bytes:100},{kind:'stderr',name:'RAW_STDERR',hash:'stderr',bytes:100},{kind:'search_response',name:'RAW_SEARCH',hash:'search',bytes:100},{kind:'file',name:'actual-file.txt',hash:'file',bytes:50}]}}]};
+const html=artifactsPanel(snap);
+assert.match(html,/总结报告/);
+assert.match(html,/actual-file.txt/);
+assert.match(html,/report_id=version-1&amp;language=en/);
+assert.match(html,/report_id=version-1&amp;language=zh-CN/);
+assert.doesNotMatch(html,/RAW_STDOUT|RAW_STDERR|RAW_SEARCH/);
+assert.doesNotMatch(html,/\/api\/artifacts\/(stdout|stderr|search)\/download/);
+assert.match(html,/<details class="section-gap"><summary>内部工具记录/);
+const pending=artifactsPanel({...snap,reports:[report,{...report,id:'version-2',version:2,translation_status:'translation_missing',missing_languages:['en'],source_status:'changed'}]});
+assert.match(pending,/缺少实质译文：en/);
+assert.match(pending,/历史报告版本/);
+assert.match(pending,/来源版本 已变化/);
+const result=resultPanel({...snap,result:{status:'failed',cleanup_status:'unknown',summary:'原始业务失败，译文仍待补齐。'}});
+assert.match(result,/data-language="en"/);
+assert.match(result,/data-language="zh-CN"/);
+assert.match(result,/原始业务失败/);
+const state={page:'history',selected:'run',historyDetail:true,taskTab:'artifacts',runs:[],tools:[],snap:{...snap,run:{...snap.run,goal:'报告计数',status:'completed'},messages:[],plan:{tasks:[]}}};
+assert.match(renderPage(state),/报告与文件 · 2/,'one report subject and one real file; no output archives');
+assert.match(renderPage({...state,snap:{...state.snap,reports:[report,{...report,id:'new',version:2}]}}),/报告与文件 · 2/,'historical versions do not inflate the report count');
+assert.match(renderPage({...state,snap:{...state.snap,totals:{reports:20,artifacts:4}}}),/报告与文件 · 24/,'bounded activity uses complete report and file counts');
+console.log('U7 report UI: bilingual files, immutable versions, explicit missing translation and internal source output separation passed.');

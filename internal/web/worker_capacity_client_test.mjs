@@ -1,0 +1,55 @@
+import assert from 'node:assert/strict';
+import {createWorkerCapacity} from './static/worker-capacity.js';
+import {createSearchSourceProbe} from './static/search-source-probe.js';
+
+let run='root',requests=[],el={};
+const capacity=createWorkerCapacity({api:(...args)=>new Promise(resolve=>requests.push({args,resolve})),getRun:()=>run,getElement:()=>el,schedule:()=>0,cancel:()=>{}});
+const first=capacity.refresh();capacity.refresh();assert.equal(requests.length,1);
+requests[0].resolve({root_run_id:'root',active:5,capacity:5});await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(requests.length,2,'in-flight invalidation coalesces');
+run='next';const next=capacity.refresh();requests[2].resolve({root_run_id:'next',active:1,capacity:7});await next;
+requests[1].resolve({root_run_id:'root',active:3,capacity:5});await first;
+assert.match(el.textContent,/1 \/ 7/,'stale run cannot paint');
+assert.equal(requests[0].args[0],'/runs/root/worker-capacity');
+// Foreground reads release the server display gate from a background scan;
+// late abort completion and old navigation must not clear a newer owner.
+{
+ let selected='root',calls=[],timers=[],view={},finishFirst,finishSecond,finishOld;
+ const capacity=createWorkerCapacity({api:(...args)=>new Promise(resolve=>calls.push({args,resolve})),getRun:()=>selected,getElement:()=>view,schedule:fn=>{const timer={fn};timers.push(timer);return timer},cancel:timer=>{if(timer)timer.cancelled=true}});
+ const seed=capacity.refresh();calls[0].resolve({root_run_id:'root',active:2,capacity:5});await seed;
+ const old=capacity.refresh();
+ const first=capacity.foreground(()=>new Promise(resolve=>finishFirst=resolve));
+ assert.equal(calls[1].args[3].signal.aborted,true,'interactive read cancels the real capacity transport');
+ assert.match(view.textContent,/2 \/ 5/,'preemption retains the last displayed count');
+ const second=capacity.foreground(()=>new Promise(resolve=>finishSecond=resolve));
+ await capacity.refresh();assert.equal(calls.length,2,'refresh during foreground work stays deferred');
+ finishFirst();await first;assert.equal(timers.filter(t=>!t.cancelled).length,0,'one foreground completion cannot resume over another');
+ finishSecond();await second;
+ const resume=timers.find(t=>!t.cancelled);assert.ok(resume,'last foreground completion queues one resume');
+ const resumed=resume.fn();assert.equal(calls.length,3);
+ calls[1].resolve({root_run_id:'root',active:99,capacity:5});await old;
+ assert.match(view.textContent,/2 \/ 5/,'late cancelled response never paints');
+ const invalidation=capacity.refresh();assert.equal(invalidation,resumed,'old finally preserves the new capacity flight');
+ calls[2].resolve({root_run_id:'root',active:1,capacity:5});await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(calls.length,4,'new owner keeps its coalesced invalidation');
+ calls[3].resolve({root_run_id:'root',active:0,capacity:5});await resumed;
+ const oldForeground=capacity.foreground(()=>new Promise(resolve=>finishOld=resolve));
+ selected='next';capacity.reset();
+ const currentForeground=capacity.foreground(()=>new Promise(resolve=>finishFirst=resolve));
+ finishOld();await oldForeground;await capacity.refresh();
+ assert.equal(calls.length,4,'old navigation finally cannot release the current foreground hold');
+ finishFirst();await currentForeground;
+ const current=timers.filter(t=>!t.cancelled).at(-1).fn();assert.equal(calls.length,5);
+ assert.equal(calls[4].args[0],'/runs/next/worker-capacity');
+ calls[4].resolve({root_run_id:'next',active:0,capacity:7});await current;
+}
+let config={search_sources:{fofa:{enabled:true,api_key:'[stored secret]'}}},calls=[],nodes={};
+for(const source of ['fofa','quake','shodan'])for(const suffix of ['probe','probe-status'])nodes['source-'+source+'-'+suffix]={dataset:{}};
+const probe=createSearchSourceProbe({api:(...args)=>new Promise(resolve=>calls.push({args,resolve})),getState:()=>({page:'settings',settingTab:'provider',config}),getElement:id=>nodes[id]});
+const check=probe.start('fofa');probe.start('fofa');assert.equal(calls.length,1);
+assert.deepEqual(calls[0].args,['/search-sources/fofa/probe','POST'],'no draft credentials or query sent');
+config={search_sources:{fofa:{enabled:false}}};calls[0].resolve({status:'authenticated'});await check;
+assert.equal(nodes['source-fofa-probe-status'].dataset.status,'unprobed','old saved credentials cannot certify new config');
+const retry=probe.start('fofa');calls[1].resolve({status:'rate_limited',retry_after_seconds:12});await retry;
+assert.match(nodes['source-fofa-probe-status'].textContent,/12 秒/);assert.equal(calls.length,2,'no implicit retry');
+console.log('U5/U6 async tree capacity and explicit saved-source probe PASS');

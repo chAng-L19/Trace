@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#eae7e0"><title>TRACE · 研究终端</title>
+  <link rel="icon" href="/mark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style-unified.css">
+  <link rel="stylesheet" href="/polish.css">
+  <link rel="stylesheet" href="/provider-settings.css">
+  <script type="module" src="/app.js"></script>
+  <script type="module" src="/keyboard-shortcuts.js"></script>
+</head>
+<body>
+<a class="skip" href="#workspace">跳至工作区</a>
+<header class="masthead">
+  <a class="brand" href="#overview" aria-label="Trace 研究终端首页"><img src="/mark.svg" alt="" width="45" height="45"><span>TRACE<small>RESEARCH SYSTEMS</small></span></a>
+  <div class="mast-center">研究工作台</div>
+  <div class="mast-controls">
+    <label class="theme-control">
+      <svg class="theme-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32l1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41m11.32-11.32l1.41-1.41"/>
+      </svg>
+      <span>主题</span>
+      <select id="theme-select" aria-label="界面配色">
+        <option value="paper">纸色</option>
+        <option value="white">白色</option>
+        <option value="black">黑色</option>
+      </select>
+    </label>
+    <div class="connection" aria-label="连接状态">
+      <span id="connection-status" class="connection-badge" data-status="connecting" role="status"><i id="connection-dot" aria-hidden="true"></i><span id="connection">正在连接</span></span>
+      <span id="model-connection" class="model-connection">模型：读取配置…</span>
+      <time id="clock"></time>
+    </div>
+  </div>
+</header>
+<div class="shell">
+  <aside class="rail">
+    <div class="rail-top"><span class="eyebrow">CONTROL INDEX</span></div>
+    <nav aria-label="主导航">
+      <a href="#overview" data-page="overview"><span>任务中枢<small>OPERATIONS</small></span><i>↗</i></a>
+      <a href="#history" data-page="history"><span>运行档案<small>RUN ARCHIVE</small></span><i>↗</i></a>
+      <a href="#evidence" data-page="evidence"><span>关联证据<small>EVIDENCE MANAGER</small></span><i>↗</i></a>
+      <a href="#models" data-page="settings" data-tab="provider"><span>模型与 API<small>MODEL CONNECTION</small></span><i>↗</i></a>
+      <a href="#mcp" data-page="settings" data-tab="tools"><span>MCP管理<small>MCP</small></span><i>↗</i></a>
+      <a href="#skills" data-page="settings" data-tab="skills"><span>Skill 管理<small>SKILLS</small></span><i>↗</i></a>
+    </nav>
+    <div class="rail-bottom"><div class="scan-lines"></div><span>TRACE / RESEARCH WORKSPACE</span><small id="provider-label">读取运行配置…</small></div>
+  </aside>
+  <main id="workspace" tabindex="-1">
+    <div class="page-heading"><div class="heading-title"><p class="eyebrow" id="section-code">OPERATIONS</p><h1 id="page-title">任务中枢</h1></div><div class="heading-meta"><span id="day"></span><span id="running-count" class="running-count">正在读取任务</span></div></div>
+    <div id="notice-home"><div id="notice" role="status" aria-live="polite" hidden></div></div>
+    <div id="page"></div>
+  <footer class="footer"><span>TRACE RESEARCH SYSTEMS / AGENT WORKSPACE</span><span>持久事件序列 <b id="event-seq">—</b><i class="cross">+</i></span></footer>
+  </main>
+</div>
+<dialog id="detail-dialog" aria-labelledby="dialog-title"><div class="dialog-head"><h2 id="dialog-title">记录详情</h2><button id="close-dialog" aria-label="关闭详情">✕</button></div><div id="dialog-content"></div></dialog>
+</body></html>

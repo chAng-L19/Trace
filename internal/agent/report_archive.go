@@ -1,0 +1,374 @@
+package agent
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+	"time"
+	"unicode"
+)
+
+// DSH reportRelay (MIT) keeps routine tool progress internal; Muteki reports.py
+// (AGPL-3.0) binds frozen documents to source watermarks. This independent
+// implementation uses Trace's existing snapshot transaction and CAS only.
+type ReportText struct {
+	SourceDigest string `json:"source_digest,omitempty"`
+	ZhCN         string `json:"zh_cn"`
+	En           string `json:"en"`
+}
+
+type ReportArchive struct {
+	ID                string        `json:"id"`
+	Kind              string        `json:"kind"`
+	SubjectID         string        `json:"subject_id"`
+	Version           int           `json:"version"`
+	SourceDigest      string        `json:"source_digest"`
+	DocumentDigest    string        `json:"document_digest"`
+	TranslationStatus string        `json:"translation_status"`
+	MissingLanguages  []string      `json:"missing_languages,omitempty"`
+	Files             []ArtifactRef `json:"files"`
+	CreatedAt         time.Time     `json:"created_at"`
+	SourceStatus      string        `json:"source_status,omitempty"`
+}
+
+type reportSource struct {
+	RunID        string                    `json:"run_id"`
+	Kind         string                    `json:"kind"`
+	SubjectID    string                    `json:"subject_id"`
+	Goal         string                    `json:"goal"`
+	RootContract *RootContract             `json:"root_contract,omitempty"`
+	Business     string                    `json:"business_status"`
+	Cleanup      string                    `json:"cleanup_status"`
+	Subject      any                       `json:"subject"`
+	Evidence     []reportSourceRef         `json:"evidence"`
+	Children     []ChildReport             `json:"child_reports,omitempty"`
+	Requirements []VerificationRequirement `json:"requirements,omitempty"`
+	Checks       []VerificationCheck       `json:"checks,omitempty"`
+	Findings     []Finding                 `json:"findings,omitempty"`
+	Chains       []EvidenceChain           `json:"evidence_chains,omitempty"`
+	ChainRefs    []EvidenceChainReference  `json:"evidence_chain_refs,omitempty"`
+	Reproduction []string                  `json:"original_reproduction_steps,omitempty"`
+}
+
+type reportSourceRef struct {
+	ID           string `json:"id"`
+	Hash         string `json:"hash"`
+	Verification string `json:"verification"`
+}
+
+type reportCandidate struct {
+	source   reportSource
+	text     *ReportText
+	original string
+}
+
+func (c reportCandidate) digest() string { return valueHash(c.source) }
+
+// Only semantic milestones produce documents. Tool stdout/stderr, directory
+// listings and search results remain source records, never report bodies.
+func reportCandidates(s *Snapshot) []reportCandidate {
+	var out []reportCandidate
+	makeCandidate := func(kind, id, original string, subject any, body *ReportText, ids, steps []string) reportCandidate {
+		c := reportCandidate{source: reportSource{RunID: s.Run.ID, Kind: kind, SubjectID: id, Goal: s.Run.Goal, Business: s.Result.Status, Cleanup: s.Result.CleanupStatus, Subject: subject, Reproduction: steps}, text: body, original: original}
+		for _, id := range ids {
+			ref := reportSourceRef{ID: id, Verification: "missing"}
+			for _, e := range s.Evidence {
+				if e.ID == id {
+					ref.Hash, ref.Verification = e.ContentHash, e.Verification
+					break
+				}
+			}
+			c.source.Evidence = append(c.source.Evidence, ref)
+		}
+		return c
+	}
+	for _, f := range s.Findings {
+		body := f.Report
+		f.Report = nil
+		f.UpdatedAt = time.Time{}
+		original := strings.Join([]string{f.Title, f.RootCause, f.Impact, f.Remediation, strings.Join(f.ReproductionSteps, "\n")}, "\n\n")
+		c := makeCandidate("finding", f.ID, original, f, body, f.EvidenceIDs, f.ReproductionSteps)
+		// An unrelated later tool call does not create a new finding version.
+		c.source.Business, c.source.Cleanup = f.Status, "not_applicable"
+		out = append(out, c)
+	}
+	if s.WorkerCheckpoint != nil {
+		cp := *s.WorkerCheckpoint
+		body := cp.Report
+		cp.Report = nil
+		cp.CreatedAt = time.Time{}
+		var structured WorkerHandoff
+		if json.Unmarshal([]byte(cp.Summary), &structured) == nil && structured.NextAction != "" {
+			cp.Summary = cp.Progress
+		}
+		c := makeCandidate("stage", "checkpoint", cp.Summary+"\n\n"+cp.Progress+"\n\n"+cp.NextAction, cp, body, cp.EvidenceIDs, nil)
+		c.source.Business, c.source.Cleanup = "checkpoint", "not_checked"
+		out = append(out, c)
+	}
+	if s.Run.Status == StatusCompleted || reportDeliveryPending(s) || s.Run.PauseReason == "report_translation_missing" || s.Run.Status == StatusFailed || s.Run.Status == StatusCancelled {
+		r := s.Result
+		body := r.Report
+		r.Report = nil
+		if r.Summary != "" || r.TerminalReason != "" || len(s.Findings) > 0 || len(s.ChildReports) > 0 {
+			original := r.Summary
+			if original == "" {
+				original = r.TerminalReason
+			}
+			ids := append([]string(nil), r.EvidenceIDs...)
+			// Preserve source identities for natural-language reports too; raw
+			// execution bytes stay in CAS, never in either document body.
+			for _, ev := range s.Evidence {
+				for _, action := range s.Actions {
+					if action.RequestID == ev.RequestID && action.CallID == ev.CallID && (observationAction(action) || action.Name == "source_search" || action.Name == "artifact_register") && !hasString(ids, ev.ID) {
+						ids = append(ids, ev.ID)
+					}
+				}
+			}
+			c := makeCandidate("final", "result", original, r, body, ids, r.ReproductionSteps)
+			c.source.Children = ChildReportReceipts(*s, 0)
+			for i := range c.source.Children {
+				c.source.Children[i].ReportFiles = nil
+				c.source.Children[i].ReportPath = ""
+			}
+			c.source.RootContract = s.RootContract
+			c.source.Requirements, c.source.Checks = s.Requirements, s.Checks
+			for _, f := range s.Findings {
+				f.Report = nil
+				f.UpdatedAt = time.Time{}
+				c.source.Findings = append(c.source.Findings, f)
+			}
+			c.source.Chains, c.source.ChainRefs = s.EvidenceChains, s.EvidenceChainRefs
+			out = append(out, c)
+		}
+	}
+	for i := range out {
+		c := &out[i]
+		if c.text == nil || c.text.SourceDigest != "" {
+			continue
+		}
+		body, _ := c.bodies()
+		for _, archived := range s.Reports {
+			if archived.Kind == c.source.Kind && archived.SubjectID == c.source.SubjectID && archived.DocumentDigest == valueHash(body) {
+				copy := *c.text
+				copy.SourceDigest = archived.SourceDigest
+				c.text = &copy
+				break
+			}
+		}
+	}
+	return out
+}
+
+// A language label or a translated heading is not translated factual prose.
+// This detects missing/copy-only bodies, not semantic translation correctness.
+func substantiveReportText(body, language string) bool {
+	han, latin, fenced := 0, 0, false
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "```") || strings.HasPrefix(line, "~~~") {
+			fenced = !fenced
+			continue
+		}
+		if fenced || strings.HasPrefix(line, "#") {
+			continue
+		}
+		for _, r := range line {
+			if unicode.Is(unicode.Han, r) {
+				han++
+			}
+			if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' {
+				latin++
+			}
+		}
+	}
+	if language == "zh-CN" {
+		return han >= 8
+	}
+	return latin >= 40 && han < max(1, latin/12)
+}
+
+func (c reportCandidate) bodies() (ReportText, []string) {
+	var body ReportText
+	if c.text != nil && (c.text.SourceDigest == "" || c.text.SourceDigest == c.digest()) {
+		body = *c.text
+		body.SourceDigest = ""
+	}
+	// Legacy original-language summaries remain usable, with the other
+	// language explicitly pending. No text is relabelled as its translation.
+	if strings.TrimSpace(body.ZhCN) == "" && substantiveReportText(c.original, "zh-CN") {
+		body.ZhCN = c.original
+	}
+	if strings.TrimSpace(body.En) == "" && substantiveReportText(c.original, "en") {
+		body.En = c.original
+	}
+	var missing []string
+	if !substantiveReportText(body.ZhCN, "zh-CN") {
+		missing = append(missing, "zh-CN")
+		body.ZhCN = ""
+	}
+	if !substantiveReportText(body.En, "en") || strings.TrimSpace(body.ZhCN) == strings.TrimSpace(body.En) {
+		missing = append(missing, "en")
+		body.En = ""
+	}
+	return body, missing
+}
+
+func renderArchivedReport(c reportCandidate, r ReportArchive, language, body string) string {
+	var b strings.Builder
+	if language == "zh-CN" {
+		fmt.Fprintf(&b, "# 研究总结报告 · %s · v%d\n\n", c.source.Kind, r.Version)
+		if body == "" {
+			body = "本来源版本缺少实质中文译文，双语报告交付尚未齐备。"
+		}
+		fmt.Fprintf(&b, "%s\n\n## 来源与交付状态\n\n双语正文：%s；缺失：%s。正文由模型撰写，归档不新增执行证明，也不改变业务验收或清理结果。固定版本保留生成时状态，当前来源需另行核对。\n\n", body, r.TranslationStatus, strings.Join(r.MissingLanguages, ", "))
+		fmt.Fprintf(&b, "来源运行 `%s`；报告类型 `%s`；业务状态 `%s`；清理状态 `%s`；引用证据 %d 条。\n\n", c.source.RunID, c.source.Kind, c.source.Business, c.source.Cleanup, len(c.source.Evidence))
+	} else {
+		fmt.Fprintf(&b, "# Research summary · %s · v%d\n\n", c.source.Kind, r.Version)
+		if body == "" {
+			body = "Substantive English translation is missing for this source version. Bilingual report delivery is incomplete."
+		}
+		fmt.Fprintf(&b, "%s\n\n## Source and delivery status\n\nBilingual content: %s; missing: %s. Model-authored prose and archiving do not prove execution, business acceptance or cleanup. This immutable version records the state at generation; current sources require a separate check.\n\n", body, r.TranslationStatus, strings.Join(r.MissingLanguages, ", "))
+		fmt.Fprintf(&b, "Source run `%s`; report kind `%s`; business status `%s`; cleanup status `%s`; %d cited evidence records.\n\n", c.source.RunID, c.source.Kind, c.source.Business, c.source.Cleanup, len(c.source.Evidence))
+	}
+	// Machine values and original reproduction references are preserved in both
+	// files. This is a citation manifest, not an archive of command output.
+	manifest := map[string]any{"source_digest": r.SourceDigest, "document_digest": r.DocumentDigest, "run_id": c.source.RunID, "subject_id": c.source.SubjectID, "business_status": c.source.Business, "cleanup_status": c.source.Cleanup, "evidence": c.source.Evidence, "original_reproduction_steps": c.source.Reproduction}
+	if len(c.source.Children) > 0 {
+		refs := []map[string]any{}
+		for _, child := range c.source.Children {
+			refs = append(refs, map[string]any{"run_id": child.SourceRunID, "source_hash": child.SourceHash, "visit": child.Visit, "business_status": child.ResultStatus, "cleanup_status": child.CleanupStatus})
+		}
+		manifest["child_reports"] = refs
+	}
+	raw, _ := json.MarshalIndent(manifest, "", "  ")
+	fmt.Fprintf(&b, "```json\n%s\n```\n", raw)
+	return b.String()
+}
+
+func (store *Store) archiveReports(s *Snapshot) error {
+	if s.Run.Deleted {
+		return nil
+	}
+	archiveConclusionChains(s)
+	applyReportTranslations(s)
+	for _, c := range reportCandidates(s) {
+		body, missing := c.bodies()
+		digest, document := c.digest(), valueHash(body)
+		version, exists := 1, false
+		for _, old := range s.Reports {
+			if old.Kind != c.source.Kind || old.SubjectID != c.source.SubjectID {
+				continue
+			}
+			version = max(version, old.Version+1)
+			if old.SourceDigest == digest && old.DocumentDigest == document {
+				exists = true
+			}
+		}
+		if exists {
+			continue
+		}
+		r := ReportArchive{Kind: c.source.Kind, SubjectID: c.source.SubjectID, Version: version, SourceDigest: digest, DocumentDigest: document, TranslationStatus: "complete", MissingLanguages: missing, CreatedAt: time.Now().UTC()}
+		if len(missing) > 0 {
+			r.TranslationStatus = "translation_missing"
+		}
+		r.ID = "report-" + valueHash([]string{r.Kind, r.SubjectID, digest, document})[:24]
+		for _, localized := range []struct{ language, body string }{{"zh-CN", body.ZhCN}, {"en", body.En}} {
+			content := renderArchivedReport(c, r, localized.language, localized.body)
+			ref, err := store.PutArtifact("report", []byte(content))
+			if err != nil {
+				return fmt.Errorf("archive report: %w", err)
+			}
+			ref.Name = fmt.Sprintf("trace-%s-%s-%s-v%d.%s.md", s.Run.ID, r.Kind, valueHash(r.SubjectID)[:10], version, localized.language)
+			ref.MIMEType, ref.Purpose = "text/markdown; charset=utf-8", "source-bound summary report; "+r.TranslationStatus
+			r.Files = append(r.Files, ref)
+		}
+		s.Reports = append(s.Reports, r)
+	}
+	return nil
+}
+
+// A view may mark a version changed, but never rewrites its archived bytes.
+func ReportReceipts(s Snapshot) []ReportArchive {
+	out := append([]ReportArchive{}, s.Reports...)
+	current := map[string]string{}
+	for _, c := range reportCandidates(&s) {
+		current[c.source.Kind+"/"+c.source.SubjectID] = c.digest()
+	}
+	for i := range out {
+		out[i].SourceStatus = "changed"
+		if current[out[i].Kind+"/"+out[i].SubjectID] == out[i].SourceDigest {
+			out[i].SourceStatus = "current"
+		}
+	}
+	return out
+}
+
+// A later finding translation must not replace the final-summary download.
+// Prefer the newest document for the current source, then a fixed older one.
+func preferredReport(s Snapshot) *ReportArchive {
+	receipts := ReportReceipts(s)
+	for _, kind := range []string{"final", "stage", "finding"} {
+		for _, current := range []bool{true, false} {
+			for i := len(receipts) - 1; i >= 0; i-- {
+				r := &receipts[i]
+				if r.Kind == kind && (!current || r.SourceStatus == "current") {
+					return r
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// ReportDocument selects actual immutable CAS bytes. Legacy runs receive their
+// first archive through the same Store transaction, never a second report store.
+func (store *Store) ReportDocument(id, reportID, language string) (ArtifactRef, string, error) {
+	if language == "" {
+		language = "zh-CN"
+	}
+	if language != "zh-CN" && language != "en" {
+		return ArtifactRef{}, "", fmt.Errorf("language must be zh-CN or en")
+	}
+	s, err := store.Load(id)
+	if err != nil {
+		return ArtifactRef{}, "", err
+	}
+	if s.Run.Deleted {
+		return ArtifactRef{}, "", os.ErrNotExist
+	}
+	if reportID == "" && len(s.Reports) == 0 {
+		s, err = store.Update(id, func(*Snapshot) error { return nil })
+		if err != nil {
+			return ArtifactRef{}, "", err
+		}
+	}
+	if reportID == "" {
+		if selected := preferredReport(s); selected != nil {
+			reportID = selected.ID
+		}
+	}
+	for i := len(s.Reports) - 1; i >= 0; i-- {
+		r := s.Reports[i]
+		if reportID != "" && r.ID != reportID {
+			continue
+		}
+		for _, ref := range r.Files {
+			if !strings.HasSuffix(ref.Name, "."+language+".md") {
+				continue
+			}
+			f, err := store.OpenArtifact(ref.Hash)
+			if err != nil {
+				return ArtifactRef{}, "", err
+			}
+			data, err := io.ReadAll(f)
+			f.Close()
+			return ref, string(data), err
+		}
+	}
+	if reportID != "" {
+		return ArtifactRef{}, "", fmt.Errorf("report version: %w", os.ErrNotExist)
+	}
+	return ArtifactRef{}, "", fmt.Errorf("no saved summary report is available")
+}

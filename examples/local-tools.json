@@ -1,0 +1,28 @@
+[
+  {
+    "name": "search_text",
+    "description": "Search local file contents using ripgrep; returns JSON Lines matches. Exit 1 means no matches.",
+    "command": "rg",
+    "args": ["--json", "--", "{{pattern}}", "{{path}}"],
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "pattern": {"type": "string", "description": "Regular expression to search for"},
+        "path": {"type": "string", "description": "File or directory path"}
+      },
+      "required": ["pattern", "path"]
+    }
+  },
+  {
+    "name": "file_metadata",
+    "description": "Read a local file and return its resolved path, byte count and SHA-256 digest as JSON.",
+    "command": "python",
+    "args": ["examples/file_metadata.py"],
+    "mode": "stdio",
+    "input_schema": {
+      "type": "object",
+      "properties": {"path": {"type": "string"}},
+      "required": ["path"]
+    }
+  }
+]

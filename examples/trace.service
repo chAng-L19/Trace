@@ -1,0 +1,24 @@
+[Unit]
+Description=Trace research agent (A3)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/trace/workspace
+Environment=PATH=/home/ubuntu/trace/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=TRACE_DATA_DIR=/home/ubuntu/trace/state
+Environment=TRACE_PROMPT_FILE=/home/ubuntu/trace/current/prompts/agent.md
+Environment=TRACE_SKILL_PATHS=/home/ubuntu/trace/current/.trace/skills
+ExecStart=/home/ubuntu/trace/current/bin/trace serve --addr 127.0.0.1:8765 --config /home/ubuntu/trace/state/service/web-config.json
+KillSignal=SIGINT
+KillMode=mixed
+TimeoutStopSec=60
+UMask=0077
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

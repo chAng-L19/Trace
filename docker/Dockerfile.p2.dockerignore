@@ -1,0 +1,24 @@
+# Reuse non-browser dependencies; replace only these frozen browser materials.
+**
+!runtime/
+!runtime/cloakbrowser/
+!runtime/cloakbrowser/**
+!tools/
+!tools/web-analysis/
+!tools/web-analysis/**
+!.trace/
+!.trace/skills/
+!.trace/skills/cloakbrowser/
+!.trace/skills/cloakbrowser/**
+!bin/
+!bin/trace
+!prompts/
+!prompts/agent.md
+!licenses/
+!licenses/**
+!examples/
+!examples/tsecbench-task.md
+!examples/tsecbench_api.py
+!docker/
+!docker/Dockerfile.p2
+!docker/entrypoint.sh

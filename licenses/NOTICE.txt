@@ -1,0 +1,42 @@
+DeepSeek Harness
+https://github.com/deepseek-ai/deepseek-harness
+Commit: 571902028a75c64c1d767f4ae5fd099485f0ddf0
+License: MIT (deepseek-harness-MIT.txt)
+Trace adapts conversation/trajectory presentation from ui-chat, ui-tool and ui-trajectory.
+Implementation and validation references are maintained in FEATURE_COMPARISON_CURRENT.md.
+
+REA web/JavaScript/Electron subset: tools/web-analysis/LICENSE and UPSTREAM.json.
+
+RhineLabUI visual reference
+Commit: 12cc5e4013acb9408f753ff71de6b8492299b7c8
+Reference files: src/workbench.css, src/theme.css and DESIGN.md.
+Trace polish.css adapts the thin-rule, warm-surface and restrained-control design
+to native Trace markup and paper/white/black tokens; no 3D runtime is included.
+License: MIT (RhineLabUI-MIT.txt).
+
+DrissionPage 4.1.1.4
+https://github.com/g1879/DrissionPage
+Trace calls the installed upstream Python library through its existing JSONL worker.
+Source reference: upstream master 0d7d18fa8a7502088294fd6fe49b6b534da53934 (2026-10-26); runtime API verified against PyPI 4.1.1.4.
+License: upstream custom non-commercial terms, retained verbatim in DrissionPage-LICENSE.txt; not MIT.
+Reference review: Muteki apps/web/capability_management_api.py:417 capability availability/Skill discovery; no container runtime imported.
+
+pi framework / coding-agent adaptation (2026-10-29)
+Source: https://github.com/badlogic/pi-mono
+Commit: e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a
+Runtime packages: @earendil-works/pi-agent-core and pi-ai 1.4.0.
+License: MIT, retained in pi-MIT.txt and frozen npm dependency notices.
+
+Muteki scheduling/context/UI reference and adaptation (2026-10-29)
+Commit: c60c8feeff69a64aa5abfbda113f3f33bff30af4
+Files and adaptations are identified in source comments and 开发计划.md.
+License: AGPL-3.0, retained verbatim in Muteki-AGPL-3.0.txt.
+Do not relabel adapted Muteki code as MIT. Preserve source and notices when distributing.
+
+Sapper-v2 method retrieval and collaboration reference (2026-11-02)
+Source: https://github.com/N1nEmAn/sapper-v2
+Commit: ba3d3d49a3211b7d26e96cee9df9788506c3e16c
+Reference: lib/sapper.py recall/render_intent_prompt; docker/commander/worker.sh board.
+Trace adapts lexical compact retrieval, bounded method suggestions and help presentation
+to its existing Go Store and worker protocol; no Sapper runtime or CLI is imported.
+License: MIT, retained verbatim in sapper-v2-MIT.txt.

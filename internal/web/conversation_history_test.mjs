@@ -1,0 +1,42 @@
+import {boundedCache} from './static/interactions.js';
+const createContext=values=>vm.createContext(Object.assign(values,{boundedCache,scopedNotice(){return (...args)=>values.notice?.(...args)}}));
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+import {createConversationHistory} from './static/conversation-history.js';
+import {conversation,conversationPreview,messageCallRecords} from './static/conversation.js';
+
+globalThis.document={querySelector:()=>null};
+const snapshot=(id,start=0)=>({run:{id,event_seq:50000},messages:Array.from({length:40},(_,i)=>({id:'m'+(i+start),role:'assistant',request_id:'r'+(i+start),content:'body'})),messages_page:{start,end:start+40,total:200,oldest:'m'+start,newest:'m'+(start+39),has_more_before:start>0,has_more_after:start+40<200},actions:[],requests:[],responses:[],events:[]});
+const state={selected:'a',historyDetail:true,snap:snapshot('a',160)},calls=[];
+const history=createConversationHistory({state,render(){},api:(path,method,body,options)=>new Promise((resolve,reject)=>calls.push({path,options,resolve,reject}))});
+const first=history.load({before:'m160'}),duplicate=history.load({before:'m160'});
+assert.equal(first,duplicate);assert.equal(calls.length,1,'duplicate page action is single-flight');
+const around=history.load({around:'m80'});assert.equal(calls[0].options.signal.aborted,true,'around cancels old page');
+calls[0].resolve(snapshot('a',120));await first;assert.equal(state.snap.messages[0].id,'m160','old page cannot overwrite');
+state.snap.run.event_seq=50003;calls[1].resolve(snapshot('a',60));await around;
+assert.equal(state.snap.run.event_seq,50003,'page keeps newer committed SSE waterline');
+assert.equal(state.snap.messages[0].id,'m60');assert.equal(state.snap.historyWindow,true);
+const next=history.refresh(snapshot('a',160),state.snap);assert.equal(next.messages[0].id,'m60','semantic refresh keeps history anchor');
+assert.equal(next.messages.length,40);assert.deepEqual(conversationPreview(next),{groups:[],tail:''});
+const old=history.load({before:'m60'});history.cancel();state.selected='b';state.snap=snapshot('b',160);calls[2].resolve(snapshot('a',20));await old;assert.equal(state.snap.run.id,'b');assert.equal(calls[2].options.signal.aborted,true);
+const latest=history.load();calls[3].resolve(snapshot('b',160));await latest;assert.equal(state.snap.historyWindow,false);
+// Reading upward in the tail freezes rendering even before another message
+// exists. "Latest" must unfreeze this state, not merely move the scrollbar.
+const pane={scrollHeight:1000,scrollTop:100,clientHeight:200,getBoundingClientRect:()=>({top:0}),querySelectorAll:()=>[]};
+globalThis.document.querySelector=()=>pane;
+state.snap=history.refresh(snapshot('b',160),state.snap);
+assert.equal(state.snap.historyWindow,true);assert.equal(state.snap.messages_page.has_more_after,false);
+const app=fs.readFileSync(new URL('./static/app.js',import.meta.url),'utf8');
+const context=createContext({state,conversationHistory:history,document:globalThis.document});
+vm.runInContext(app.slice(app.indexOf('async function dispatch('),app.indexOf('async function submit(')),context);
+const unfreeze=vm.runInContext("dispatch('latest',{dataset:{scrollTarget:'conversation'}})",context);
+assert.equal(calls.length,5,'frozen tail explicitly reads the latest message window');
+calls[4].resolve(snapshot('b',160));await unfreeze;
+assert.equal(state.snap.historyWindow,false);assert.equal(state.messageCursor,null);assert.equal(pane.scrollTop,pane.scrollHeight);
+globalThis.document.querySelector=()=>null;
+const paged={...snapshot('a',40),actions:Array.from({length:10000},(_,i)=>({request_id:'r'+i,call_id:'c'+i,status:'completed',result:{stdout:'output'}}))};
+const html=conversation(paged);assert.equal((html.match(/class="message assistant"/g)||[]).length,40);assert.ok((html.match(/tool-disclosure/g)||[]).length<=41,'DOM tool count is bounded by message window, not action history');
+const reply={id:'reply',role:'tool',request_id:'new',tool_call_id:'shared',content:'new result'};
+const records=messageCallRecords({messages:[reply],actions:[{call_id:'shared',request_id:'old'},{call_id:'shared',request_id:'new'}]});assert.equal(records[0].action.request_id,'new','page-start tool reply keeps stable request identity');
+console.log('Message window: paging, deduplication, abort, around epoch, SSE isolation, bounded DOM and reused call identity passed.');

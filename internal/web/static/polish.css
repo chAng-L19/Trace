@@ -1,0 +1,100 @@
+/* Research-terminal polish. Visual reference: RhineLabUI 12cc5e4,
+   src/workbench.css and src/theme.css (MIT); see licenses/NOTICE.txt.
+   Native Trace controls and scroll ownership are deliberately preserved. */
+:root{--elevation:0 2px 8px #27291f09,0 1px 2px #27291f06;--elevation-raised:0 8px 24px #27291f10}
+:root[data-theme="black"]{--elevation:0 2px 8px #0004,0 1px 0 #ffffff06;--elevation-raised:0 8px 24px #0006}
+.masthead{border-bottom-color:var(--line)}
+.mast-controls{gap:20px;min-width:0}
+.theme-control{font-size:11px;gap:7px}
+.theme-control select{background:var(--sheet);border-radius:4px;min-height:32px}
+.connection{display:flex;align-items:center;gap:12px;border:0;border-radius:0;padding:0;background:none;min-width:0}
+.connection-badge{display:inline-flex;align-items:center;gap:7px;flex-shrink:0;padding:5px 9px;border:1px solid var(--line);border-radius:4px;color:var(--muted);font:11px var(--sans);background:var(--surface)}
+.connection .connection-badge i{width:6px;height:6px;animation:none;background:var(--gold)}
+.connection-badge[data-status="online"]{color:var(--green);border-color:color-mix(in srgb,var(--green) 28%,var(--line));background:color-mix(in srgb,var(--green) 6%,var(--sheet))}
+.connection-badge[data-status="online"] i{background:var(--green)}
+.connection-badge[data-status="error"]{color:var(--red);border-color:color-mix(in srgb,var(--red) 38%,var(--line));background:var(--danger-surface)}
+.connection-badge[data-status="error"] i{background:var(--red)}
+.connection .model-connection{padding-left:12px;border-left:1px solid var(--line);max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}
+.rail-top{margin-bottom:20px;letter-spacing:1.2px;opacity:.7}
+.rail nav{gap:4px}
+.rail nav a{border-radius:0 4px 4px 0;transition:background .16s,border-color .16s,color .16s}
+.rail nav a[aria-current="page"]{background:var(--surface);border-left-color:var(--ink);box-shadow:none}
+.rail nav a[aria-current="page"] span{font-weight:600}
+.rail nav a small{font-weight:400;opacity:.7;letter-spacing:.5px}
+.rail nav a i{transition:opacity .16s;color:var(--gold)}
+.rail-bottom{border-top-color:var(--line);font-size:9px}
+.rail-bottom>span{font-size:8px;letter-spacing:.5px}
+.rail-bottom small{line-height:1.7}
+.page-heading{gap:16px;margin-bottom:28px}
+.heading-title{display:flex;align-items:baseline;gap:14px;min-width:0}
+.page-heading .heading-title .eyebrow{font:10px var(--mono);letter-spacing:1px;margin:0;color:var(--muted)}
+.heading-title h1{border-left:1px solid var(--line);padding-left:14px;font-size:25px;letter-spacing:0;font-weight:500}
+.heading-meta{display:flex;align-items:center;gap:12px;white-space:nowrap;padding:0}
+.running-count{border:1px solid var(--line);border-radius:4px;background:var(--sheet);padding:4px 8px;color:var(--muted);font:11px var(--sans)}
+.running-count[data-active="true"]{color:var(--gold);background:var(--wash);border-color:color-mix(in srgb,var(--gold) 35%,var(--line))}
+.overview-grid{gap:24px}
+.intro h2{font-size:26px;font-weight:400;letter-spacing:-.3px}
+.intro p{font-size:12px;line-height:1.8;margin-top:8px}
+.stats{border:0;background:none;gap:10px;overflow:visible}
+.stat,.stat+.stat{padding:15px 16px 13px;border:1px solid var(--line);border-radius:4px;background:var(--sheet);box-shadow:var(--elevation);min-width:0}
+.stat strong{font:400 30px/1.15 var(--sans);font-variant-numeric:tabular-nums;letter-spacing:-.6px;margin-bottom:8px}
+.stat span{font-size:11px;letter-spacing:.1px}
+.new-run,.recent{border-radius:5px;box-shadow:var(--elevation);padding:24px}
+.new-run .section-label,.recent .section-label{font-size:13px;padding-bottom:14px;margin-bottom:18px}
+.new-run textarea{min-height:150px}
+.new-run .form-row.end{margin-top:18px}
+.recent .empty{border-style:solid;border-color:var(--line);background:var(--paper);border-radius:3px;padding:38px 18px}
+.recent .empty strong{font-size:15px;margin-bottom:9px}
+.recent>a{font-size:12px;text-underline-offset:4px}
+.recent .note{font-size:11px;line-height:1.8;margin:16px 0 10px}
+.panel,.planner-card,.skill-row,.evidence-card,.mcp-service{box-shadow:var(--elevation)}
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),textarea,select{transition:border-color .16s,box-shadow .16s;background-color:var(--field)}
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus,textarea:focus,select:focus{border-color:var(--ink);box-shadow:none}
+input::placeholder,textarea::placeholder{color:var(--muted);opacity:.75}
+input[type="file"]{font-size:11px;padding:7px}
+input[type="file"]::file-selector-button{font:inherit;color:var(--ink);border:1px solid var(--line);background:var(--sheet);border-radius:3px;padding:5px 9px;margin-right:10px;cursor:pointer}
+button.primary{border-radius:3px;box-shadow:0 2px 4px #0002,inset 0 1px 0 #ffffff12;transition:background .16s,box-shadow .16s}
+button.primary:hover:not(:disabled){box-shadow:0 3px 8px #0002}
+button.primary:active:not(:disabled){box-shadow:inset 0 1px 3px #0003}
+button:disabled{box-shadow:none}
+dialog{border:1px solid var(--line);border-radius:6px;box-shadow:var(--elevation-raised)}
+.footer{font-size:8px;color:var(--muted)}
+.footer .cross{opacity:.4}
+@media(min-width:701px) and (max-width:1250px){.mast-center{display:none}.mast-controls{margin-left:auto}.connection{gap:8px}.connection .model-connection{max-width:210px}.heading-title{display:block}.heading-title h1{border:0;padding:0;margin-top:6px}.heading-meta{gap:8px}.overview-grid{grid-template-columns:1fr}}
+@media(prefers-reduced-motion:reduce){.rail nav a,input,textarea,select,button.primary{transition:none}.connection i.online{animation:none}}
+.code-block>div:first-child{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.queue-message{padding:12px 0;border-top:1px solid var(--line)}
+.queue-message p,.search-hit pre{white-space:pre-wrap;overflow-wrap:anywhere}
+.search-hit{padding:12px;border-bottom:1px solid var(--line)}
+.search-hit pre{max-height:180px;overflow:auto}
+.artifact-media{display:block;max-width:100%;max-height:65vh;margin:18px auto}
+.artifact-pdf{width:100%;height:65vh;border:1px solid var(--line);background:var(--sheet)}
+.replay-toolbar{padding:12px 0;border-bottom:1px solid var(--line);display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.replay-toolbar label{flex:1;min-width:160px}.replay-toolbar input{width:100%}
+.replay-toolbar .note{width:100%}.exploration-canvas{cursor:grab;touch-action:none}
+.exploration-canvas.panning{cursor:grabbing;user-select:none}.exploration-canvas button{cursor:pointer}
+
+/* Dark text stays readable at rest and during theme changes. RhineLabUI
+   12cc5e4 src/theme.css uses semantic ink/muted colors without text fading. */
+:root[data-theme="black"]{--ink:#f5f5f5;--muted:#c8c8c8}
+:root[data-theme="black"] :is(.rail-top,.rail nav a small,.conversation .tool-count,.conversation .message header button,.graph-shell .coverage-muted,.busy){opacity:1}
+:root[data-theme="black"] .graph-shell .coverage-muted .node-box{stroke-dasharray:4 3}
+:root[data-theme="black"] :is(input,textarea)::placeholder{color:var(--muted);opacity:1}
+:root[data-theme="black"] button:disabled{opacity:1;color:var(--muted);background:var(--inset);border-color:var(--line);border-style:dashed}
+/* Never interpolate foreground separately from its newly switched surface. */
+button,button.primary,.rail nav a,.conversation .tool-disclosure>summary,.session-breadcrumb button{transition-property:border-color,box-shadow}
+
+/* Reapply mobile shell sizing after desktop rules and terminal polish. */
+@media(max-width:700px){
+ .masthead{height:auto;min-height:64px;padding:12px 16px;gap:10px;flex-wrap:wrap}
+ .mast-controls{width:100%;gap:12px;flex-wrap:wrap;align-items:flex-start}
+ .connection{flex:1;flex-wrap:wrap;gap:6px}
+ .connection .model-connection{flex-basis:100%;max-width:100%;padding-left:0;border-left:0}
+ .rail{position:static;height:auto;max-height:none;padding:0;overflow:visible}
+ .rail nav a[data-tab="provider"]{margin-top:0;border-top:0}
+ main{padding:20px 16px 16px}
+ .page-heading{flex-wrap:wrap;align-items:flex-start;gap:10px}
+ .heading-title{display:block}.heading-title h1{border:0;padding:0;margin-top:6px}
+ .heading-meta{flex-wrap:wrap;gap:8px}
+ .task-workbench .conversation{padding:14px}
+}

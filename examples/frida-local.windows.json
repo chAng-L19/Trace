@@ -1,0 +1,11 @@
+{
+  "tool": "frida",
+  "note": "The built-in preset is advertised when the selected Python runtime imports frida. No REA or frida-server is required for the local device.",
+  "calls": [
+    {"action": "devices"},
+    {"action": "processes", "device_id": "local"},
+    {"action": "instrument", "device_id": "local", "pid": 1234,
+     "script": "send('marker');", "duration_ms": 500}
+  ],
+  "lifecycle": "instrument unloads the script and detaches before returning; the target process remains running. Live sessions are not persisted or replayed."
+}

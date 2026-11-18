@@ -1,0 +1,23 @@
+import {esc,json,status,evidenceLinks,btn} from './ui.js';
+
+export function requirementsEditor(){return `<details class="section-gap"><summary>高级：可执行验收谓词（可选）</summary><p class="note">运行开始前固定验收条件；全部通过后才结束。支持完整文本、正则及 JSON 字段；复杂结论可启用独立审阅。清理需要明确的验证工具和参数哈希。</p><label>条件 JSON 数组<textarea id="new-requirements" spellcheck="false" placeholder='[{"id":"result","description":"返回完整结果","category":"goal","predicate":{"kind":"json_equals","pointer":"/complete","expected":true},"require_review":true}]'></textarea></label></details>`}
+export function readRequirements(element){const text=element?.value?.trim();if(!text)return [];let value;try{value=JSON.parse(text)}catch{throw new Error('验收条件必须是有效 JSON 数组')}if(!Array.isArray(value))throw new Error('验收条件必须是数组');return value}
+
+function verificationSummary(snap){
+  const requirements=snap.requirements||[],checks=snap.checks||[],findings=snap.findings||[];
+  if(!requirements.length&&!findings.length)return '';
+  const checkLabels={pass:'通过',fail:'未通过',unknown:'待验证'},findingLabels={submitted:'待审阅',reviewed:'审阅通过',reproduced:'已复测',rejected:'审阅未通过',needs_evidence:'待补证据',invalid:'来源失效'};
+  return `<section class="section-gap"><div class="section-label">证据验收 <span>${requirements.length} 项条件</span></div><p class="note">来源完整性、业务判据、模型审阅和独立复测分别记录。模型审阅通过不等于实际复现。</p>${requirements.map(r=>{const c=checks.findLast(c=>c.requirement_id===r.id);return `<article class="evidence-card"><header><b>${esc(r.description)}</b><span>${esc(checkLabels[c?.status]||'待验证')}</span></header><p class="note">${r.category==='cleanup'?'清理证明':'任务验收'}${r.require_review?' · 需要独立审阅':''}</p><p>${esc(c?.reason||'等待执行证据')}</p><div class="buttons">${evidenceLinks(c?.evidence_ids||[])}</div>${c?.review?`<details><summary>独立审阅意见</summary><p>${esc(c.review.reason)}</p><p class="note">请求 ${esc(c.review.request_id)}</p></details>`:''}<details><summary>条件与检查原文</summary><pre>${json({requirement:r,check:c})}</pre></details></article>`}).join('')}<div class="section-label section-gap">发现与复测 <span>${findings.length} 项</span></div>${findings.map(f=>`<article class="evidence-card"><header><b>${esc(f.title)}</b><span>${esc(findingLabels[f.status]||f.status)} · ${esc(f.severity)}</span></header><p>${esc(f.impact)}</p><dl><dt>根因</dt><dd>${esc(f.root_cause)}</dd><dt>修复建议</dt><dd>${esc(f.remediation)}</dd><dt>处置</dt><dd>${esc({open:'待处置',accepted:'已确认',fixed:'已修复',dismissed:'已排除'}[f.triage]||f.triage)}</dd></dl><ol>${f.reproduction_steps.map(v=>`<li>${esc(v)}</li>`).join('')}</ol><div class="buttons">${evidenceLinks(f.evidence_ids)}${btn('finding-review','独立审阅',`data-id="${esc(f.id)}" ${['running','waiting_tool'].includes(snap.run.status)?'disabled':''}`)}${btn('finding-triage','标记已修复',`data-id="${esc(f.id)}"`)}</div>${f.review?`<p class="note">审阅：${esc(f.review.reason)}</p>`:''}${(f.retests||[]).map(r=>`<p>复测：${esc(checkLabels[r.status]||r.status)} · ${esc(r.reason)}</p><div class="buttons">${evidenceLinks(r.evidence_ids)}</div>`).join('')}<details><summary>完整来源、审阅与复测历史</summary><pre>${json(f)}</pre></details></article>`).join('')}</section>`;
+}
+
+function evidencePicker(snap,prefix,after=0){
+  const candidates=(snap.evidence||[]).filter(e=>e.verification==='verified'&&e.type==='tool_execution'&&e.source_event_sequence>after);
+  return candidates.length?`<fieldset><legend>选择实际执行证据</legend>${candidates.map(e=>`<label class="checkbox-label"><input id="${esc(prefix)}-${esc(e.id)}" type="checkbox" name="evidence" value="${esc(e.id)}">${esc(e.id)} · ${esc(e.call_id)}</label>`).join('')}</fieldset>`:'<p class="note">暂无可关联的执行证据。先执行验证，再返回关联。</p>';
+}
+
+export function verificationPanel(snap){
+  const disabled=['running','waiting_tool'].includes(snap.run.status)?'disabled':'';
+  const checks=(snap.requirements||[]).map(r=>`<details id="check-${esc(r.id)}"><summary>检查验收：${esc(r.description)}</summary><form id="check-form-${esc(r.id)}" class="field-stack" data-verification-operation="check" data-requirement="${esc(r.id)}">${evidencePicker(snap,'check-'+r.id)}<button class="primary" ${disabled}>检查证据</button></form></details>`).join('');
+  const retests=(snap.findings||[]).map(f=>`<details id="retest-${esc(f.id)}"><summary>关联复测：${esc(f.title)}</summary><p class="note">选择发现提交后启动、与原始探针工具和参数一致的新执行。系统会核对来源、时序和判据。</p><form id="retest-form-${esc(f.id)}" class="field-stack" data-verification-operation="retest" data-finding="${esc(f.id)}">${evidencePicker(snap,'retest-'+f.id,f.created_sequence)}<button class="primary" ${disabled}>提交复测证据</button></form></details>`).join('');
+  return verificationSummary(snap)+(checks||retests?`<section class="section-gap"><div class="section-label">关联验证执行</div>${checks}${retests}</section>`:'');
+}
