@@ -114,7 +114,8 @@ export function explorationLayout(nodes,edges){
 // Route shortcuts and back edges outside the node rows. Adjacent edges keep
 // their direct, monotone path so the barycenter order still applies.
 export function explorationRoutes(layout,edges,{nodeWidth,port,columnGap}){
-  const {positions,width,height}=layout;
+  const {positions,height}=layout;
+  const width=Math.max(layout.width,...Array.from(positions.values(),p=>p.x+nodeWidth+24));
   const isDetour=(a,b)=>b.x-a.x>columnGap+.01||b.x<=a.x;
   const lanes=edges.filter(e=>isDetour(positions.get(e.from),positions.get(e.to))).length;
   const inset=lanes?lanes*10+12:0;
