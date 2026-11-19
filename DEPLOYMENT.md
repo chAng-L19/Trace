@@ -11,9 +11,17 @@
 | 隔离验收，已并入 11-19 正式版 | Lightpanda 优先 / CloakBrowser 备用（2026-11-18） | `de4951b4801f55933c91392c40c67b7b8e1e4df834c60f852f47f057c3bfe911` | 私有 trace-lightpanda-20261118/evidence-final；独立签收通过 |
 | 隔离验收，已并入 11-19 正式版 | 调度/报告/工作区 R3 + D2 R4（2026-11-18） | `acf7a55b4e4b73e57283699803c3f2369685bfa76970cbb8ad0c0aa7ff32e972` | 私有 trace-acceptance-20261118/final-evidence、supplement-evidence-r4；独立复核完成，D2 补充签收通过 |
 | 隔离验收，未发布 | UI 设置候选（2026-11-17） | `ca5f1718547e2f080ce9805f5a99510506350ce54751db63b7d4c8ef4d56f01e` | 私有 validation/ui-settings-20261117、trace-20261117 回执 |
-| 镜像，尚未同步随后修复 | trace:full-agent-tsb-20261112 | `68dfb5a71bed513217a0677d40b9d2f1dc47dae74ad2fcaff0f00707d686235a` | 2026-11-12 全量镜像回执 |
+| 历史镜像，2026-11-19 已清理 | trace:full-agent-tsb-20261112 | `68dfb5a71bed513217a0677d40b9d2f1dc47dae74ad2fcaff0f00707d686235a` | 2026-11-12 全量镜像回执 |
 
 11-17 旧 UI 隔离验收输入清单：1188 项，SHA-256 `d3d0901f4950488c74d371df7554a10f3f0c71d52c013487addcf01bd0d9d4f2`；正式部署源码清单 SHA-256 `f8386dacf59e2909d6f99fd4443ae00786e2e00acf422de69674ad67f591dada`。文档压缩仅本地，未同步正式服务器源码或冻结清单。
+
+## 当前清理与保留（2026-11-19）
+
+- 正式运行仍为 `runtime-audit-20261119`，binary SHA256 未变。已删除 optimize-pi、dispatch-lightpanda、workspace-layout 三份旧 release、两份过期完整备份、validation/maintenance-current 和相关临时测试目录；未使用的 `trace:full-agent-tsb-20261112` 镜像已删除。服务器实际释放 8,711,561,216 B（约 8.11 GiB）。
+- 保留当前完整 release、deps、正式 state/workspace 及最新完整回滚归档 `/var/backups/trace-runtime-audit-20261119/rollback.tar`；归档 SHA256 `a84a27acd0550d5c4aa7396007fcec0121af8add479792c415988b19916588b4` 已复核。当前旧版本仅在此归档中保留，下文旧 release/validation/备份路径表示历史身份，不代表目录仍存在。
+- OpenVPN 总服务已停用并禁用；旧用户配置、上传缓存、临时 ovpn、VPN 日志和启动材料已删除。确认无 VPN 进程、tun/tap/wg 接口或额外策略规则；系统默认路由及 Docker 本地网桥保留。OpenVPN 系统软件包保留。
+- 本机十批 `_work/trace-*`、系统临时 Trace 文件和孤立测试 `.env` 连同空目录已移入 Windows 回收站，合计 309,431,163 B（约 295.10 MiB）；工作目录已清空。本机源码、完整 `.git`、refs 和版本化回归测试保留。
+- 本机 121 份精简日志/报告/回执逐文件校验迁至 `E:/cli/_records/trace-20261119`；服务器验收日志/回执位于 `/home/ubuntu/trace/records/validation`，旧 maintenance 回执位于 records/maintenance。清理回执在两端 records 的 cleanup-20261119 中；本机为 `E:/cli/_records/trace-cleanup-20261119`。正式 state/workspace 清理前后逐文件 hash 一致，服务 active、HTTP 200；本轮仅更新维护文档，无构建或模型执行。
 
 ## 2026-11-19 运行时缺陷审计发布
 
