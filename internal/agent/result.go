@@ -165,9 +165,9 @@ func refreshResult(s *Snapshot) {
 		s.Result = result
 		return
 	}
-	final, report := finalReportContent(s)
+	final, summary, report := finalReportTurn(s)
 	result.Report = report
-	result.Summary = final
+	result.Summary = summary
 	result.TerminalReason = "model reply completed; target success has not been verified"
 	if len(pendingToolCalls(s)) > 0 {
 		result.TerminalReason = "tool results remain unresolved"

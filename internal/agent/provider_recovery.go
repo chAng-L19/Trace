@@ -147,78 +147,85 @@ func providerRecoveryReason(response ModelResponse, err error) string {
 	return ""
 }
 
-// recoverProviderContext is called only after settlePiResponse archived the
-// failed attempt. One recovery retains the original source across summary
-// correction requests. No failed response or truncated tool call enters Messages.
-// retry=true means prepare a fresh normal request, not replay an old tool batch.
+// Admit compaction in the same commit as the failed provider attempt. Like pi's
+// AgentSession overflow compaction, this continues the turn, not a failed Run.
+func (a *Agent) prepareProviderRecoveryLocked(s *Snapshot, failed ModelRequest, reason string) {
+	fail := func(detail string) {
+		s.Run.Status, s.Run.Error = StatusFailed, "context recovery: "+detail
+		addEvent(s, "context_recovery_failed", "上下文恢复已停止，原始响应与历史保留", map[string]string{"request_id": failed.ID, "reason": reason, "error": detail})
+	}
+	sourceHash := messageHash(s.Messages)
+	for _, event := range s.Events {
+		if event.Type == "context_recovery_started" && recoveryEvent(event).SourceHash == sourceHash {
+			fail("one compact-and-retry attempt already used for this history")
+			return
+		}
+	}
+	plan, planErr := providerRecoverySummary(s, failed)
+	if planErr != nil {
+		fail(planErr.Error())
+		return
+	}
+	if budget := budgetReason(s, "model"); budget != "" {
+		pauseBudget(s, budget)
+		return
+	}
+	now := time.Now().UTC()
+	request := ModelRequest{ID: fmt.Sprintf("%s-%04d", s.Run.ID, s.Run.RequestSeq+1), PromptHash: s.Run.PromptHash, Purpose: "context_summary",
+		Messages: plan.messages, MaxOutputTokens: s.Run.Context.OutputReserve, ContextTokens: EstimateContextTokens(plan.messages, nil), CreatedAt: now}
+	plan.record.ID, plan.record.RequestID = "compact-"+request.ID, request.ID
+	request.CompactionID = plan.record.ID
+	request.ContextManifest = buildContextManifest(s, request, a.registry.Definitions())
+	a.stampRequest(&request)
+	if err := a.admitTreeRequestLocked(s, request); err != nil {
+		var limit *TreeBudgetError
+		if errors.As(err, &limit) {
+			pauseBudget(s, err.Error())
+			return
+		}
+		fail(err.Error())
+		return
+	}
+	s.Run.RequestSeq++
+	s.Compactions = append(s.Compactions, plan.record)
+	s.Requests = append(s.Requests, request)
+	s.Run.Status, s.Run.Error = StatusRunning, ""
+	addEvent(s, "context_recovery_started", "上下文或输出截断，尝试一次压缩后重试", map[string]string{"request_id": failed.ID, "summary_request_id": request.ID, "source_hash": sourceHash, "reason": reason})
+	addEvent(s, "model_request", "已提交模型请求", map[string]any{"request_id": request.ID, "prompt_hash": request.PromptHash, "purpose": request.Purpose})
+}
+
+// Execute only the summary already admitted for this failed request. In
+// particular, reopening a permanently failed Run does not re-admit recovery.
 func (a *Agent) recoverProviderContext(ctx context.Context, id string, failed ModelRequest, response ModelResponse, callErr error) (Snapshot, bool, error) {
-	reason := providerRecoveryReason(response, callErr)
-	if reason == "" || failed.Purpose != "" || ctx.Err() != nil {
-		snap, err := a.store.Load(id)
+	snap, err := a.store.Load(id)
+	if err != nil || snap.Run.Status != StatusRunning || failed.Purpose != "" || providerRecoveryReason(response, callErr) == "" {
 		return snap, false, err
 	}
+	if ctx.Err() != nil {
+		return snap, false, context.Cause(ctx)
+	}
+	var summaryID string
+	for i := len(snap.Events) - 1; i >= 0; i-- {
+		if snap.Events[i].Type == "context_recovery_started" {
+			origin := recoveryEvent(snap.Events[i])
+			if origin.RequestID == failed.ID {
+				summaryID = origin.SummaryRequestID
+			}
+			break
+		}
+	}
 	var request ModelRequest
-	snap, err := a.store.Update(id, func(s *Snapshot) error {
-		if isStopped(s.Run.Status) || ctx.Err() != nil || s.Run.Status != StatusFailed {
-			return nil
+	for i := len(snap.Requests) - 1; i >= 0; i-- {
+		if snap.Requests[i].ID == summaryID && snap.Requests[i].Purpose == "context_summary" {
+			request = snap.Requests[i]
+			break
 		}
-		if len(s.Responses) == 0 || s.Responses[len(s.Responses)-1].RequestID != failed.ID || s.Responses[len(s.Responses)-1].Error == "" {
-			return errors.New("context recovery requires an archived failed response")
-		}
-		fail := func(detail string) {
-			s.Run.Error = "context recovery: " + detail
-			addEvent(s, "context_recovery_failed", "上下文恢复已停止，原始响应与历史保留", map[string]string{"request_id": failed.ID, "reason": reason, "error": detail})
-		}
-		sourceHash := messageHash(s.Messages)
-		for _, event := range s.Events {
-			if event.Type != "context_recovery_started" {
-				continue
-			}
-			var data struct {
-				SourceHash string `json:"source_hash"`
-			}
-			raw, _ := json.Marshal(event.Data)
-			if json.Unmarshal(raw, &data) == nil && data.SourceHash == sourceHash {
-				fail("one compact-and-retry attempt already used for this history")
-				return nil
-			}
-		}
-		plan, planErr := providerRecoverySummary(s, failed)
-		if planErr != nil {
-			fail(planErr.Error())
-			return nil
-		}
-		if budget := budgetReason(s, "model"); budget != "" {
-			pauseBudget(s, budget)
-			return nil
-		}
-		s.Run.RequestSeq++
-		now := time.Now().UTC()
-		request = ModelRequest{ID: fmt.Sprintf("%s-%04d", id, s.Run.RequestSeq), PromptHash: s.Run.PromptHash, Purpose: "context_summary",
-			Messages: plan.messages, MaxOutputTokens: s.Run.Context.OutputReserve, ContextTokens: EstimateContextTokens(plan.messages, nil), CreatedAt: now}
-		plan.record.ID, plan.record.RequestID = "compact-"+request.ID, request.ID
-		request.CompactionID = plan.record.ID
-		request.ContextManifest = buildContextManifest(s, request, a.registry.Definitions())
-		a.stampRequest(&request)
-		if err := a.admitTreeRequestLocked(s, request); err != nil {
-			var limit *TreeBudgetError
-			if errors.As(err, &limit) {
-				s.Run.RequestSeq--
-				pauseBudget(s, err.Error())
-				request = ModelRequest{}
-				return nil
-			}
-			return err
-		}
-		s.Compactions = append(s.Compactions, plan.record)
-		s.Requests = append(s.Requests, request)
-		s.Run.Status, s.Run.Error = StatusRunning, ""
-		addEvent(s, "context_recovery_started", "上下文或输出截断，尝试一次压缩后重试", map[string]string{"request_id": failed.ID, "summary_request_id": request.ID, "source_hash": sourceHash, "reason": reason})
-		addEvent(s, "model_request", "已提交模型请求", map[string]any{"request_id": request.ID, "prompt_hash": request.PromptHash, "purpose": request.Purpose})
-		return nil
-	})
-	if err != nil || request.ID == "" {
-		return snap, false, err
+	}
+	if request.ID == "" || len(snap.Compactions) == 0 {
+		return snap, false, fmt.Errorf("%w: missing admitted summary request", errProviderRecoveryLedger)
+	}
+	if c := snap.Compactions[len(snap.Compactions)-1]; c.RequestID != request.ID || c.ID != request.CompactionID || c.Status != "pending" {
+		return snap, false, fmt.Errorf("%w: summary is not pending for this request", errProviderRecoveryLedger)
 	}
 	// A rejected summary returns to the existing pi preparation path. Every
 	// correction remains a new accounted request with the original source.

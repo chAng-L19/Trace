@@ -41,6 +41,10 @@ type WorkerMessage struct {
 // DispatchTask persists a claim and child identity before invoking the child
 // model loop. Separate child runs retain independent evidence and run locks.
 func (a *Agent) DispatchTask(ctx context.Context, id, taskID string) (AgentWorker, error) {
+	// Like ARTEX pumpLocked, a stopped dispatcher must not consume queued work.
+	if err := ctx.Err(); err != nil {
+		return AgentWorker{}, err
+	}
 	ctx, release, err := a.workers.begin(ctx)
 	if err != nil {
 		return AgentWorker{}, err
@@ -55,7 +59,7 @@ func (a *Agent) DispatchTask(ctx context.Context, id, taskID string) (AgentWorke
 	if err != nil {
 		return AgentWorker{}, err
 	}
-	snap, err := a.ClaimTask(id, taskID, wid, 30)
+	snap, err := a.claimTask(ctx, id, taskID, wid, 30)
 	if err != nil {
 		return AgentWorker{}, err
 	}
@@ -131,8 +135,8 @@ func (a *Agent) DispatchTask(ctx context.Context, id, taskID string) (AgentWorke
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if isStopped(s.Run.Status) {
-			return fmt.Errorf("parent run stopped during dispatch")
+		if err := a.checkTaskAdmissionLocked(s); err != nil {
+			return err
 		}
 		t, e := planTask(s, taskID)
 		if e != nil {
@@ -140,9 +144,6 @@ func (a *Agent) DispatchTask(ctx context.Context, id, taskID string) (AgentWorke
 		}
 		if t.WorkerID != wid || t.Status != "running" || !t.LeaseUntil.After(time.Now()) {
 			return fmt.Errorf("lease changed")
-		}
-		if err := a.checkWorkerAncestors(s); err != nil {
-			return err
 		}
 		if err := a.checkWorkerCapacityLocked(s, 0); err != nil {
 			return err
@@ -214,12 +215,8 @@ func (a *Agent) runChildOperation(parent context.Context, id string, w AgentWork
 				stop("parent observation failed", err)
 				return
 			}
-			if isStopped(snap.Run.Status) {
-				stop("parent stopped", fmt.Errorf("parent status %s", snap.Run.Status))
-				return
-			}
-			if err := a.checkWorkerAncestors(&Snapshot{Run: snap.Run}); err != nil {
-				stop("ancestor stopped", err)
+			if err := a.checkTaskAdmissionLocked(&Snapshot{Run: snap.Run}); err != nil {
+				stop("parent or ancestor stopped", err)
 				return
 			}
 			t, e := planTask(&Snapshot{Plan: snap.Plan}, w.TaskID)

@@ -25,3 +25,11 @@ Trace 自有结果与报告仍须校验原始来源及资源清理，审阅、�
 2026-11-18 浏览器增量：按用户指定以 Lightpanda 为首选、CloakBrowser 备用。检索 pi/ARTEX/Muteki 未发现可直接复用的 Lightpanda/CDP 适配；参考 Muteki task-owned browser 生命周期，复用 Trace 原 localtool/JSONL/Worker，而非复制上游内置 Agent/MCP 循环。官方 Lightpanda 源码固定 `166f503a7b55a287539bf3fd4f18419600c1bb8d`，CLI/CDP 仅做最小 Python 协议适配；冻结 binary 版本/hash、真实验收及发布边界见 DEPLOYMENT.md。网页像素渲染、web-analysis 场景采集和 UI 验收仍采用备用 CloakBrowser，不宣称 Lightpanda 等价图形浏览器。
 
 2026-11-19 通用调度修复对照：ARTEX `e6ec56999175509551a1e43a3ee3b053d0941bd9` 的 `server/conversations.go:622` 在锁内按空闲容量启动、结束后再补位，以及 `db/tasks.go:439` 重复排队保留原顺序；Trace 用原 Store 事务把 plan 与 capacity 同时发布，沿用 ClaimTask/SubscribeScheduling，不增加参考项目的第二队列。Muteki `a73535a19fd2c1cddd97dfbeea65f62f4ce136ee` 的 `muteki/solver/worker_result.py:1`、`:19` 将来源绑定声明与结束交接分开，适配到现有子运行结果/结算回执；不引入 competition 实现。pi `1f6f319bb28992a40b99c147fffb23b65a23129d` 的 `packages/coding-agent/src/core/tools/file-mutation-queue.ts:29` 保留真实操作结束后再释放资源的顺序；Trace 保留原 cleanup/uncertain 约束，不以取消请求当释放证明。以上为固定版本的机制适配，未复制额外运行循环、任务存储或平台流程。
+
+## 2026-11-19 运行时审计参考刷新
+
+本批对 `_refs` 九个 Git 项目逐项执行 fetch 并仅快进干净分支；detached 项目按原 origin 默认分支更新。pi 更新至 `5a14e69c067d40dfbff4f2fff7d3b34c897e2dc9`；CC Switch 至 `6a6ad60e7d6bf97d1cbb82c3149af373afbd97b7`；Multica 至 `528cd82711f2f99eedd04e4d3a68c6c31b514659`；DeepSeek Harness 至 `2e39e70496aa02986ca6a820c5d497e816b69d7e`；sapper-v2 至 `7b75e6f1f5d5b4ae0c55878b0dd0994d9b08f1fb`。Muteki、Cairn、DSH 原型与上表版本一致。上表及较早段落继续表示对应历史审查基线；刷新参考源码不升级产品 pi 1.4.0 或冻结浏览器依赖。
+
+ARTEX 原 `Autumn-27/ARTEX` 远端返回 repository not found；保留干净的 `main` 缓存 `e6ec56999175509551a1e43a3ee3b053d0941bd9`，新增 `community` 远端并 fetch `RuoJi6/ARTEX` 的 `community/main` 为 `6997a4661921395072290becc50380db8dacb04e`（AGPL-3.0）。社区分支与原上游身份分别记录，不改写历史来源；可用 `git show community/main:server/engine.go` 读取本轮对照。
+
+本轮入口/状态链对照：ARTEX 社区 `server/task_control.go` 的统一控制与显式准入、`server/engine.go` 领取前终态检查，和 `server/conversations.go:750` 在停止后不消耗排队任务；pi `packages/agent/src/agent.ts` 的 abort 与实际退出分离、`agent-loop.ts` 的本轮消息与工具结果分列，以及 `agent-session.ts` 的上下文恢复；Muteki `muteki/src/reports.py` 冻结来源与渲染正文分离、`muteki/swarm/worker_session.py` 的退出分类。Trace 沿既有 Store 事务、访次结算和 pi 恢复路径适配，不迁入新队列、状态字段或执行循环。验收结果按开发计划与部署文档记录。

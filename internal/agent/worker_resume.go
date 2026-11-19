@@ -15,8 +15,13 @@ import (
 	"trace/internal/worker"
 )
 
-// Admission follows the persisted tree, including settled intermediate runs.
-// A cancelled/paused ancestor must not be bypassed by resuming its grandchild.
+// A failed Run may itself be resumed, but cannot host child execution until then.
+// A successful business result is not a lifecycle state.
+func workerParentStopped(run Run) bool {
+	return run.Deleted || isStopped(run.Status) || run.Status == StatusFailed || run.Status == StatusCompleted
+}
+
+// Admission follows the persisted worker tree, not ordinary conversation branches.
 func (a *Agent) checkWorkerAncestors(s *Snapshot) error {
 	for _, event := range s.Events {
 		if event.Type == "plan_failed" {
@@ -39,8 +44,8 @@ func (a *Agent) checkWorkerAncestors(s *Snapshot) error {
 		if err != nil {
 			return err
 		}
-		if parent.Run.Deleted || isStopped(parent.Run.Status) {
-			return fmt.Errorf("worker ancestor %s is stopped", parentID)
+		if workerParentStopped(parent.Run) {
+			return fmt.Errorf("worker ancestor %s is stopped (%s)", parentID, parent.Run.Status)
 		}
 		if parent.Run.ParentTaskID == "" {
 			break // Ordinary conversation branches are independent, not workers.
@@ -88,7 +93,7 @@ func (a *Agent) pauseSnapshotWorkers(s Snapshot) error {
 // Caller holds the existing child execution lock. Reclaim the same worker and
 // task only after its previous lifecycle finished cleanup; never create a Run.
 func (a *Agent) prepareWorkerResume(ctx context.Context, child Snapshot) (context.Context, func(), AgentWorker, error) {
-	var w AgentWorker
+	var w, reconciled AgentWorker
 	var blocked *TaskBlockedError
 	var err error
 	child, err = a.reconcileExecResourcesLocked(child.Run.ID, worker.ReconcileResourceOwner)
@@ -103,10 +108,7 @@ func (a *Agent) prepareWorkerResume(ctx context.Context, child Snapshot) (contex
 		return nil, nil, w, err
 	}
 	_, err = a.store.Update(child.Run.ParentRunID, func(parent *Snapshot) error {
-		if isStopped(parent.Run.Status) {
-			return fmt.Errorf("resume the parent run before its worker")
-		}
-		if err := a.checkWorkerAncestors(parent); err != nil {
+		if err := a.checkTaskAdmissionLocked(parent); err != nil {
 			return err
 		}
 		task, err := planTask(parent, child.Run.ParentTaskID)
@@ -134,6 +136,7 @@ func (a *Agent) prepareWorkerResume(ctx context.Context, child Snapshot) (contex
 				if err := a.applyWorkerSettlementLocked(parent, *current); err != nil {
 					return err
 				}
+				reconciled = *current // Keep the receipt identity before advancing Visit.
 			}
 			if current.Status == "running" || current.Status == "starting" || current.Status == "cancelling" || current.CleanupStatus != "completed" {
 				return fmt.Errorf("worker execution and cleanup have not settled")
@@ -199,6 +202,9 @@ func (a *Agent) prepareWorkerResume(ctx context.Context, child Snapshot) (contex
 		}
 		return fmt.Errorf("child has no current registered worker")
 	})
+	if err == nil && reconciled.ID != "" {
+		a.recordWorkerSettlementError(child.Run.ParentRunID, reconciled, nil)
+	}
 	if err == nil && blocked != nil {
 		err = blocked
 	}

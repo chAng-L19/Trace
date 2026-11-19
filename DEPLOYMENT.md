@@ -4,7 +4,8 @@
 
 | 状态 | 版本或构建 | SHA-256（binary） | 证据 |
 | --- | --- | --- | --- |
-| 正式，2026-11-19T12:48:14.814286+08:00（上海）发布 | workspace-layout-20261119 | `7bab4744550a6df172628a94f82667568cdd3c7ffe832fd53cea5998a33d6307` | 私有 trace-workspace-layout-20261119/release-receipt.json；备份与线上身份校验通过 |
+| 正式，2026-11-19T13:57:18.073145+08:00（上海）发布 | runtime-audit-20261119 | `e309b486fd3f2fd3379526c71aa7d6885ffcbce9674db8f6910e4528a2a83e0d` | 私有 trace-runtime-audit-20261119/release-receipt.json；备份与线上身份校验通过 |
+| 历史正式，2026-11-19T12:48:14.814286+08:00（上海）发布 | workspace-layout-20261119 | `7bab4744550a6df172628a94f82667568cdd3c7ffe832fd53cea5998a33d6307` | 私有 trace-workspace-layout-20261119/release-receipt.json；备份与线上身份校验通过 |
 | 历史正式，2026-11-19 10:43:50（上海）发布 | dispatch-lightpanda-20261119 | `de4951b4801f55933c91392c40c67b7b8e1e4df834c60f852f47f057c3bfe911` | 私有 trace-release-20261119/release-receipt.json；备份与线上身份校验通过 |
 | 历史正式，已被 11-19 替代 | optimize-pi-20261117 | `b8a71dc31f619e8821c8e635f3657e39f228cd464d84686969608eb29c7d21eb` | 私有 validation/optimize-20261117、release-optimize-20261117 发布回执 |
 | 隔离验收，已并入 11-19 正式版 | Lightpanda 优先 / CloakBrowser 备用（2026-11-18） | `de4951b4801f55933c91392c40c67b7b8e1e4df834c60f852f47f057c3bfe911` | 私有 trace-lightpanda-20261118/evidence-final；独立签收通过 |
@@ -13,6 +14,16 @@
 | 镜像，尚未同步随后修复 | trace:full-agent-tsb-20261112 | `68dfb5a71bed513217a0677d40b9d2f1dc47dae74ad2fcaff0f00707d686235a` | 2026-11-12 全量镜像回执 |
 
 11-17 旧 UI 隔离验收输入清单：1188 项，SHA-256 `d3d0901f4950488c74d371df7554a10f3f0c71d52c013487addcf01bd0d9d4f2`；正式部署源码清单 SHA-256 `f8386dacf59e2909d6f99fd4443ae00786e2e00acf422de69674ad67f591dada`。文档压缩仅本地，未同步正式服务器源码或冻结清单。
+
+## 2026-11-19 运行时缺陷审计发布
+
+- 正式版本 `runtime-audit-20261119`，上海时间 `2026-11-19T13:57:18.073145+08:00`。binary SHA256 `e309b486fd3f2fd3379526c71aa7d6885ffcbce9674db8f6910e4528a2a83e0d`，实际 `/proc/exe`、UID/GID、cwd/state/config、模型运行时和浏览器依赖均校验；源码与运行提示同步，source/payload 清单重建。
+- 停旧 controller 后完整一致备份旧 release、state/CAS/inputs、workspace、systemd/nginx 及模块链接目标；`1,344,768,000` B，22,332 项逐一核对内容 hash、类型、权限、属主及链接。路径 `/var/backups/trace-runtime-audit-20261119/rollback.tar`，SHA256 `a84a27acd0550d5c4aa7396007fcec0121af8add479792c415988b19916588b4`，目录 0700、归档 0600。完整旧 release 保留；未执行回滚演练。
+- 上线 HTTP 200，公共入口未认证 401，异 Host/Origin 403；四份嵌入资源 hash 一致，工具 83、Skill 5 正常。7 份 Run 的业务内容、请求/动作/事件未变，仅 updated_at 变化 0 份，未恢复暂停运行。
+- 旧版 `3ffe987` 隔离复现五类缺陷：终态父/祖先仍准入与维持子执行、预取消或等锁取消仍消耗 pending、报告示例及文档回溯冒充本轮业务声明、旧访次结算错误在新访次后残留、provider 自动恢复暴露临时 failed。分别沿 ARTEX 显式准入、pi 取消/恢复、Muteki 结果来源/访次分类适配既有 Store/pi；未新增状态字段、队列或运行循环。
+- 最终服务器 R2：RuntimeAudit 22 组/49 叶子用例，相关运行时 148/395，race 21/56，HTTP 6/6，以及 agent/web vet、构建全通过。两份独立审查已完成，无剩余 P0/P1。恢复源摘要的预算、崩溃投影、uncertain 不重放及真实退出后释放约束保持。未重跑全仓、新真实模型场次、前端或 Docker/TSB 镜像。
+- R1 失败与旧版对照均保留：旧 Resume mock 缺业务声明，改为诚实 incomplete；严格调度用例显式开启 verified completion；终态中间运行经公开 QueueMessage 显式重开后再续访。原来关于动作唯一、访次身份、预算暂停、依赖和槽位的断言保留，没有以放宽产品判定解决夹具失败。
+- 参考九项已刷新：五项更新，Muteki/Cairn/DSH 三项已是当前；ARTEX 原远端不可用，缓存 main 保留，社区 remote 单列。具体固定版本和来源见 FEATURE_COMPARISON_CURRENT.md。正式源码 1212 文件；原件在服务器 validation/runtime-audit-20261119 与本地项目外 _work/trace-runtime-audit-20261119。
 
 ## 2026-11-19 通用调度与工作区修复发布
 

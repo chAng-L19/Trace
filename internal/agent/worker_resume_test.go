@@ -69,7 +69,7 @@ func (p *resumeWorkerProvider) Complete(ctx context.Context, req ModelRequest) (
 	if !hasAction {
 		return ModelResponse{ToolCalls: []ToolCall{{ID: "once", Name: "read", Arguments: `{"path":"missing-resume-fixture"}`}}}, nil
 	}
-	return ModelResponse{Content: fixtureReport("worker completed")}, nil
+	return ModelResponse{Content: fixtureReport(`{"trace_result":{"status":"incomplete","summary":"The requested fixture file was not found."}}`)}, nil
 }
 
 func resumeWorkerFixture(t *testing.T, p Provider) (*Agent, *Store, string, AgentWorker) {

@@ -371,16 +371,20 @@ func planTask(s *Snapshot, id string) (*PlanTask, error) {
 }
 
 func (a *Agent) ClaimTask(id, taskID, workerID string, leaseSeconds int) (Snapshot, error) {
+	return a.claimTask(context.Background(), id, taskID, workerID, leaseSeconds)
+}
+
+func (a *Agent) claimTask(ctx context.Context, id, taskID, workerID string, leaseSeconds int) (Snapshot, error) {
 	if workerID == "" || leaseSeconds <= 0 {
 		return Snapshot{}, fmt.Errorf("worker and positive lease required")
 	}
 	var blocked *TaskBlockedError
 	var unchangedBlocked *Snapshot
 	snapshot, err := a.store.Update(id, func(s *Snapshot) error {
-		if isStopped(s.Run.Status) {
-			return fmt.Errorf("parent run is stopped")
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		if err := a.checkWorkerAncestors(s); err != nil {
+		if err := a.checkTaskAdmissionLocked(s); err != nil {
 			return err
 		}
 		t, err := planTask(s, taskID)

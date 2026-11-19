@@ -59,6 +59,7 @@ func (p *incompleteThenInputProvider) Complete(_ context.Context, _ ModelRequest
 func TestSchedulerExplicitIncompleteDoesNotCompleteChildOrUnlockDependency(t *testing.T) {
 	p := &incompleteThenInputProvider{}
 	a, store := newTestAgent(t, p)
+	a.SetRequireVerifiedCompletion(true)
 	two := 2
 	a.ConfigureBudget(BudgetOverride{MaxModelRequests: &two})
 	id := createTestRun(t, a)

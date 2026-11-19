@@ -57,13 +57,13 @@ func (a *Agent) runPi(ctx context.Context, id string) (Snapshot, error) {
 				if isStopped(snap.Run.Status) {
 					return nil, errPiHalt
 				}
-				if snap.Run.Status == StatusFailed {
+				if snap.Run.Status == StatusRunning && request.Purpose == "" && providerRecoveryReason(response, callErr) != "" {
 					var recovered bool
 					snap, recovered, err = a.recoverProviderContext(ctx, id, request, response, callErr)
 					if err != nil {
 						return nil, err
 					}
-					if isStopped(snap.Run.Status) {
+					if isStopped(snap.Run.Status) || snap.Run.Status == StatusCompleted {
 						return nil, errPiHalt
 					}
 					if recovered {
@@ -73,6 +73,8 @@ func (a *Agent) runPi(ctx context.Context, id string) (Snapshot, error) {
 						}
 						continue
 					}
+				}
+				if snap.Run.Status == StatusFailed {
 					if callErr != nil && snap.Run.Error == callErr.Error() {
 						modelErr = callErr
 					} else {
@@ -673,6 +675,12 @@ func (a *Agent) settlePiResponse(ctx context.Context, id string, request ModelRe
 				s.Run.Status, s.Run.Error = StatusRunning, ""
 				addEvent(s, "model_retry", "模型服务暂时不可用，等待后重新请求", map[string]any{"request_id": request.ID, "attempt": *requestRetries, "delay_ms": retryDelay.Milliseconds()})
 				return nil
+			}
+			if ctx.Err() == nil && request.Purpose == "" {
+				if reason := providerRecoveryReason(response, providerErr); reason != "" {
+					a.prepareProviderRecoveryLocked(s, request, reason)
+					return nil
+				}
 			}
 			if reportDeliveryPending(s) {
 				s.Run.Status, s.Run.PauseReason = StatusFailed, ""

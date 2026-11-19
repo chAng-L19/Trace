@@ -42,40 +42,42 @@ func needsReportDelivery(s *Snapshot) bool {
 // Translation-only replies retain the preceding business result and bind to
 // its exact source digest; they never replace evidence or execution state.
 func finalReportContent(s *Snapshot) (string, *ReportText) {
-	var body *ReportText
-	fallback := ""
+	source, _, body := finalReportTurn(s)
+	return source, body
+}
+
+// Only the original business message may declare a result. Its display
+// summary can be report prose, including quoted examples of result envelopes.
+func finalReportTurn(s *Snapshot) (source, summary string, body *ReportText) {
 	for i := len(s.Messages) - 1; i >= 0; i-- {
 		m := s.Messages[i]
 		if m.Role != "assistant" || len(m.ToolCalls) > 0 {
 			continue
 		}
-		text := m.Content
-		if submission, _ := traceEnvelope[reportSubmission](text, "trace_report"); submission != nil {
-			plain := stripReportEnvelope(text)
-			if body == nil && (!m.ReportOnly || submission.SourceDigest != "") && (submission.ZhCN != "" || submission.En != "") {
-				copy := submission.ReportText
-				body = &copy
-			}
-			if !m.ReportOnly && plain == "" && submission.SourceDigest == "" {
-				fallback = submission.ZhCN
-				if fallback == "" {
-					fallback = submission.En
-				}
-				if fallback != "" {
-					return fallback, body
-				}
-			}
-			text = plain
-			if text == "" {
-				continue
-			}
+		submission, _ := traceEnvelope[reportSubmission](m.Content, "trace_report")
+		if body == nil && submission != nil && (!m.ReportOnly || submission.SourceDigest != "") && (submission.ZhCN != "" || submission.En != "") {
+			copy := submission.ReportText
+			body = &copy
 		}
 		if m.ReportOnly {
 			continue
 		}
-		return text, body
+		source, summary = m.Content, m.Content
+		if submission != nil {
+			if plain := stripReportEnvelope(m.Content); plain != "" {
+				// A bare result can sit beside a separate report fence.
+				source, summary = plain, plain
+			} else {
+				// A report alone is still the current turn; its body is display text only.
+				summary = submission.ZhCN
+				if summary == "" {
+					summary = submission.En
+				}
+			}
+		}
+		return source, summary, body
 	}
-	return fallback, body
+	return "", "", body
 }
 
 func stripReportEnvelope(text string) string {

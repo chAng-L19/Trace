@@ -10,6 +10,15 @@ import (
 	"slices"
 )
 
+// ARTEX community 6997a466 task_control.go keeps terminal lifecycle changes
+// behind explicit admission. Metadata edits never implicitly reopen execution.
+func (a *Agent) checkTaskAdmissionLocked(s *Snapshot) error {
+	if workerParentStopped(s.Run) {
+		return fmt.Errorf("parent run is stopped: %s", s.Run.Status)
+	}
+	return a.checkWorkerAncestors(s)
+}
+
 type TaskBlockedError struct {
 	TaskID          string   `json:"task_id"`
 	MissingToolIDs  []string `json:"missing_tool_ids,omitempty"`

@@ -294,6 +294,11 @@ func TestWorkerSettlementNestedRechecksAfterSecondParentFailure(t *testing.T) {
 	if mid.Workers[0].Status != "paused" || mid.WorkerSettlement == nil || !mid.WorkerSettlement.DescendantSettlementPending {
 		t.Fatal("descendant recovery erased unfinished root proof requirement")
 	}
+	// A completed middle cannot host another visit until the operator reopens it.
+	// Queuing input keeps the old settlement receipt; it does not execute a visit.
+	if reopened, err := a.QueueMessage(middle.RunID, "follow_up", "Continue the paused leaf."); err != nil || reopened.Run.Status != StatusCreated {
+		t.Fatalf("explicit middle continuation: status=%s err=%v", reopened.Run.Status, err)
+	}
 	child, err := store.Load(leaf.RunID)
 	if err != nil {
 		t.Fatal(err)
