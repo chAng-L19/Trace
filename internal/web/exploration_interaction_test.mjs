@@ -21,10 +21,28 @@ const detours=[...edges,{from:'goal',to:'y',relation:'shortcut'},{from:'y',to:'a
 const routed=explorationRoutes(layout,detours,{nodeWidth:246,port:65,columnGap:340});
 assert.equal(routed.routes.length,detours.length);
 assert.ok(routed.routes.slice(0,4).every(route=>!route.detour));
-for(const route of routed.routes.slice(4)){
-  assert.ok(route.detour&&route.y<Math.min(...[...routed.positions.values()].map(p=>p.y)));
-  assert.match(route.d,/ H[0-9.]+ V[0-9.]+ H[0-9.]+ V[0-9.]+ H[0-9.]+$/);
+function points(route){
+  assert.match(route.d,/^M[\d.]+ [\d.]+(?: [HV][\d.]+)+$/);
+  const path=[];let x,y;
+  for(const [,command,a,b] of route.d.matchAll(/([MHV])([\d.]+)(?: ([\d.]+))?/g)){
+    if(command==='M'){x=Number(a);y=Number(b)}else if(command==='H')x=Number(a);else y=Number(a);
+    path.push([x,y]);
+  }
+  return path;
 }
+function avoidsNodes(graph,route,w,h){
+  const path=points(route);
+  path.forEach(([x,y],i)=>{
+    assert.ok(x>=0&&x<=graph.width&&y>=0&&y<=graph.height,'track stays inside SVG');
+    if(!i)return;
+    const [a,b]=path[i-1];
+    for(const [id,p] of graph.positions){
+      const inside=Math.max(a,x)>p.x&&Math.min(a,x)<p.x+w&&Math.max(b,y)>p.y&&Math.min(b,y)<p.y+h;
+      assert.ok(!inside,`segment ${a},${b} to ${x},${y} crosses ${id}`);
+    }
+  });
+}
+for(const route of routed.routes.slice(4))avoidsNodes(routed,route,246,132);
 for(const [input,nodeWidth,port,columnGap] of [[layout,246,65,340],[{positions:new Map([...pos].map(([id,p])=>[id,{x:p.x*252/340,y:p.y*92/164}])),width:layout.width*252/340+12,height:layout.height*92/164+12},212,28,252]]){
   const boundary=explorationRoutes(input,[{from:'y',to:'goal'}],{nodeWidth,port,columnGap});
   const [,,out,,into]=boundary.routes[0].d.match(/-?\d+(?:\.\d+)?/g).map(Number);
@@ -32,10 +50,63 @@ for(const [input,nodeWidth,port,columnGap] of [[layout,246,65,340],[{positions:n
   assert.ok(into>0&&into<boundary.positions.get('goal').x);
 }
 
+// Two branches reconverge. Each also has its own shortcut spanning an
+// occupied column. A global top lane crosses the other branch unnecessarily.
+const joinNodes=['root','a1','b1','b2','a2','a3','b3','join'].map(id=>({id}));
+const joinEdges=[['root','a1'],['root','b1'],['a1','a2'],['b1','b2'],['a2','a3'],['b2','b3'],['a3','join'],['b3','join'],['a1','a3'],['b1','b3']].map(([from,to])=>({from,to}));
+const joined=explorationLayout(joinNodes,joinEdges);
+for(const [sx,sy,w,port,gap] of [[1,1,246,65,340],[252/340,92/164,212,28,252]]){
+  const sizes={nodeWidth:w,port,columnGap:gap},p=new Map([...joined.positions].map(([id,v])=>[id,{x:v.x*sx,y:v.y*sy}]));
+  const g=explorationRoutes({positions:p,width:joined.width*sx,height:joined.height*sy},joinEdges,sizes);
+  const ranges=g.routes.slice(-2).map(r=>{avoidsNodes(g,r,w,port*2+2);const ys=points(r).map(v=>v[1]);return [Math.min(...ys),Math.max(...ys)]});
+  assert.ok(ranges[0][1]<ranges[1][0]||ranges[1][1]<ranges[0][0],'shortcuts stay in disjoint branch corridors');
+  // A completely clear middle row should use the straight corridor.
+  const spare=new Map([['x',{x:24,y:30}],['other',{x:24+gap,y:200}],['y',{x:24+gap*2,y:30}]]);
+  const open=explorationRoutes({positions:spare,width:gap*3,height:400},[{from:'x',to:'y'}],sizes);
+  assert.equal(new Set(points(open.routes[0]).map(point=>point[1])).size,1);
+}
 
 const parallel=[{from:'a',to:'y',relation:'first'},{from:'a',to:'y',relation:'second'}];
-assert.notEqual(...explorationRoutes(layout,parallel,{nodeWidth:246,port:65,columnGap:340}).routes.map(route=>route.d));
+// R2 preview failure: 40px gutter, 184px rise. Merely translating a cubic
+// by 20px leaves its midpoint inside the other relation's 16px hit stroke.
+// Dagre/Cairn's independent 20px edge spacing is adapted to Trace's SVG routes.
+function arcMidpoint(path){
+  const lengths=path.slice(1).map(([x,y],i)=>Math.hypot(x-path[i][0],y-path[i][1]));
+  let left=lengths.reduce((a,b)=>a+b,0)/2;
+  for(const [i,length] of lengths.entries()){
+    if(left<=length){const t=length?left/length:0;return path[i].map((v,j)=>v+(path[i+1][j]-v)*t)}
+    left-=length;
+  }
+}
+function segmentGap(a,b,c,d){
+  return Math.hypot(...[0,1].map(i=>Math.max(0,Math.min(a[i],b[i])-Math.max(c[i],d[i]),Math.min(c[i],d[i])-Math.max(a[i],b[i]))));
+}
+for(const sizes of [{nodeWidth:212,port:28,columnGap:252},{nodeWidth:246,port:65,columnGap:340}]){
+  const r2={positions:new Map([['a',{x:269.7882385253906,y:13.463414192199707}],['y',{x:269.7882385253906+sizes.columnGap-.0000305175781,y:197.46340942382812}]]),width:1000,height:600};
+  for(const rise of [184-.0000047683716,-184,368,-368,0]){
+    r2.positions.get('a').y=rise<0?400:13.463414192199707;
+    r2.positions.get('y').y=r2.positions.get('a').y+rise;
+    for(const pair of [parallel,[...parallel].reverse()]){
+      const before=JSON.stringify([...r2.positions]),r=explorationRoutes(r2,pair,sizes),paths=r.routes.map(points);
+      assert.equal(JSON.stringify([...r2.positions]),before,'routing leaves node positions untouched');
+      assert.deepEqual(explorationRoutes(r2,pair,sizes),r,'parallel routing is deterministic');
+      r.routes.forEach(route=>avoidsNodes(r,route,sizes.nodeWidth,sizes.port*2+2));
+      for(const [i,path] of paths.entries()){
+        const middle=arcMidpoint(path),other=paths[1-i];
+        const distance=Math.min(...other.slice(1).map((end,j)=>segmentGap(middle,middle,other[j],end)));
+        assert.ok(distance>8,'each arc midpoint is outside the other 16px hit stroke');
+        const gap=Math.min(...path.slice(1).flatMap((end,j)=>other.slice(1).map((otherEnd,k)=>segmentGap(path[j],end,other[k],otherEnd))));
+        assert.ok(gap>16,'parallel hit strokes are disjoint, including port approaches');
+      }
+    }
+  }
+  const single=explorationRoutes(r2,[parallel[0]],sizes);
+  assert.match(single.routes[0].d,/ C/,'ordinary adjacent single edges keep their existing curve');
+}
 assert.deepEqual([...explorationChain(nodes,parallel,parallel[1]).linked],[1]);
+const loop=[...parallel,{from:'y',to:'a',relation:'return'},{from:'goal',to:'a'},{from:'y',to:'x'}];
+assert.deepEqual([...explorationChain(nodes,loop,parallel[1]).linked].sort(),[1,3,4],'a cycle does not reselect a parallel relation or the return edge');
+assert.equal(explorationChain(nodes,loop,{...parallel[0],relation:'retired'}).active.size,0,'same endpoints do not resurrect a missing relation');
 
 const branch=explorationChain(nodes,edges,{from:'a',to:'y'});
 assert.deepEqual([...branch.active].sort(),['a','goal','y']);
@@ -48,7 +119,7 @@ assert.equal(explorationChain(nodes,[...edges,{from:'y',to:'a'}],{from:'a',to:'a
 const classList=()=>({values:new Set(),toggle(k,on){if(on)this.values.add(k);else this.values.delete(k)}});
 const nodeElements=nodes.map(n=>({dataset:{id:n.id,chainTitle:n.id},classList:classList()}));
 const edgeElements=edges.map(e=>({dataset:e,classList:classList(),setAttribute(k,v){this[k]=v}}));
-const selection={innerHTML:''};
+const selection={innerHTML:'',firstElementChild:{prepend(text){this.prefix=text}}};
 const root={dataset:{explorationRun:'chain-fixture'},querySelectorAll:selector=>selector==='[data-action="exploration-chain"]'?edgeElements:nodeElements,querySelector:()=>selection};
 selectExplorationChain({closest:()=>root,dataset:{action:'exploration-chain',from:'a',to:'y'}});
 assert.equal(edgeElements[2]['aria-pressed'],'true');
@@ -56,6 +127,9 @@ assert.equal(nodeElements[2].classList.values.has('chain-muted'),true);
 assert.match(selection.innerHTML,/data-action="exploration-detail" data-id="a"/);
 assert.match(selection.innerHTML,/data-action="exploration-detail" data-id="y"/,'edge highlighting preserves source-detail navigation');
 edgeElements[2].dataset={...edgeElements[2].dataset,relation:'replacement'};
+selectExplorationChain({closest:()=>root,dataset:{action:'exploration-chain',...edgeElements[2].dataset}});
+assert.equal(edgeElements[2]['aria-label'],'a → y：replacement');
+assert.match(selection.firstElementChild.prefix,/replacement/,'visible selection labels the specific relationship');
 selectExplorationChain({closest:()=>root,dataset:{action:'exploration-chain',from:'a',to:'y',relation:'removed'}});
 assert.doesNotMatch(selection.innerHTML,/已高亮/,'a replaced or deleted edge cannot remain selected');
 selectExplorationChain({closest:()=>root,dataset:{id:'a'}});
@@ -90,6 +164,11 @@ const sizedRoot={dataset:{explorationRun:'preview-fixture',explorationPreview:'t
 globalThis.document={querySelectorAll:()=>[sizedRoot]};
 mountExploration();assert.equal(observed[0],canvas);
 assert.match(explorationPreview(snap),/style="width:640px;height:520px"/);
+const replacement={...canvas,style:{}};
+sizedRoot.querySelector=selector=>selector==='.graph-shell'?replacement:null;
+mountExploration();assert.deepEqual(replacement.style,{width:'640px',height:'520px'},'restore dimensions without an inline style attribute');
+assert.doesNotMatch(explorationGraph({snap}),/width:640px;height:520px/,'preview and full stay independent for the same Run');
+assert.doesNotMatch(explorationPreview({...snap,run:{...snap.run,id:'another-run'}}),/width:640px;height:520px/,'identical node IDs do not transfer dimensions between Runs');
 sizedRoot.dataset={explorationRun:'full-size-fixture'};
 const zoom={};sizedRoot.querySelector=selector=>selector==='.graph-shell'||selector==='.exploration-canvas'?canvas:selector==='.exploration-zoom'?zoom:null;
 mountExploration();

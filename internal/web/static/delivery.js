@@ -1,5 +1,32 @@
 import {esc,btn} from './ui.js';
 
+// Same kind order and language suffixes as ReportDocument. Historical files
+// remain explicit archive choices, never a current-run shortcut.
+const reportKinds={final:'最终报告',stage:'阶段报告',finding:'发现报告'};
+function currentReport(snap,finalOnly=false){
+  for(const kind of finalOnly?['final']:Object.keys(reportKinds)){
+    const r=snap?.reports?.findLast(r=>r.kind===kind&&r.source_status==='current'&&r.id&&r.files?.length);
+    if(r)return r;
+  }
+}
+const hasLanguage=(r,language)=>r?.files.some(f=>f.name?.endsWith('.'+language+'.md'));
+function reportState(snap,finalOnly=false){
+  const rows=(snap?.reports||[]).filter(r=>!finalOnly||r.kind==='final');
+  if(snap?.projection==='planner'||rows.some(r=>r.source_status==='not_checked')||(snap?.projection==='activity'&&snap.totals?.reports&&!rows.length))return '归档状态待核对';
+  if(rows.some(r=>r.source_status==='changed'&&r.files?.length))return '仅有历史归档';
+  return finalOnly?'最终报告未归档':'报告未归档';
+}
+export function reportDownloads(snap,finalOnly=false){
+  const r=currentReport(snap,finalOnly);
+  if(!r){
+    const text=reportState(snap,finalOnly);
+    return text.endsWith('未归档')?'<span class="note">'+text+'</span>':'<a href="#history/'+encodeURIComponent(snap.run.id)+'?tab=artifacts">'+text+' · 查看报告与文件</a>';
+  }
+  const attrs='data-format="report" data-run="'+esc(snap.run.id)+'" data-report-id="'+esc(r.id)+'"';
+  return '<span class="note">'+reportKinds[r.kind]+' v'+esc(r.version)+(r.translation_status==='translation_missing'?' · 待补译':'')+'</span>'+
+    [['zh-CN','中文'],['en','English']].map(([lang,name])=>hasLanguage(r,lang)?btn('export',name+' ↓',attrs+' data-language="'+lang+'"'):'<span class="note">'+name+' 文件未归档</span>').join('');
+}
+
 // Muteki 144df766, lib/clipboard.ts / components/ai-native/code-block.tsx
 // (repository AGPL-3.0; code-block credits upstream MIT). Native implementation.
 export async function copyText(text){
@@ -38,9 +65,21 @@ export function createDelivery({state,showDetail,notice,isCurrent,token,captureN
     if(action==='copy-link'){await copyText(new URL(el.dataset.href||location.hash,location.href).href);notice('定位链接已复制');return true}
     if(action==='artifact'&&!el.dataset.offset&&await preview(el))return true;
     if(action==='export'){
-      const run=state.selected,format=el.dataset.format,language=el.dataset.language||'zh-CN',response=await fetch(`/api/runs/${run}/export?format=${encodeURIComponent(format)}${format==='report'?'&language='+encodeURIComponent(language):''}`);
+      const run=state.selected,{format}=el.dataset,params=new URLSearchParams({format});
+      let language,stillCurrent;
+      if(format==='report'){
+        const {reportId,run:buttonRun}=el.dataset,nav=token().nav;
+        language=el.dataset.language;
+        const matches=()=>!!run&&buttonRun===run&&state.selected===run&&state.snap?.run.id===run&&token().nav===nav;
+        if(!matches()||!reportId||(language!=='zh-CN'&&language!=='en')){
+          notice('请选择该运行已归档的报告版本和语言',true);return true;
+        }
+        params.set('report_id',reportId);params.set('language',language);stillCurrent=matches;
+      }
+      const response=await fetch('/api/runs/'+encodeURIComponent(run)+'/export?'+params);
       if(!response.ok){let detail;try{detail=await response.json()}catch{}throw new Error(detail?.error||'导出失败（HTTP '+response.status+'）')}
-      const blob=await response.blob(),href=URL.createObjectURL(blob),link=document.createElement('a');link.href=href;link.download=response.headers.get('Content-Disposition')?.match(/filename="([^"]+)"/)?.[1]||`trace-${run}-${format}.${format==='report'?language+'.md':'json'}`;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(href),1000);notice('文件已读取，浏览器已开始下载');return true;
+      const blob=await response.blob();if(stillCurrent&&!stillCurrent()){notice('运行已切换，已取消下载');return true}
+      const href=URL.createObjectURL(blob),link=document.createElement('a');link.href=href;link.download=response.headers.get('Content-Disposition')?.match(/filename="([^"]+)"/)?.[1]||`trace-${run}-${format}.${format==='report'?language+'.md':'json'}`;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(href),1000);notice('文件已读取，浏览器已开始下载');return true;
     }
     return false;
   }

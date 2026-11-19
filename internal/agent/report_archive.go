@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -289,16 +291,47 @@ func (store *Store) archiveReports(s *Snapshot) error {
 	return nil
 }
 
+// File availability is a view, not a change to the saved receipt. OpenArtifact
+// checks the selected digest at download time.
+func reportFiles(s *Snapshot, files []ArtifactRef) []ArtifactRef {
+	if s.artifactRoot == "" {
+		return files
+	}
+	dir := os.DirFS(s.artifactRoot)
+	return slices.DeleteFunc(slices.Clone(files), func(ref ArtifactRef) bool {
+		info, err := fs.Stat(dir, "artifacts/"+ref.Hash)
+		return err != nil || !info.Mode().IsRegular()
+	})
+}
+
 // A view may mark a version changed, but never rewrites its archived bytes.
 func ReportReceipts(s Snapshot) []ReportArchive {
 	out := append([]ReportArchive{}, s.Reports...)
+	if len(out) == 0 {
+		return out
+	}
 	current := map[string]string{}
 	for _, c := range reportCandidates(&s) {
 		current[c.source.Kind+"/"+c.source.SubjectID] = c.digest()
 	}
+	// The archive pins child receipts, not their live availability. A newer
+	// settlement supersedes an early receipt from the same child visit.
+	seen := map[string]bool{}
+	for i := len(s.ChildReports) - 1; i >= 0; i-- {
+		child := s.ChildReports[i]
+		if !child.Current || seen[child.SourceRunID] {
+			continue
+		}
+		seen[child.SourceRunID] = true
+		if child.SourceStatus == "changed" || child.SourceStatus == "unavailable" {
+			delete(current, "final/result")
+			break
+		}
+	}
 	for i := range out {
+		out[i].Files = reportFiles(&s, out[i].Files)
 		out[i].SourceStatus = "changed"
-		if current[out[i].Kind+"/"+out[i].SubjectID] == out[i].SourceDigest {
+		if digest, exists := current[out[i].Kind+"/"+out[i].SubjectID]; exists && digest == out[i].SourceDigest {
 			out[i].SourceStatus = "current"
 		}
 	}
@@ -313,7 +346,7 @@ func preferredReport(s Snapshot) *ReportArchive {
 		for _, current := range []bool{true, false} {
 			for i := len(receipts) - 1; i >= 0; i-- {
 				r := &receipts[i]
-				if r.Kind == kind && (!current || r.SourceStatus == "current") {
+				if len(r.Files) != 0 && r.Kind == kind && (!current || r.SourceStatus == "current") {
 					return r
 				}
 			}
@@ -322,8 +355,34 @@ func preferredReport(s Snapshot) *ReportArchive {
 	return nil
 }
 
-// ReportDocument selects actual immutable CAS bytes. Legacy runs receive their
-// first archive through the same Store transaction, never a second report store.
+// A pinned document is historical: reading it must not refresh or write the Run.
+// Only an unpinned request with existing receipts needs current source selection.
+// Muteki reports.py get (a73535a19fd2) separates frozen reads from freeze;
+// pi exportFromFile (1f6f319bb289) uses saved entries; ARTEX ReportTab
+// (e6ec56999175) exposes only existing content. Trace selects existing CAS
+// files and rechecks sources through its own Store, without a separate export store.
+func (store *Store) documentSnapshot(id, reportID string) (Snapshot, error) {
+	unlock, err := store.acquireStoreLock()
+	if err != nil {
+		return Snapshot{}, err
+	}
+	defer unlock()
+	s, err := store.loadRawLocked(id)
+	if err != nil || s.Run.Deleted || reportID != "" {
+		return s, err
+	}
+	for _, r := range s.Reports {
+		if len(reportFiles(&s, r.Files)) != 0 {
+			// Select among existing files. Do not commit a new version merely
+			// because the current source no longer matches the saved result.
+			store.verifyDerivedLocked(&s, map[string]bool{id: true}, readSourceOnly)
+			s.ChildReports = store.childReportsFromLocked(s, 0)
+			break
+		}
+	}
+	return s, nil
+}
+
 func (store *Store) ReportDocument(id, reportID, language string) (ArtifactRef, string, error) {
 	if language == "" {
 		language = "zh-CN"
@@ -331,27 +390,26 @@ func (store *Store) ReportDocument(id, reportID, language string) (ArtifactRef, 
 	if language != "zh-CN" && language != "en" {
 		return ArtifactRef{}, "", fmt.Errorf("language must be zh-CN or en")
 	}
-	s, err := store.Load(id)
+	s, err := store.documentSnapshot(id, reportID)
 	if err != nil {
 		return ArtifactRef{}, "", err
 	}
 	if s.Run.Deleted {
 		return ArtifactRef{}, "", os.ErrNotExist
 	}
-	if reportID == "" && len(s.Reports) == 0 {
-		s, err = store.Update(id, func(*Snapshot) error { return nil })
-		if err != nil {
-			return ArtifactRef{}, "", err
-		}
-	}
 	if reportID == "" {
-		if selected := preferredReport(s); selected != nil {
-			reportID = selected.ID
+		selected := preferredReport(s)
+		if selected == nil {
+			return ArtifactRef{}, "", fmt.Errorf("no saved summary report is available (recorded run=%s, pause_reason=%q, business=%s, cleanup=%s)", s.Run.Status, s.Run.PauseReason, s.Result.Status, s.Result.CleanupStatus)
 		}
+		if selected.SourceStatus != "current" {
+			return ArtifactRef{}, "", fmt.Errorf("no saved summary report matches the current source; select a historical report_id")
+		}
+		reportID = selected.ID
 	}
 	for i := len(s.Reports) - 1; i >= 0; i-- {
 		r := s.Reports[i]
-		if reportID != "" && r.ID != reportID {
+		if r.ID != reportID {
 			continue
 		}
 		for _, ref := range r.Files {
@@ -367,8 +425,5 @@ func (store *Store) ReportDocument(id, reportID, language string) (ArtifactRef, 
 			return ref, string(data), err
 		}
 	}
-	if reportID != "" {
-		return ArtifactRef{}, "", fmt.Errorf("report version: %w", os.ErrNotExist)
-	}
-	return ArtifactRef{}, "", fmt.Errorf("no saved summary report is available")
+	return ArtifactRef{}, "", fmt.Errorf("report version: %w", os.ErrNotExist)
 }

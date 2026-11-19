@@ -75,6 +75,7 @@ require_exec_resources() {
       ;;
   esac
 }
+export LIGHTPANDA_BINARY_PATH="${LIGHTPANDA_BINARY_PATH:-/opt/trace/runtime/lightpanda/lightpanda}"
 export CLOAKBROWSER_BINARY_PATH=/opt/trace/runtime/cloakbrowser/binary/chrome
 export CLOAKBROWSER_AUTO_UPDATE=false
 if [[ "${1:-benchmark}" != benchmark ]]; then

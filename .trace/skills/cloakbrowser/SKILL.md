@@ -4,6 +4,8 @@ description: 使用有界面 CloakBrowser 完成导航、DOM、表单、JavaScri
 github_url: https://github.com/CloakHQ/CloakBrowser
 ---
 
+Prefer the `lightpanda` tool for navigation, DOM, forms and JavaScript. Use this backup for screenshots, actual rendering, native zoom, unsupported operations or unavailable Lightpanda. Inspect prior effects before changing browsers; do not replay an uncertain submission.
+
 Discover `cloakbrowser` with `tool_search`, then activate its returned stable ID with `tool_select`. The tool uses the official CloakBrowser Python SDK (`cloakbrowser==0.6.4`), not a Playwright CLI or browser daemon. Python statements receive `page`, `context`, `browser`, `args` and `result`. Set `result` to JSON-serializable observations. Printed output is diagnostic stderr. Keep input values in `args`; never interpolate them into code.
 
 ~~~json

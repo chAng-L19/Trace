@@ -196,7 +196,7 @@ func (s *Store) childReportsFromLocked(parent Snapshot, limit int) []ChildReport
 		}
 		child, loaded := sources[r.SourceRunID]
 		if !loaded {
-			v, e := s.loadLocked(r.SourceRunID)
+			v, e := s.verifySourceLocked(r.SourceRunID, map[string]bool{id: true}, readSourceOnly)
 			if e == nil {
 				child = &v
 			}

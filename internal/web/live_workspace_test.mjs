@@ -54,7 +54,7 @@ assert.doesNotMatch(html,/需要核对的调用|class="pending-tools"/,'only the
 assert.match(html,/<\/form><div id="workspace-notice"><\/div><details id="run-mailbox">/,'submission notices stay after the form so feedback cannot move its top edge');
 assert.match(html,/<aside class="task-inspector"[^>]*><div class="workspace-secondary" data-scroll="inspector">/,'right column contains independently scrolling progress');
 const paged=renderPage({...state,snap:{...state.snap,messages_page:{start:40,end:80,total:160,oldest:'m41',newest:'m80',has_more_before:true,has_more_after:true}}});
-assert.match(paged,/class="workspace-dialogue-head">[\s\S]*?运行对话[\s\S]*?固定消息窗口[\s\S]*?id="message-form"[\s\S]*?<\/section><\/div><div class="conversation"/);
+assert.match(paged,/class="workspace-dialogue-head">[\s\S]*?运行对话[\s\S]*?id="message-form"[\s\S]*?<\/section><nav class="conversation-pages"[\s\S]*?固定消息窗口[\s\S]*?<\/nav><\/div><div class="conversation"/,'wrapping pagination cannot move the input above it');
 const loading=renderPage({...state,runLoading:true,snap:null});
 assert.match(loading,/正在读取会话/);
 assert.match(loading,/<div class="workspace-column"><section class="panel workspace-panel">/,'loading uses the same conversation column as the ready view');

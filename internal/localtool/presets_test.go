@@ -275,7 +275,7 @@ func TestPresetsFrida(t *testing.T) {
 func TestPresetsMissingDependencies(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	manifests, status := Presets(context.Background())
-	want := map[string]bool{"Python 3": true, "capstone": true, "droidasc": true, "frida": true, "CloakBrowser": true, "Rizin/radare2": true, "Trace Web Analysis": true}
+	want := map[string]bool{"Python 3": true, "capstone": true, "droidasc": true, "frida": true, "CloakBrowser": true, "Lightpanda": true, "Rizin/radare2": true, "Trace Web Analysis": true}
 	if len(manifests) != 0 || len(status) != len(want) {
 		t.Fatalf("missing runtimes: %+v %+v", manifests, status)
 	}

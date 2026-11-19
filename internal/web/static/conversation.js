@@ -152,7 +152,7 @@ export function conversation(snap,{lazy=false}={}){
     }
   }
   pending.push(...actions.filter(a=>!represented.has(a)).slice(0,page?80:undefined));flush();
-  const tail=tailContext(snap),live=snap.historyWindow?'':conversationTail(snap,tail,lazy),elapsed=snap.run?.elapsed_millis,overview=typeof elapsed==='number'&&Number.isFinite(elapsed)&&elapsed>=0?`<details id="conversation-work-summary" class="conversation-work-summary"><summary>用时 ${(elapsed/1000).toFixed(1)} 秒</summary><p>已结算运行用时 ${(elapsed/1000).toFixed(1)} 秒</p><p>${snap.totals?.actions??(snap.actions||[]).length} 次工具动作 · ${snap.totals?.requests??(snap.requests||[]).length} 次模型请求</p><p class="note">用时取自运行账本；当前尚未结算的执行区间未计入。</p></details>`:'';
+  const tail=tailContext(snap),live=snap.historyWindow?'':conversationTail(snap,tail,lazy),elapsed=snap.run?.elapsed_millis,overview=typeof elapsed==='number'&&Number.isFinite(elapsed)&&elapsed>=0?`<details id="conversation-work-summary" class="conversation-work-summary"><summary>用时 ${(elapsed/1000).toFixed(1)} 秒</summary><p>已结算运行用时 ${(elapsed/1000).toFixed(1)} 秒</p><p>${snap.totals?.requests??(snap.requests||[]).length} 次模型请求</p><p class="note">用时取自运行账本；当前尚未结算的执行区间未计入。</p></details>`:'';
   previewPlan={snap,groups,tail,lazy,hasRows:!!rows.length,messages:snap.messages,messageCount:messages.length,requests:snap.requests,requestCount:snap.requests?.length||0,responses:snap.responses,responseCount:snap.responses?.length||0,actions:snap.actions,actionCount:snap.actions?.length||0};
 
   return overview+rows.join('')+'<template id="conversation-live-start"></template>'+(live||(!rows.length?empty('等待第一条消息'):''))+'<template id="conversation-live-end"></template>';

@@ -31,9 +31,12 @@ docker cp "$container:/opt/trace/examples/tsecbench-task.md" "$root/examples/tse
 docker cp "$container:/opt/trace/examples/tsecbench_api.py" "$root/examples/tsecbench_api.py"
 docker cp "$container:/opt/trace/docker/entrypoint.sh" "$root/docker/entrypoint.sh"
 cp -- "$source_root/.dockerignore" "$root/.dockerignore"
-for file in Dockerfile run-linux.sh hosted.env.example install-capabilities.sh capabilities.sha256; do
+for file in Dockerfile run-linux.sh hosted.env.example install-capabilities.sh capabilities.sha256 lightpanda.sha256; do
   cp -- "$source_root/docker/$file" "$root/docker/$file"
 done
+test -x "$root/runtime/lightpanda/lightpanda"
+(cd "$root/runtime/lightpanda" && sha256sum -c "$root/docker/lightpanda.sha256")
+test -s "$root/.trace/skills/lightpanda/SKILL.md"
 mkdir -p "$root/runtime/capabilities"
 while read -r digest name; do
   cp -- "$capability_bundle/$name" "$root/runtime/capabilities/$name"

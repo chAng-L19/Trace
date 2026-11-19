@@ -9,6 +9,13 @@ COPY runtime/capabilities/ /tmp/trace-capabilities/
 COPY docker/install-capabilities.sh docker/capabilities.sha256 /tmp/trace-capability-build/
 RUN sh /tmp/trace-capability-build/install-capabilities.sh /tmp/trace-capabilities /tmp/trace-capability-build/capabilities.sha256 \
     && rm -rf /tmp/trace-capabilities /tmp/trace-capability-build
+COPY runtime/lightpanda/ /opt/trace/runtime/lightpanda/
+COPY docker/lightpanda.sha256 /opt/trace/runtime/lightpanda/SHA256SUMS
+RUN cd /opt/trace/runtime/lightpanda && sha256sum -c SHA256SUMS
+COPY .trace/skills/lightpanda/ /opt/trace/.trace/skills/lightpanda/
+COPY .trace/skills/cloakbrowser/ /opt/trace/.trace/skills/cloakbrowser/
+COPY .trace/skills/web-analysis/ /opt/trace/.trace/skills/web-analysis/
+RUN test -x /opt/trace/runtime/lightpanda/lightpanda
 COPY bin/trace /usr/local/bin/trace
 COPY prompts/agent.md /opt/trace/prompts/agent.md
 COPY licenses/ /opt/trace/licenses/
@@ -30,6 +37,8 @@ ENV PATH="/opt/trace/runtime/python/bin:/opt/trace/runtime/node/bin:/usr/local/s
     TRACE_DATA_DIR=/state TRACE_PROMPT_FILE=/opt/trace/prompts/agent.md \
     TRACE_SKILL_PATHS=/opt/trace/.trace/skills \
     TRACE_WEB_ANALYSIS_DIR=/opt/trace/tools/web-analysis \
+    LIGHTPANDA_DISABLE_TELEMETRY=true \
+    LIGHTPANDA_BINARY_PATH=/opt/trace/runtime/lightpanda/lightpanda \
     CLOAKBROWSER_BINARY_PATH=/opt/trace/runtime/cloakbrowser/binary/chrome \
     CLOAKBROWSER_AUTO_UPDATE=false \
     TRACE_BROWSER_NO_SANDBOX=1 \

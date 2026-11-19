@@ -153,9 +153,28 @@ export function acknowledgeWorkerForm(s,form,revision){
   drafts.delete(content.key);if(current)current.value='';
 }
 export function setField(s,id,value){const el=document.getElementById(id);if(!el)return;el.value=value;rememberInput(s,el)}
+function syncDialogueDock(){
+  const panel=document.querySelector('.task-workbench .workspace-panel');if(!panel)return;
+  const tabs=document.querySelector('.task-tabs')?.getBoundingClientRect(),edge=tabs?.bottom??0;
+  // Measure from the stationary workbench, not the already-stuck panel.
+  const style=document.getElementById('workspace').style,offset=Math.max(0,edge-panel.closest('.task-workbench').getBoundingClientRect().top)+'px';
+  const tabHeight=(tabs?.height??0)+'px';if(style.getPropertyValue('--dialogue-tabs')!==tabHeight)style.setProperty('--dialogue-tabs',tabHeight);
+  const headHeight=panel.querySelector('.workspace-dialogue-head').getBoundingClientRect().height+'px';
+  if(style.getPropertyValue('--dialogue-head-height')!==headHeight)style.setProperty('--dialogue-head-height',headHeight);
+  if(style.getPropertyValue('--dialogue-offset')===offset)return;
+  const pane=panel.querySelector('[data-scroll="conversation"]'),atEnd=pane&&pane.scrollHeight-pane.clientHeight-pane.scrollTop<=1;
+  style.setProperty('--dialogue-offset',offset);
+  if(atEnd)pane.scrollTop=pane.scrollHeight;
+}
+if(typeof window!=='undefined'){
+  window.addEventListener('scroll',e=>{if(e.target===document||e.target.id==='workspace')syncDialogueDock()},{capture:true,passive:true});
+  window.addEventListener('resize',syncDialogueDock);
+}
 export function redraw(s,html,force=false){
   const page=document.getElementById('page'),workspace=document.getElementById('workspace'),scope=viewScope(s),same=scope===renderedScope,outer=outerScope(s),sameOuter=outer===renderedOuterScope,outerTop=workspace.scrollTop;
   if(same&&html===lastHTML&&!force)return false;
+  const enteringDialogue=!s.runError&&s.snap?.run?.id===s.selected&&renderedScope===`history:${s.selected}:loading`&&scope===`history:${s.selected}:activity`;
+  const loadingInput=enteringDialogue?document.querySelector('.workspace-loading textarea')?.getBoundingClientRect():null;
   const notice=document.getElementById('notice'),noticeHome=document.getElementById('notice-home');
   if(notice&&noticeHome)noticeHome.append(notice);
   const active=document.activeElement,focus=same?active?.id:'',selection=[active?.selectionStart,active?.selectionEnd];
@@ -177,6 +196,13 @@ export function redraw(s,html,force=false){
     const scrolls=new Map([...page.querySelectorAll('[data-scroll]')].map(el=>[el.dataset.scroll,el]));for(const [key,saved]of view.scrolls){const el=scrolls.get(key);if(el)restoreScroll(el,saved,{follow:saved.follow&&!['execution-lineage','workspace-lineage'].includes(key)})}
     workspace.scrollTo({top:sameOuter?outerTop:view.top,left:0,behavior:'instant'});
   }else{if(!sameOuter)workspace.scrollTo({top:0,left:0,behavior:'instant'});for(const el of page.querySelectorAll('[data-scroll="conversation"],[data-scroll="stream"],[data-scroll="events"]'))el.scrollTop=el.scrollHeight;if(sameOuter)workspace.scrollTo({top:outerTop,left:0,behavior:'instant'})}
+  // Replacing the skeleton inserts the run controls above the dialogue. Keep
+  // its visible input in place on first entry; a saved reading position wins.
+  if(loadingInput&&!view&&loadingInput.top>=0&&loadingInput.bottom<=window.innerHeight){
+    const owner=window.matchMedia('(min-width:701px)').matches?workspace:document.scrollingElement;
+    syncDialogueDock();owner.scrollTop+=document.getElementById('message-content').getBoundingClientRect().top-loadingInput.top;
+  }
+  syncDialogueDock();
   const input=focus&&document.getElementById(focus);if(input&&input!==active){input.focus({preventScroll:true});try{input.setSelectionRange(...selection)}catch{}}
   document.querySelectorAll('[data-dependency]').forEach(el=>el.disabled=el.dataset.dependency===document.getElementById('task-id')?.value);
   filterTools();mcpTransport();locateGraph();return true;

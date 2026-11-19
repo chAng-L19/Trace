@@ -530,13 +530,18 @@ label{font-size:12px;color:var(--muted)}.note{font-size:12px;line-height:1.7}.ey
 .exploration-preview a:focus-visible .node-box{stroke:var(--ink);stroke-width:3px}
 /* Keep the full composer in the conversation column, outside message scrolling.
    cc-switch d243d970 App.tsx:1693/1929: constrained pane + min-height:0 + own scroll. */
-.task-workbench{--workspace-conversation-height:clamp(420px,68dvh,960px);display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:20px;align-items:start}
-.task-workbench>.workspace-column{grid-column:1;grid-row:1}
-.task-workbench .conversation{height:var(--workspace-conversation-height);min-height:420px;max-height:960px;max-width:none;width:100%}
+.task-workbench{--workspace-conversation-height:clamp(420px,68dvh,960px);--dialogue-floor:120px;display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:20px;align-items:start}
+.task-workbench>.workspace-column{grid-column:1;grid-row:1;align-self:stretch}
+/* Shrink the transcript first. Once 120px remain, the panel itself sticks
+   below the tabs; scrolling the graph never grows the document's height. */
+.task-workbench .workspace-panel{--dialogue-travel:clamp(0px,var(--dialogue-offset,0px),calc(var(--workspace-conversation-height) - var(--dialogue-floor)));padding-top:var(--dialogue-travel);position:sticky;top:calc(var(--dialogue-tabs,0px) - var(--dialogue-travel));z-index:2;overflow-anchor:none}
+.task-workbench .conversation{height:calc(var(--workspace-conversation-height) - var(--dialogue-travel));min-height:0;max-height:none;max-width:none;width:100%}
+#workspace:has(.task-workbench){scrollbar-gutter:stable}
 .task-workbench>.task-inspector{grid-column:2;grid-row:1;display:flex;flex-direction:column;position:sticky;top:42px;height:calc(var(--workspace-conversation-height) + 42px);max-height:calc(100dvh - 124px);min-height:0;gap:0}
 .task-workbench .workspace-secondary{flex:1;overflow:auto;max-height:none}
-.workspace-dialogue-head{position:sticky;top:42px;z-index:2;background:var(--sheet)}
-.workspace-dialogue-head>.workspace-composer{max-height:52dvh;border-bottom:1px solid var(--line);background:var(--sheet);padding:14px 16px}
+.workspace-dialogue-head{background:var(--sheet)}
+@media(max-width:700px){.task-workbench>.workspace-column{display:contents}}
+.workspace-dialogue-head>.workspace-composer{max-height:52dvh;scrollbar-gutter:stable;border-bottom:1px solid var(--line);background:var(--sheet);padding:14px 16px}
 .workspace-composer #run-mailbox{margin-top:10px}
 #workspace-notice>#notice{height:auto;min-height:56px;max-height:180px;margin-bottom:12px}
 [data-worker-title]{max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:left}
@@ -546,6 +551,24 @@ label{font-size:12px;color:var(--muted)}.note{font-size:12px;line-height:1.7}.ey
 #workspace-notice>#notice[hidden]{display:none}
 @media(min-width:1600px){.task-workbench{grid-template-columns:minmax(0,1fr) 340px}}
 @media(max-width:700px){.task-workbench{display:block}.task-workbench>.task-inspector{position:static;height:auto;max-height:none;margin-top:16px}.task-inspector>.workspace-composer{max-height:52vh}.task-workbench .workspace-secondary{flex:none;max-height:360px}}
+/* ARTEX e6ec569 chat/page.tsx: viewport budget + min-height:0 panes.
+   Muteki a73535a pentest.css: native scroll padding for fixed reader chrome.
+   A short CSS viewport (including native zoom) must leave graph hit space. */
+@media(max-height:600px){
+ .task-tabs{flex-wrap:nowrap;white-space:nowrap}.task-tabs>button{flex-shrink:0}
+ .task-workbench{--workspace-conversation-height:36dvh;--dialogue-floor:64px;display:block}
+ .task-workbench>.workspace-column{display:contents}
+ .task-workbench>.task-inspector{position:static;height:auto;max-height:none;margin-top:16px}
+ .task-workbench .workspace-secondary{flex:none;max-height:60dvh}
+ .workspace-dialogue-head{display:flex;flex-direction:column;max-height:40dvh}
+ .workspace-dialogue-head>.workspace-heading{flex:none;padding:4px 12px}
+ .workspace-dialogue-head>.workspace-composer{flex:1 1 auto;min-height:0;max-height:none;padding:8px 12px}
+ .workspace-dialogue-head>.conversation-pages{flex:none;flex-wrap:nowrap;overflow:auto;white-space:nowrap}
+ .workspace-dialogue-head>.conversation-pages>button{flex-shrink:0}
+ .workspace-dialogue-head>.workspace-composer textarea{height:52px;min-height:52px;max-height:120px}
+ .task-workbench .conversation{padding:14px}
+ #workspace:has(.task-workbench){scroll-padding-top:calc(var(--dialogue-tabs,0px) + var(--dialogue-head-height,40dvh) + 64px + 8px);scroll-padding-bottom:8px}
+}
 .worker-disclosure>summary,.worker-card>summary{display:flex;align-items:center;gap:8px;min-width:0;cursor:pointer}
 .worker-disclosure>summary:before,.worker-card>summary:before{content:'›';flex:none}
 .worker-disclosure[open]>summary:before,.worker-card[open]>summary:before{content:'⌄'}

@@ -129,7 +129,7 @@ def capability_inventory(args):
             pass
         modules[name] = item
     binary = os.environ.get("CLOAKBROWSER_BINARY_PATH", "")
-    browser = {"sdk": modules["cloakbrowser"],
+    cloak = {"sdk": modules["cloakbrowser"],
                "binary": {"configured": bool(binary), "is_file": None, "executable": None},
                "display": {"configured": bool(os.environ.get("DISPLAY")),
                            "connection_verified": False,
@@ -138,7 +138,15 @@ def capability_inventory(args):
                "launch_verified": False,
                "tool_search_query": "cloakbrowser"}
     if binary:
-        browser["binary"].update(is_file=os.path.isfile(binary), executable=os.access(binary, os.X_OK))
+        cloak["binary"].update(is_file=os.path.isfile(binary), executable=os.access(binary, os.X_OK))
+    lightpanda = os.environ.get("LIGHTPANDA_BINARY_PATH") or shutil.which("lightpanda")
+    browser = {"preferred": "lightpanda", "fallback": "cloakbrowser",
+               "lightpanda": {"binary": {"configured": bool(lightpanda),
+                                         "is_file": os.path.isfile(lightpanda) if lightpanda else None,
+                                         "executable": os.access(lightpanda, os.X_OK) if lightpanda else None},
+                             "protocol": modules["playwright"], "lifecycle": modules["psutil"],
+                             "launch_verified": False, "tool_search_query": "lightpanda"},
+               "cloakbrowser": cloak}
     alternatives = {"http": ["Python stdlib urllib (available in this helper)"],
                     "hex": ["Python bytes.hex()/bytes.fromhex() (stdlib)"],
                     "ssh_protocol_candidates": [], "ssh_password_candidates": []}
@@ -164,9 +172,9 @@ def capability_inventory(args):
                 "PATH/spec/metadata presence is not execution or import verification; verify the selected operation.",
                 "TCP port-probe/socket proves connectivity only, not SSH handshake, authentication or command execution.",
                 "pydash path semantics require the target version and a small local check, not a hand-written approximation.",
-                "Discover browser with tool_search query=cloakbrowser, select its returned stable ID, then read its schema/Skill.",
+                "Prefer tool_search query=lightpanda; use cloakbrowser for unavailable/unsupported Lightpanda or actual rendering/screenshots. Select the stable ID and read its schema/Skill.",
                 "tool_search matches all query terms; zero matches is not an empty catalog. Retry an exact short term or empty paginated query.",
-                "Browser binary/display checks are prerequisites only; unconfigured binary location remains unknown."]}
+                "Browser binary/display checks are prerequisites only; unconfigured binary location remains unknown. Never replay an uncertain action in a backup browser."]}
 
 
 def http_request(args):

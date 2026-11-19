@@ -55,7 +55,7 @@ def assess(operation, status, body):
                 raise ValueError("invalid progress flag counts")
             if type(row.get("is_completed")) is not bool or row.get("container_status") not in ("pending", "available", "stop_pending", "stopped"):
                 raise ValueError("missing/invalid progress state")
-            if row["is_completed"] != (row["correct_flag_count"] == row["flag_count"]):
+            if row["is_completed"] != (row["flag_count"] > 0 and row["correct_flag_count"] == row["flag_count"]):
                 raise ValueError("progress completion disagrees with flag counts")
             result["progress"].append({key: row.get(key) for key in ("unique_code", "total_score", "flag_count", "correct_flag_count", "is_completed", "container_status")})
         result["outcome"] = "observed"
@@ -86,6 +86,10 @@ def assess(operation, status, body):
         result["matched_flag_index"] = matched
         result["score_semantics"] = "cumulative_score is this challenge's latest total, never add historical cumulative values"
         result["outcome"] = "correct" if body["correct"] else "incorrect"
+        # Submission acceptance and multi-flag completion are independent.
+        result["submission_accepted"] = body["correct"]
+        result["challenge_completed"] = body["total_flag_count"] > 0 and body["correct_flag_count"] == body["total_flag_count"]
+        result["remaining_flags"] = body["total_flag_count"] - body["correct_flag_count"]
     elif operation == "close":
         result["outcome"] = "closed" if body.get("closed") is True else "unknown"
     elif operation == "start":
@@ -139,7 +143,7 @@ def summarize(receipts):
     score = sum((Decimal(str(value["cumulative_score"])) for _, value in latest.values()), Decimal(0))
     return {"outcome": "observed", "recorded_score": float(score) if score % 1 else int(score),
             "correct_flags": sum(value["correct_flag_count"] for _, value in latest.values()),
-            "completed_challenges": sum(value["correct_flag_count"] == value["total_flag_count"] for _, value in latest.values()),
+            "completed_challenges": sum(value["total_flag_count"] > 0 and value["correct_flag_count"] == value["total_flag_count"] for _, value in latest.values()),
             "challenges": [{"unique_code": code, **value} for code, (_, value) in sorted(latest.items())],
             "score_semantics": "Sum the latest cumulative_score per challenge in the supplied receipts, including partial flags and deductions. This is recorded raw points, not a normalized platform score; missing challenges remain unknown."}
 

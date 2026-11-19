@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 )
 
@@ -414,16 +415,27 @@ func (s *Store) Report(id string) (string, error) {
 	return s.ReportVersion(id, "")
 }
 
-// ReportVersion validates and renders one detached, source-revalidated snapshot.
-// Fixed exports never reread children/chains or recalculate usage after Load.
-// Ordinary reports retain current external-source checks.
+func (s *Store) readReportSource(id string) (Snapshot, error) {
+	unlock, err := s.acquireStoreLock()
+	if err != nil {
+		return Snapshot{}, err
+	}
+	defer unlock()
+	return s.verifySourceLocked(id, map[string]bool{}, readSourceOnly)
+}
+
+// Fixed exports render only the detached, revalidated snapshot. Ordinary
+// reports also check the current external sources without writing them back.
 func (s *Store) ReportVersion(id, hash string) (string, error) {
-	snapshot, err := s.Load(id)
+	snapshot, err := s.readReportSource(id)
 	if err != nil {
 		return "", err
 	}
 	if hash != "" {
-		if snapshot.Run.Deleted || childReportHash(&snapshot) != hash {
+		if snapshot.Run.Deleted {
+			return "", os.ErrNotExist
+		}
+		if childReportHash(&snapshot) != hash {
 			return "", fmt.Errorf("source report version changed or unavailable")
 		}
 		return renderReportSnapshot(&snapshot, nil, ChildReportReceipts(snapshot, 0)), nil

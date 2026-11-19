@@ -69,6 +69,146 @@ func u7Read(t *testing.T, store *Store, hash string) string {
 	return string(data)
 }
 
+// Store.Load would reconcile the deliberately stale frontier in these fixtures.
+// A historical file read (including a miss) must leave the saved Run alone.
+func TestArchivedDocumentReadDoesNotReconcileRun(t *testing.T) {
+	for _, backend := range []string{"json", "sqlite"} {
+		t.Run(backend, func(t *testing.T) {
+			store, s := u7Store(t, backend)
+			ref, err := store.PutArtifact("report", []byte("fixed archive"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			ref.Name = "archived.en.md"
+			s.Plan.Frontier = []string{"stale-entry"}
+			for _, pinned := range []bool{false, true} {
+				id := ""
+				if pinned {
+					id = "saved-version"
+					s.Reports = []ReportArchive{{ID: id, Kind: "final", SubjectID: "result", Files: []ArtifactRef{ref}}}
+				}
+				if err := store.savePreparedLocked(s); err != nil {
+					t.Fatal(err)
+				}
+				_, body, err := store.ReportDocument(s.Run.ID, id, "en")
+				if pinned && (err != nil || body != "fixed archive") || !pinned && err == nil {
+					t.Fatalf("pinned=%t: body=%q err=%v", pinned, body, err)
+				}
+				after, err := store.loadRawLocked(s.Run.ID)
+				if err != nil || !after.Run.UpdatedAt.Equal(s.Run.UpdatedAt) || !reflect.DeepEqual(after.Plan.Frontier, s.Plan.Frontier) || len(after.Reports) != len(s.Reports) {
+					t.Fatalf("document read reconciled or changed the saved Run: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestReportMissingFilesDoNotCreateArchive(t *testing.T) {
+	for _, backend := range []string{"json", "sqlite"} {
+		t.Run(backend, func(t *testing.T) {
+			store, s := u7Store(t, backend)
+			// A verified Load would replace this stale result and produce a final.
+			s.Run.Status = StatusCompleted
+			s.Result = Result{Status: "incomplete", Summary: "saved result", CleanupStatus: "unknown"}
+			s.Messages = append(s.Messages, Message{Role: "assistant", Content: "A completed conversation with no archived Markdown file."})
+			s.Reports = []ReportArchive{{ID: "no-files", Kind: "final", SubjectID: "result"}, {ID: "lost-file", Kind: "final", SubjectID: "result", Files: []ArtifactRef{{Hash: strings.Repeat("b", 64), Name: "lost.en.md"}}}}
+			if err := store.savePreparedLocked(s); err != nil {
+				t.Fatal(err)
+			}
+			before, err := store.loadRawLocked(s.Run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			view := ReportReceipts(before)
+			if len(view) != 2 || len(view[1].Files) != 0 || len(before.Reports[1].Files) != 1 {
+				t.Fatal("missing file projected as downloadable or durable receipt lost")
+			}
+			if _, _, err = store.ReportDocument(s.Run.ID, "", "en"); err == nil || !strings.Contains(err.Error(), "no saved summary report") {
+				t.Fatalf("default download did not report missing archive: %v", err)
+			}
+			if _, _, err = store.ReportDocument(s.Run.ID, "lost-file", "en"); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("missing CAS file: %v", err)
+			}
+			after, err := store.loadRawLocked(s.Run.ID)
+			if err != nil || !reflect.DeepEqual(after, before) {
+				t.Fatalf("document read changed stored Run: %v", err)
+			}
+		})
+	}
+}
+
+func TestReportFinalViewTracksCurrentChildSource(t *testing.T) {
+	for _, backend := range []string{"json", "sqlite"} {
+		t.Run(backend, func(t *testing.T) {
+			store, root := u7Store(t, backend)
+			child, err := store.createInitialized("child source", "prompt", "prompt-hash", func(s *Snapshot) error {
+				s.Run.ParentRunID, s.Run.ParentTaskID = root.Run.ID, "part"
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			child, err = store.Load(child.Run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			w := AgentWorker{ID: "worker", RunID: child.Run.ID, TaskID: "part", Visit: 1}
+			latest := newChildReport(root.Run.ID, w, &child, "completed")
+			older := latest
+			older.SourceHash = "superseded"
+			root, err = store.Update(root.Run.ID, func(s *Snapshot) error {
+				s.Run.Status = StatusCompleted
+				s.Workers = []AgentWorker{w}
+				s.ChildReports = []ChildReport{older, latest}
+				return nil
+			})
+			if err != nil || len(root.Reports) != 1 {
+				t.Fatalf("root archive: %v", err)
+			}
+			id := root.Reports[0].ID
+			ref, fixed, err := store.ReportDocument(root.Run.ID, id, "en")
+			if err != nil {
+				t.Fatal(err)
+			}
+			check := func(want string) {
+				t.Helper()
+				view := root
+				view.ChildReports, err = store.ChildReportsFrom(root, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := ReportReceipts(view)
+				if len(got) != 1 || got[0].ID != id || got[0].SourceStatus != want {
+					t.Fatalf("got report %+v, want source %s", got, want)
+				}
+			}
+			check("current")
+			if _, body, err := store.ReportDocument(root.Run.ID, "", "en"); err != nil || body != fixed {
+				t.Fatalf("default download lost current archived file: %v", err)
+			}
+			if _, err = store.Update(child.Run.ID, func(s *Snapshot) error { s.Run.Goal += " changed"; return nil }); err != nil {
+				t.Fatal(err)
+			}
+			check("changed")
+			root.Plan.Frontier = []string{"stale-frontier"}
+			if err := store.savePreparedLocked(root); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := store.ReportDocument(root.Run.ID, "", "en"); err == nil || !strings.Contains(err.Error(), "current source") {
+				t.Fatalf("default download presented changed source as current: %v", err)
+			}
+			after, err := store.loadRawLocked(root.Run.ID)
+			if err != nil || !reflect.DeepEqual(after.Plan.Frontier, root.Plan.Frontier) || !after.Run.UpdatedAt.Equal(root.Run.UpdatedAt) || !reflect.DeepEqual(after.Reports, root.Reports) {
+				t.Fatalf("selecting the current document rewrote root: %v", err)
+			}
+			got, body, err := store.ReportDocument(root.Run.ID, id, "en")
+			if err != nil || body != fixed || got.Hash != ref.Hash {
+				t.Fatalf("live source change rewrote pinned report: %v", err)
+			}
+		})
+	}
+}
+
 func TestU7ReportArchiveVersionsAndCAS(t *testing.T) {
 	for _, backend := range []string{"json", "sqlite"} {
 		t.Run(backend, func(t *testing.T) {

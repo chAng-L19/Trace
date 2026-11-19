@@ -33,7 +33,7 @@ func cloakBrowserPreset(ctx context.Context, python string) (Manifest, Dependenc
 func cloakBrowserManifest(python string) Manifest {
 	return Manifest{
 		Name:        "cloakbrowser",
-		Description: "浏览器工具：使用 CloakBrowser Python SDK，以有界面 Chromium 浏览、点击、填写、读取 DOM、执行 JavaScript、截图。code 使用同步 Playwright API，变量 page、context、browser、args，结果赋给 result。固定 binary 不透传 console/pageerror，空事件不证明无日志或无页面错误；原生 page.set_content 会在 DOM 已写入后超时。替换当前文档请显式调用 set_document(html, ready_selector=..., timeout=...)，单次写入并核验就绪和 URL，不等价原生 API；失败先核对副作用，不重放。每调用独立 browser/context，结束自动关闭且不保留登录状态；关联步骤一次完成。Linux 无 DISPLAY 时使用 Xvfb，仍为 headless=False；未提供远程桌面。失败不回退其他浏览器。截图用 page.screenshot(path=...) 后注册文件。",
+		Description: "备用浏览器；常规导航/DOM/表单/JavaScript优先选择 lightpanda，截图/实际渲染或其不支持时使用本工具。使用 CloakBrowser Python SDK，以有界面 Chromium 浏览、点击、填写、读取 DOM、执行 JavaScript、截图。code 使用同步 Playwright API，变量 page、context、browser、args，结果赋给 result。固定 binary 不透传 console/pageerror，空事件不证明无日志或无页面错误；原生 page.set_content 会在 DOM 已写入后超时。替换当前文档请显式调用 set_document(html, ready_selector=..., timeout=...)，单次写入并核验就绪和 URL，不等价原生 API；失败先核对副作用，不重放。每调用独立 browser/context，结束自动关闭且不保留登录状态；关联步骤一次完成。Linux 无 DISPLAY 时使用 Xvfb，仍为 headless=False；未提供远程桌面。失败不回退其他浏览器。截图用 page.screenshot(path=...) 后注册文件。",
 		GitHubURL:   "https://github.com/CloakHQ/CloakBrowser",
 		Command:     python, Args: []string{"-c", cloakBrowserSource}, Mode: ModeStdio,
 		TimeoutSeconds: 120, CancelGraceSeconds: 10,

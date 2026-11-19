@@ -8,9 +8,20 @@ import (
 	"time"
 )
 
-// This path runs under the existing store lock. Derived statuses are revocable:
-// a saved verified flag never substitutes for its current source ledger.
+// Only ordinary Store loads commit revocations. Report reads apply exactly the
+// same verification to detached snapshots, including all recursive sources.
+type sourceReadMode bool
+
+const (
+	readSourceOnly      sourceReadMode = false
+	commitSourceChanges sourceReadMode = true
+)
+
 func (store *Store) loadVerifiedLocked(id string, visiting map[string]bool) (Snapshot, error) {
+	return store.verifySourceLocked(id, visiting, commitSourceChanges)
+}
+
+func (store *Store) verifySourceLocked(id string, visiting map[string]bool, mode sourceReadMode) (Snapshot, error) {
 	if visiting[id] {
 		return Snapshot{}, fmt.Errorf("cyclic evidence provenance")
 	}
@@ -20,7 +31,7 @@ func (store *Store) loadVerifiedLocked(id string, visiting map[string]bool) (Sna
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if store.refreshDerivedLocked(&snap, visiting) {
+	if store.verifyDerivedLocked(&snap, visiting, mode) && mode == commitSourceChanges {
 		snap.Run.UpdatedAt = time.Now().UTC()
 		if err = store.archiveReports(&snap); err != nil {
 			return Snapshot{}, err
@@ -52,6 +63,10 @@ func taskDone(t PlanTask) bool {
 }
 
 func (store *Store) refreshDerivedLocked(s *Snapshot, visiting map[string]bool) bool {
+	return store.verifyDerivedLocked(s, visiting, commitSourceChanges)
+}
+
+func (store *Store) verifyDerivedLocked(s *Snapshot, visiting map[string]bool, mode sourceReadMode) bool {
 	previousFrontier := s.Plan.Frontier
 	previousVerification := valueHash(struct {
 		Checks   []VerificationCheck
@@ -80,7 +95,7 @@ func (store *Store) refreshDerivedLocked(s *Snapshot, visiting map[string]bool) 
 				delete(sources, lastChild)
 				lastChild = ""
 			}
-			source, err := store.loadVerifiedLocked(runID, visiting)
+			source, err := store.verifySourceLocked(runID, visiting, mode)
 			if err == nil && source.Run.ParentRunID == s.Run.ID && source.Run.ParentTaskID == w.TaskID {
 				sources[runID] = &source
 				lastChild = runID
@@ -108,6 +123,11 @@ func (store *Store) refreshDerivedLocked(s *Snapshot, visiting map[string]bool) 
 		} else if task.ChildRunID != "" {
 			source := sourceFor(task.ChildRunID)
 			valid = taskScopeMatches(source, *task) && (source.Run.Status == StatusCompleted && source.Result.Status != "failed" || reportBusinessReady(source)) && len(task.Requirements) == 0
+			// A settled turn stays completed in ordinary chat. A strict child
+			// still needs the business success required at initial settlement.
+			if valid && source.Run.RequireVerifiedCompletion {
+				valid = source.Result.Status == "success"
+			}
 		}
 		if valid && task.ChildRunID != "" {
 			valid = false

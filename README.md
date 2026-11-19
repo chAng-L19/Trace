@@ -4,9 +4,9 @@ Trace 是以持久 Run 为核心的研究 Agent，CLI 与 WebUI 共用 Go Agent�
 
 ## 当前入口
 
-- 源码位于 `E:/cli/trace`；当前正式版本为 `optimize-pi-20261117`；此前运行时和多模型配置已发布，本轮工作台固定滚动/模型编辑区改版已在服务器隔离验收，尚未发布。已登记的完整TSB镜像为 `trace:full-agent-tsb-20261112`，尚未同步后续修复；发行身份、完整包和旧版清理边界见 [DEPLOYMENT.md](DEPLOYMENT.md)。
+- 源码位于 `E:/cli/trace`；当前正式版本为 `optimize-pi-20261117`；此前运行时和多模型配置已发布，本轮调度、完成度、报告和工作区修复已在服务器隔离验收并完成独立复核，尚未发布。已登记的完整TSB镜像为 `trace:full-agent-tsb-20261112`，尚未同步后续修复；发行身份、完整包和旧版清理边界见 [DEPLOYMENT.md](DEPLOYMENT.md)。
 - [HANDOVER.md](HANDOVER.md) 是短交接，[开发计划.md](开发计划.md) 是唯一当前待办/待吸收清单，[FEATURE_COMPARISON_CURRENT.md](FEATURE_COMPARISON_CURRENT.md) 保留参考来源与采用理由。
-- CloakBrowser0.6.4固定binary/headed/Xvfb保持；11月6日P0/cache/T3/D1/UI/Skill与最后浏览器能力合同修补均已正式部署。显式set_document可用，原生set_content和console/pageerror仍为固定binary限制，空事件不证明无日志/无页面错误。
+- 浏览器优先 Lightpanda，CloakBrowser0.6.4固定binary/headed/Xvfb作为备用；新增优先级属于未发布源码，正式版本仍按部署记录。11月6日P0/cache/T3/D1/UI/Skill与最后浏览器能力合同修补均已正式部署。显式set_document可用，原生set_content和console/pageerror仍为固定binary限制，空事件不证明无日志/无页面错误。
 - TSecBench 历史复盘见维护文档，本批未操作比赛或实例。T2原B9三页面500ms门槛仍FAIL，缓存实际命中率/TTFT/成本及模型策略收益待实测；合成链和部署通过不代替平台成绩。
 - Muteki 当前固定参考源码为 `a73535a19fd2c1cddd97dfbeea65f62f4ce136ee`（`E:/cli/_refs/muteki`）；其他固定参考见对照文档。pi实际依赖不是换成pi CLI。除pi core外，不迁入参考仓库作为第二运行引擎或CTF控制体系。
 ## 阅读导航
@@ -116,7 +116,7 @@ TRACE_DATA_DIR=/absolute/path/to/stopped-state trace store-export /absolute/path
 
 `Provider delta/MCP progress/工具输出 → 有界合批 → Store EventSeq → SSE游标 → live.js投影 → conversation.js/探索图`。首次读取轻量 workspace，完整请求和原始事件按需读取；`Last-Event-ID`/`after` 补读，按 Run/request/call 去重，避免逐token全页刷新。
 
-实时轨迹已移除；统一对话保留正文、思考、工具调用/返回和进度，调用详情从工具、待核对调用或文件来源打开。请求/schema按需读取，原始事件及探索图历史回放保留。
+实时轨迹已移除；统一对话保留正文、思考、正常工具调用/返回和进度，uncertain 调用在普通对话隐藏。原始动作、事件、预算账本和文件来源仍保留供审计；请求/schema 按需读取。
 
 Provider约200ms合批并在结束drain；SSE约150ms检查、15s心跳。这是实现节奏，不是端到端承诺；持久化失败反馈调用路径，预览不代替完整响应或执行结果。`interactions.js` 保留草稿/滚动/展开。探索图投影真实资产、关系、计划和执行，不另行调度或验证。Go服务定位单用户，公网访问由nginx Basic管理。
 
@@ -174,7 +174,8 @@ $env:TRACE_DATA_DIR = "E:\trace-state"
 | Frida SDK | frida：devices/processes/instrument；PID/进程名+任意JS，结束卸载/脱离；不建持久会话/不spawn，脚本/清理错误非零，取消保留uncertain |
 | Droid ASC | droidasc：APK类/Manifest、字符串/类型/方法/字段引用、按需单类反编译；Python CLI，不计MCP |
 | PATH中Rizin/radare2/r2 | radare2，按需安装 |
-| CloakBrowser 0.6.4 | 唯一通用浏览器入口，官方Python SDK：导航/DOM/填写/点击/JS/截图；每次调用独立有界面浏览器并关闭；无桌面Linux由Xvfb渲染 |
+| Lightpanda | 首选导航/DOM/表单/JavaScript，固定本地 binary + Python Playwright CDP；每次调用独立进程/context，结果未知不自动切换重放 |
+| CloakBrowser 0.6.4 | 备用及截图/实际渲染入口，官方Python SDK：导航/DOM/填写/点击/JS/截图；每次调用独立有界面浏览器并关闭；无桌面Linux由Xvfb渲染 |
 | REA选定子集 | web/JavaScript/Electron 28操作；既有localtool，不恢复整个REA/IDA/native/managed/Android Runtime |
 
 HTTP非2xx是观测，exit0不代表目标成功。HTTP/page默认验证TLS；单次 `verify_tls:false` 返回 `tls_verified:false`，HTTP为null，不自动重试或改全局信任。服务配置保存完整helper/schema，升级二进制不会刷新旧预设，须另同步。
@@ -182,13 +183,14 @@ HTTP非2xx是观测，exit0不代表目标成功。HTTP/page默认验证TLS；�
 - **Frida**：实测SDK17.17.0，Trace环境 `python -m pip install frida`；[示例](examples/frida-local.windows.json)、[Skill](.trace/skills/frida/SKILL.md)。
 - **ASC**：[Droid ASC](https://github.com/MG1937/ASC)，本机editable `droidasc==0.1.1.post5`、`E:/cli/_refs/ASC`、基线 `d3d75ab7a3c092345102d2ec66ab614ad4a6cc75`。调用 `python -m droidasc`；其他主机在Trace环境 `python -m pip install --editable /path/ASC`，源码更新直接生效、依赖另装。合成APK已验发现→选择→Skill→类/引用/反编译→Action/Evidence，不代表任意APK全路径；[示例](examples/asc-local.windows.json)、[Skill](.trace/skills/asc/SKILL.md)。
 - **REA**：移植固定MIT版本JS静态语义/web/CDP/浏览器/Electron，现有localtool接入；旧3个REA JSON字段只验历史证据，旧CAS仍可读。操作、安装、来源/许可和Linux边界见 [tools/web-analysis/README.md](tools/web-analysis/README.md)。
-- **浏览器**：[CloakBrowser](https://github.com/CloakHQ/CloakBrowser)，固定 SDK `cloakbrowser==0.6.4` 与 `psutil==7.2.2`，部署阶段安装并通过上游签名校验下载官方浏览器，再设置 `CLOAKBROWSER_BINARY_PATH` 到冻结可执行文件；`CLOAKBROWSER_AUTO_UPDATE=false`。现有 localtool→JSONL→Worker 接入；输入 `code`/字面 `args`，使用同步 `page/context/browser` API，结果赋给 `result`。每调用独立有界面浏览器，Linux 缺 DISPLAY 时自动使用 Xvfb/xauth；无远程桌面或跨调用登录持久化。错误不回退旧工具，不重放不确定提交。SDK 内部 Python Playwright/JS playwright-core 是协议依赖，独立 Playwright CLI 与 DrissionPage 已移除。使用前 `trace tools` 核对；[Skill](.trace/skills/cloakbrowser/SKILL.md)、[示例](examples/cloakbrowser.md)。SDK MIT 与浏览器二进制许可分别保留于 tools/web-analysis。
+- **首选浏览器**：[Lightpanda](https://github.com/lightpanda-io/browser)，冻结官方 binary，`LIGHTPANDA_BINARY_PATH` 或 PATH 指定，通过 Python Playwright CDP 复用现有 localtool→JSONL→Worker。每调用独立进程/context并关闭；不需要显示服务，不自动下载/更新，不运行上游内置 Agent 循环。无此依赖或任务需要截图/实际渲染/原生缩放时，选备用 CloakBrowser。失败/uncertain 先核对副作用，不跨浏览器自动重放。[Skill](.trace/skills/lightpanda/SKILL.md)、[安装与示例](examples/lightpanda.md)；AGPL-3.0 原文在 licenses/lightpanda-AGPL-3.0.txt。
+- **备用浏览器**：[CloakBrowser](https://github.com/CloakHQ/CloakBrowser)，固定 SDK `cloakbrowser==0.6.4` 与 `psutil==7.2.2`，部署阶段安装并通过上游签名校验下载官方浏览器，再设置 `CLOAKBROWSER_BINARY_PATH` 到冻结可执行文件；`CLOAKBROWSER_AUTO_UPDATE=false`。现有 localtool→JSONL→Worker 接入；输入 `code`/字面 `args`，使用同步 `page/context/browser` API，结果赋给 `result`。每调用独立有界面浏览器，Linux 缺 DISPLAY 时自动使用 Xvfb/xauth；无远程桌面或跨调用登录持久化。错误不回退旧工具，不重放不确定提交。SDK 内部 Python Playwright/JS playwright-core 是协议依赖，独立 Playwright CLI 与 DrissionPage 已移除。使用前 `trace tools` 核对；[Skill](.trace/skills/cloakbrowser/SKILL.md)、[示例](examples/cloakbrowser.md)。SDK MIT 与浏览器二进制许可分别保留于 tools/web-analysis。
 
 ### 工作区与交付
 
 固定浏览器限制：console/pageerror 事件不透传，空捕获不是无错误证明；原生 `page.set_content` 可能在 DOM 已写后超时。明确原位替换用 `set_document(args['html'], ready_selector='#ready', timeout=10000)`，单次执行、失败不重放；说明与边界见浏览器 Skill/示例。场景采集选择受限事件时标 incomplete，不假装完整。
 
-任务内同区切换对话/轨迹、探索链路、证据/产物/结论/协作/事件；调用详情按需看参数/结果/schema/耗时/原文。右侧指令/Worker/预算/上下文，父子导航保持任务。未发布UI：探索图左列下方/移除重复入口，页签各记滚动；思考进行中展开，正文/工具开始、响应结束/中断后自动折叠，可手动展开。仅留本地，未运行/上传，不代表线上生效。
+任务内切换运行对话、探索图、证据、报告与协作；调用详情按需查看参数、结果和原文。消息窗口位于“运行对话”同栏顶部，右侧显示 Worker、预算及上下文。探索图在对话下方，支持拖拽扩大、平移和按具体关系高亮链路。固定 report_id 与语言读取已有 CAS 报告；无归档显示状态。上述为候选源码行为，隔离验收和正式发布状态以开发计划、部署说明为准。
 
 证据页默认完整操作链：选真实操作、排序、逐步说明，一链一记录、步骤独立展开；跨Run/结论引用保留用途/固定hash，原账本可查。`evidence_chain_search/read/create/reference` 检索/读取/引用；新观察用 `method_id/variant/applicability/lesson/derived_from` 吸收多个来源形成新方法，旧版本/多方法保留，来源失效沿血缘传播。引用/组合不执行命令，不替代新Run验收。
 
@@ -450,4 +452,4 @@ P2第18项以动作/证据/计划/用户输入的语义指纹去重completion au
 
 当前已有本地 JSON/OS 锁、CAS、Skills、语义摘要、Provider/工具流式事件、持久 Planner/child worker 和本地 WebUI。SQLite为显式离线迁移候选后端，默认JSON保持；尚无远程 worker 集群/容器隔离、模型 tokenizer、费用/token 金额上限、完整 extension/session tree。CAS原生输入附件已接通，模型配置显式开启 image_input 才发送图像块；真实外部视觉模型尚未验收。Windows 历史已运行进程级、独立二进制与独立 Frida 验证；本轮全部产品构建/运行验收只在Ubuntu服务器，历史已通过真实DeepSeek长任务/独立证据审阅与新执行复测、REA单元/集成及Chromium/Electron活体；30分钟soak使用受控Provider，不是30分钟真实DeepSeek。各批结果不替代未发布改动验收。服务器访问与运维见 [DEPLOYMENT.md](DEPLOYMENT.md)。
 
-正式源码回归通过 `go test ./...`、`go vet ./...`、`node internal/web/render_test.mjs` 和 `node internal/web/integration_interactions_test.mjs` 运行；临时工作目录收尾删除；本轮原始验收日志、历史运行证据快照及已核对截图归入发行版 validation，不导入正式用户 state。当前范围与refs来源见 [开发计划.md](开发计划.md)。
+常用回归入口为 `go test ./...`、`go vet ./...` 与前端 Node 用例；每批实际运行范围、退出码和证据以 DEPLOYMENT.md 为准，不把常用命令当本轮全仓通过。临时测试、源码包与日志保留在项目外独立目录，正式用户 state 不承载验收夹具。

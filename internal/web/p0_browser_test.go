@@ -20,9 +20,26 @@ import (
 )
 
 func TestP0BrowserAcceptance(t *testing.T) {
+	script := "p0_browser.mjs"
+	if os.Getenv("TRACE_ENTRY_BROWSER") == "1" {
+		script = "entry_browser.mjs"
+	}
+	if os.Getenv("TRACE_NOTICE_BROWSER") == "1" {
+		script = "notice_browser.mjs"
+	}
+	runP0Browser(t, script)
+}
+
+func TestWorkspaceBrowserInteractions(t *testing.T) {
+	runP0Browser(t, "p0_browser.mjs", "workspace")
+}
+
+func runP0Browser(t *testing.T, script string, args ...string) {
+	t.Helper()
 	if os.Getenv("TRACE_P0_BROWSER") != "1" {
 		t.Skip("server-only: TRACE_P0_BROWSER=1, fixed headed CloakBrowser 0.6.4 and DISPLAY/Xvfb required")
 	}
+	interactions := len(args) != 0
 	if os.Getenv("DISPLAY") == "" || os.Getenv("TRACE_CLOAKBROWSER_NODE_MODULE") == "" || os.Getenv("CLOAKBROWSER_BINARY_PATH") == "" {
 		t.Fatal("explicit DISPLAY, fixed CloakBrowser module and binary are required; no download/fallback")
 	}
@@ -80,6 +97,15 @@ func TestP0BrowserAcceptance(t *testing.T) {
 				s.Messages = append(s.Messages, agent.Message{ID: fmt.Sprintf("p0-history-%03d", i), Role: role, Content: fmt.Sprintf("P0_HISTORY_%03d\n\n", i) + strings.Repeat("可复核历史正文。保留阅读锚点，不自动跳到最新消息。\n\n", 7)})
 			}
 			s.Requests = []agent.ModelRequest{{ID: request}}
+			if interactions && n == 0 {
+				calls := []agent.ToolCall{{ID: "fixture-pending", Name: "fixture_pending", Arguments: "{}"}, {ID: "fixture-normal", Name: "fixture_normal", Arguments: "{}"}}
+				last := &s.Messages[len(s.Messages)-1]
+				last.RequestID, last.ToolCalls = request, calls
+				s.Actions = []agent.Action{
+					{RequestID: request, CallID: calls[0].ID, Name: calls[0].Name, Arguments: "{}", Status: "started"},
+					{RequestID: request, CallID: calls[1].ID, Name: calls[1].Name, Arguments: "{}", Status: "completed", Result: &agent.ToolResult{Stdout: "fixture result"}},
+				}
+			}
 			s.Workers = workers
 			s.Plan.Capacity = 5
 			s.Plan.Tasks = []agent.PlanTask{
@@ -136,6 +162,34 @@ func TestP0BrowserAcceptance(t *testing.T) {
 	traffic := []map[string]any{}
 	mux := http.NewServeMux()
 	mux.Handle("/", app.Handler())
+	if interactions {
+		mux.HandleFunc("POST /_p0/workspace/{change}", func(w http.ResponseWriter, r *http.Request) {
+			id := ids[0]
+			change := r.PathValue("change")
+			if change != "uncertain" && change != "remove-dependency" {
+				http.NotFound(w, r)
+				return
+			}
+			event := agent.Event{Type: "plan_updated", Summary: "fixture dependency removed"}
+			_, err := store.Update(id, func(s *agent.Snapshot) error {
+				if change == "uncertain" {
+					s.Actions[0].Status = "uncertain"
+					event = agent.Event{Type: "action_uncertain", Summary: "fixture call needs review", Data: map[string]string{"call_id": s.Actions[0].CallID, "request_id": s.Actions[0].RequestID}}
+				} else {
+					s.Plan.Tasks[1].Dependencies = nil
+				}
+				return nil
+			})
+			if err == nil {
+				err = store.AppendEvents(id, []agent.Event{event})
+			}
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		})
+	}
 	mux.HandleFunc("POST /_p0/report", func(w http.ResponseWriter, r *http.Request) {
 		id := r.URL.Query().Get("id")
 		if _, ok := requests[id]; !ok {
@@ -143,12 +197,16 @@ func TestP0BrowserAcceptance(t *testing.T) {
 			return
 		}
 		_, err := store.Update(id, func(s *agent.Snapshot) error {
-			s.Plan.Tasks = append(s.Plan.Tasks, agent.PlanTask{ID: "task-second-report", Goal: "P0 second settled direction", Status: "completed"})
+			taskID, source, summary := "task-second-report", "p0-preview-new-source", "P0 second inline report"
+			if len(s.ChildReports) == 2 {
+				taskID, source, summary = "task-third-report", "p0-preview-third-source", "P0 third inline report"
+			}
+			s.Plan.Tasks = append(s.Plan.Tasks, agent.PlanTask{ID: taskID, Goal: summary, Status: "completed"})
 			report := s.ChildReports[0]
-			report.TaskID = "task-second-report"
-			report.Visit = 2
-			report.SourceHash = "p0-preview-new-source"
-			report.Summary = "P0 second inline report"
+			report.TaskID = taskID
+			report.Visit = uint64(len(s.ChildReports) + 1)
+			report.SourceHash = source
+			report.Summary = summary
 			s.ChildReports = append(s.ChildReports, report)
 			return nil
 		})
@@ -208,14 +266,7 @@ func TestP0BrowserAcceptance(t *testing.T) {
 	if node == "" {
 		node = "node"
 	}
-	script := "p0_browser.mjs"
-	if os.Getenv("TRACE_ENTRY_BROWSER") == "1" {
-		script = "entry_browser.mjs"
-	}
-	if os.Getenv("TRACE_NOTICE_BROWSER") == "1" {
-		script = "notice_browser.mjs"
-	}
-	command := exec.CommandContext(ctx, node, script)
+	command := exec.CommandContext(ctx, node, append([]string{script}, args...)...)
 	command.Env = append(os.Environ(), "TRACE_P0_FIXTURE="+string(fixture))
 	raw, runErr := command.CombinedOutput()
 	t.Logf("P0_BROWSER %s", raw)

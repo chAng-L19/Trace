@@ -56,7 +56,7 @@ func TestCapabilityInventoryOffline(t *testing.T) {
 			}
 			call := m
 			call.Env = map[string]string{"PATH": bin, "PYTHONPATH": root, "DISPLAY": "",
-				"CLOAKBROWSER_BINARY_PATH": browser, "BENCHMARK_TOKEN": "capability-private-env"}
+				"CLOAKBROWSER_BINARY_PATH": browser, "LIGHTPANDA_BINARY_PATH": browser, "BENCHMARK_TOKEN": "capability-private-env"}
 			out := invokePreset(t, call, map[string]any{}, false)
 			paths := out["tools"].(map[string]any)
 			if len(paths) != 15 || paths["ssh"].(map[string]any)["available"] != present {
@@ -70,7 +70,16 @@ func TestCapabilityInventoryOffline(t *testing.T) {
 			if present && pydash["version"] != "9.9" {
 				t.Fatalf("distribution metadata: %+v", pydash)
 			}
-			b := out["browser"].(map[string]any)
+			browsers := out["browser"].(map[string]any)
+			if browsers["preferred"] != "lightpanda" || browsers["fallback"] != "cloakbrowser" {
+				t.Fatalf("browser priority: %+v", browsers)
+			}
+			lp := browsers["lightpanda"].(map[string]any)
+			lpBinary := lp["binary"].(map[string]any)
+			if lpBinary["is_file"] != present || lpBinary["executable"] != present || lp["launch_verified"] != false {
+				t.Fatalf("Lightpanda prerequisites: %+v", lp)
+			}
+			b := browsers["cloakbrowser"].(map[string]any)
 			display := b["display"].(map[string]any)
 			if b["binary"].(map[string]any)["is_file"] != present || b["launch_verified"] != false || display["configured"] != false || display["connection_verified"] != false || display["xvfb_run_available"] != present || display["xauth_available"] != present {
 				t.Fatalf("browser prerequisites: %+v", b)
@@ -109,9 +118,9 @@ func TestCapabilityInventoryOffline(t *testing.T) {
 
 func TestCapabilityInventoryUnknownBrowser(t *testing.T) {
 	m := installedPresets(t)["capability-inventory"]
-	m.Env = map[string]string{"CLOAKBROWSER_BINARY_PATH": "", "DISPLAY": "fixture-unverified-display"}
+	m.Env = map[string]string{"CLOAKBROWSER_BINARY_PATH": "", "LIGHTPANDA_BINARY_PATH": "", "DISPLAY": "fixture-unverified-display"}
 	out := invokePreset(t, m, map[string]any{}, false)
-	browser := out["browser"].(map[string]any)
+	browser := out["browser"].(map[string]any)["cloakbrowser"].(map[string]any)
 	binary := browser["binary"].(map[string]any)
 	display := browser["display"].(map[string]any)
 	if binary["configured"] != false || binary["is_file"] != nil || binary["executable"] != nil || display["configured"] != true || display["connection_verified"] != false {

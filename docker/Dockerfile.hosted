@@ -12,6 +12,11 @@ RUN rm -rf /opt/trace/tools/web-analysis \
 COPY tools/web-analysis/ /opt/trace/tools/web-analysis/
 COPY .trace/skills/asc/ /opt/trace/.trace/skills/asc/
 COPY .trace/skills/cloakbrowser/ /opt/trace/.trace/skills/cloakbrowser/
+COPY .trace/skills/lightpanda/ /opt/trace/.trace/skills/lightpanda/
+COPY runtime/lightpanda/ /opt/trace/runtime/lightpanda/
+COPY docker/lightpanda.sha256 /opt/trace/runtime/lightpanda/SHA256SUMS
+RUN cd /opt/trace/runtime/lightpanda && sha256sum -c SHA256SUMS
+RUN test -x /opt/trace/runtime/lightpanda/lightpanda
 COPY .trace/skills/frida/ /opt/trace/.trace/skills/frida/
 COPY .trace/skills/web-analysis/ /opt/trace/.trace/skills/web-analysis/
 COPY licenses/ /opt/trace/licenses/
@@ -40,6 +45,8 @@ ENV PATH="/opt/trace/runtime/python/bin:/opt/trace/runtime/node/bin:/usr/local/s
     TRACE_EXEC_RESOURCE_MODE=process-group \
     TRACE_SKILL_PATHS=/opt/trace/.trace/skills \
     TRACE_WEB_ANALYSIS_DIR=/opt/trace/tools/web-analysis \
+    LIGHTPANDA_DISABLE_TELEMETRY=true \
+    LIGHTPANDA_BINARY_PATH=/opt/trace/runtime/lightpanda/lightpanda \
     CLOAKBROWSER_BINARY_PATH=/opt/trace/runtime/cloakbrowser/binary/chrome \
     CLOAKBROWSER_AUTO_UPDATE=false \
     TRACE_BROWSER_NO_SANDBOX=1 REA_BROWSER_NO_SANDBOX=true \

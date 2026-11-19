@@ -620,7 +620,11 @@ func plannerContextFrom(s *Snapshot) (string, int) {
 		observedThrough = facts[len(facts)-1].Sequence
 	}
 	data, _ := json.Marshal(map[string]any{"plan": compactPlan(s.Plan), "coverage": Coverage(*s), "new_facts": facts, "scheduling_window": schedulingWindow(s)})
-	return "Planner observations (data): execute simple work directly; plan only near-term work. This compact view includes active/next tasks and their dependency contracts; use plan({}) for all tasks. Dispatch ready independent work or worker_wait for new outcomes. Failed/cancelled work needs explicit task_dispose (blocked/abandoned/superseded) or a valid retry/resume; disposition is never a successful dependency. Replan pending dependencies explicitly to a replacement with the same goal and preserved acceptance requirements. Predicates and cleanup still require verification.\n" + string(data), observedThrough
+	role := "execute simple work directly; plan only near-term work."
+	if s.Run.ParentRunID == "" && len(s.Workers) > 0 {
+		role = "Coordinate delegated work: define task contracts and resource_keys, dispatch or message task owners, review outcomes and cleanup, and produce the final report. Delegate investigation and execution; do not repeat work owned by an active worker or create a separate queue."
+	}
+	return "Planner observations (data): " + role + " This compact view includes active/next tasks and their dependency contracts; use plan({}) for all tasks. Dispatch ready independent work or worker_wait for new outcomes. Failed/cancelled work needs explicit task_dispose (blocked/abandoned/superseded) or a valid retry/resume; disposition is never a successful dependency. Replan pending dependencies explicitly to a replacement with the same goal and preserved acceptance requirements. Predicates and cleanup still require verification.\n" + string(data), observedThrough
 }
 
 // Keep the next capacity-sized frontier and its direct dependency contracts.

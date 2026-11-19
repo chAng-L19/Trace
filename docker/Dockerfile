@@ -12,6 +12,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libexpat1 libfontconfig1 libfreetype6 fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 COPY runtime/ /opt/trace/runtime/
+COPY docker/lightpanda.sha256 /opt/trace/runtime/lightpanda/SHA256SUMS
+RUN cd /opt/trace/runtime/lightpanda && sha256sum -c SHA256SUMS
 ENV PATH="/opt/trace/runtime/python/bin:/opt/trace/runtime/node/bin:${PATH}" \
     PYTHONPATH="/opt/trace/runtime/cloakbrowser/site-packages:/opt/trace/runtime/site-packages:/opt/trace/runtime/ASC" \
     PYTHONIOENCODING=utf-8 PYTHONUTF8=1 PYTHONDONTWRITEBYTECODE=1 \
@@ -19,6 +21,8 @@ ENV PATH="/opt/trace/runtime/python/bin:/opt/trace/runtime/node/bin:${PATH}" \
     TRACE_SKILL_PATHS=/opt/trace/.trace/skills \
     TRACE_WEB_ANALYSIS_DIR=/opt/trace/tools/web-analysis \
     TRACE_PI_RUNTIME=/opt/trace/runtime/pi \
+    LIGHTPANDA_DISABLE_TELEMETRY=true \
+    LIGHTPANDA_BINARY_PATH=/opt/trace/runtime/lightpanda/lightpanda \
     CLOAKBROWSER_BINARY_PATH=/opt/trace/runtime/cloakbrowser/binary/chrome \
     CLOAKBROWSER_AUTO_UPDATE=false \
     TRACE_BROWSER_NO_SANDBOX=1 \
@@ -27,6 +31,7 @@ ENV PATH="/opt/trace/runtime/python/bin:/opt/trace/runtime/node/bin:${PATH}" \
 RUN cd /opt/trace/runtime/pi \
     && node --input-type=module -e 'import {readFileSync} from "node:fs"; for (const name of ["pi-agent-core","pi-ai"]) { const p=JSON.parse(readFileSync("node_modules/@earendil-works/"+name+"/package.json")); if(p.version!=="1.4.0") throw new Error(name+" must be pinned to 1.4.0"); } await import("@earendil-works/pi-agent-core");' \
     && chmod -R a+rX /opt/trace/runtime/cloakbrowser \
+    && test -x "$LIGHTPANDA_BINARY_PATH" \
     && test -x "$CLOAKBROWSER_BINARY_PATH" \
     && test -x /usr/bin/xvfb-run \
     && test ! -e /opt/trace/runtime/chromium \
@@ -53,6 +58,7 @@ COPY examples/tsecbench_api.py /opt/trace/examples/tsecbench_api.py
 COPY docker/entrypoint.sh /opt/trace/docker/entrypoint.sh
 RUN chmod 0755 /usr/local/bin/trace /opt/trace/docker/entrypoint.sh \
     && test -s /opt/trace/.trace/skills/cloakbrowser/SKILL.md \
+    && test -s /opt/trace/.trace/skills/lightpanda/SKILL.md \
     && test ! -e /opt/trace/.trace/skills/drissionpage \
     && test ! -e /opt/trace/.trace/skills/playwright-cli \
     && cd /opt/trace/tools/web-analysis \

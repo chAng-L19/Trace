@@ -40,11 +40,15 @@ class BenchmarkContract(unittest.TestCase):
     def test_frozen_build_inputs_and_helper_are_not_omitted(self):
         root = HELPER.parents[1]
         allow = (root / ".dockerignore").read_text()
-        for path in ("examples/tsecbench_api.py", "docker/install-capabilities.sh", "docker/capabilities.sha256"):
+        for path in ("examples/tsecbench_api.py", "docker/install-capabilities.sh", "docker/capabilities.sha256", "docker/lightpanda.sha256"):
             self.assertIn("!" + path, allow)
         for name in ("Dockerfile", "Dockerfile.release", "Dockerfile.hosted"):
             source = (root / "docker" / name).read_text()
             self.assertIn("COPY examples/tsecbench_api.py /opt/trace/examples/tsecbench_api.py", source)
+            self.assertIn("LIGHTPANDA_BINARY_PATH=/opt/trace/runtime/lightpanda/lightpanda", source)
+            self.assertIn("test -x", source)
+            self.assertIn("COPY docker/lightpanda.sha256 /opt/trace/runtime/lightpanda/SHA256SUMS", source)
+            self.assertIn("sha256sum -c SHA256SUMS", source)
             self.assertIn("COPY runtime/capabilities/ /tmp/trace-capabilities/", source)
             self.assertIn("install-capabilities.sh /tmp/trace-capabilities /tmp/trace-capability-build/capabilities.sha256", source)
         installer = (root / "docker/install-capabilities.sh").read_text()
@@ -62,6 +66,8 @@ class BenchmarkContract(unittest.TestCase):
             ("tools/web-analysis/", "/opt/trace/tools/web-analysis/"),
             (".trace/skills/asc/", "/opt/trace/.trace/skills/asc/"),
             (".trace/skills/cloakbrowser/", "/opt/trace/.trace/skills/cloakbrowser/"),
+            (".trace/skills/lightpanda/", "/opt/trace/.trace/skills/lightpanda/"),
+            ("runtime/lightpanda/", "/opt/trace/runtime/lightpanda/"),
             (".trace/skills/frida/", "/opt/trace/.trace/skills/frida/"),
             (".trace/skills/web-analysis/", "/opt/trace/.trace/skills/web-analysis/"),
             ("licenses/", "/opt/trace/licenses/"),
@@ -72,6 +78,10 @@ class BenchmarkContract(unittest.TestCase):
         for skill in ("asc", "cloakbrowser", "frida", "web-analysis"):
             self.assertIn(f"/opt/trace/.trace/skills/{skill}", removal)
         self.assertIn("FROM updated", hosted)
+        pack = (root / "docker/pack-p2.sh").read_text()
+        self.assertIn("capabilities.sha256 lightpanda.sha256;", pack)
+        self.assertIn('sha256sum -c "$root/docker/lightpanda.sha256"', pack)
+        self.assertIn('test -s "$root/.trace/skills/lightpanda/SKILL.md"', pack)
 
     def setUp(self):
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -120,6 +130,48 @@ class BenchmarkContract(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(record["assessment"]["outcome"], "incorrect")
         self.assertEqual(record["assessment"]["awarded"], 0, "explicit zero is valid, unlike missing score")
+
+    def test_submit_acceptance_is_separate_from_challenge_completion(self):
+        partial = dict(correct=True, awarded=300, cumulative_score=300,
+                       correct_flag_count=1, total_flag_count=4, matched_flag_index=0)
+        _, receipt = self.invoke("submit", partial)
+        self.assertTrue(receipt["assessment"]["submission_accepted"])
+        self.assertFalse(receipt["assessment"]["challenge_completed"])
+        self.assertEqual(receipt["assessment"]["remaining_flags"], 3)
+        _, receipt = self.invoke("submit", dict(partial, cumulative_score=1200, correct_flag_count=4, matched_flag_index=3))
+        self.assertTrue(receipt["assessment"]["submission_accepted"])
+        self.assertTrue(receipt["assessment"]["challenge_completed"])
+        self.assertEqual(receipt["assessment"]["remaining_flags"], 0)
+        # The incident included a wrong submission after another owner solved it.
+        _, receipt = self.invoke("submit", dict(partial, correct=False, awarded=0,
+                                                cumulative_score=1200, correct_flag_count=4, matched_flag_index=None))
+        self.assertFalse(receipt["assessment"]["submission_accepted"])
+        self.assertTrue(receipt["assessment"]["challenge_completed"])
+        _, receipt = self.invoke("submit", {"code": "duplicate"}, 409)
+        self.assertNotIn("challenge_completed", receipt["assessment"])
+        self.assertNotIn("submission_accepted", receipt["assessment"])
+        self.assertTrue(all(call[1] == "/openapi/v1/challenges/submit" for call in self.server.calls),
+                        "classification never closes an instance or retries a submission")
+
+    def test_zero_total_does_not_count_as_completed_across_endpoints(self):
+        row = dict(unique_code="fixture /阶段", total_score=0, flag_count=0,
+                   correct_flag_count=0, is_completed=False, container_status="pending")
+        code, progress = self.invoke("list", [row])
+        self.assertEqual(code, 0)
+        self.assertFalse(progress["assessment"]["progress"][0]["is_completed"])
+        code, progress = self.invoke("list", [dict(row, is_completed=True)])
+        self.assertEqual(code, 1)
+        self.assertEqual(progress["assessment"]["outcome"], "unknown")
+        self.assertIn("completion disagrees", progress["error"])
+        body = dict(correct=False, awarded=0, cumulative_score=0,
+                    correct_flag_count=0, total_flag_count=0, matched_flag_index=None)
+        code, receipt = self.invoke("submit", body)
+        self.assertEqual(code, 0)
+        self.assertFalse(receipt["assessment"]["challenge_completed"])
+        code, summary = self.summarize_receipts([receipt])
+        self.assertEqual(code, 0)
+        self.assertEqual(summary["completed_challenges"], 0)
+        self.assertEqual(summary["correct_flags"], 0)
 
     def test_bad_score_and_body_never_become_zero(self):
         invalid = [b"HTTP 200\n{}", b"not-json", b"{\"awarded\":NaN}", b"{\"awarded\":1e999}", b"\xff", b"{}", json.dumps(json.dumps(json.dumps(json.dumps({})))).encode()]

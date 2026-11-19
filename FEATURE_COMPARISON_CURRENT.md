@@ -15,3 +15,11 @@
 | REA `a2d8b94dd50dab8d966239dd63ab84718aa8b4b4`，MIT | 固定 Web/JS/Electron 子集；来源索引 `tools/web-analysis/UPSTREAM.json` | 不恢复完整 REA Runtime、IDA 或旧实时轨迹 |
 
 Trace 自有结果与报告仍须校验原始来源及资源清理，审阅、文件存在或退出 0 不替代业务成功。参考概念、移植代码、验收证据分别记账。待实施或待验收以 [开发计划.md](开发计划.md) 为准。
+
+2026-11-18 归档读取对照上述固定版本：Muteki `apps/web/ui/components/studio-prototype/real/reports.ts` 分开冻结报告、草稿和提交账本；ARTEX `web/src/app/(main)/function/tasks/detail/_tabs/report-tab.tsx` 有正文才显示复制操作；pi `packages/coding-agent/src/core/export-html/index.ts` 从既有会话条目构造独立导出。Trace 继续使用既有报告回执和 CAS；未移植参考代码。
+
+2026-11-18 本轮第一参考项为本地 `_refs/pi`、`_refs/ARTEX`、`_refs/muteki`，HEAD 分别与上表固定版本一致。现成实现可直接采用，沿既有架构适配并保留许可/来源。Muteki `coordinator_completion.py` 的 SAVE/FINISH 分离及平台确认前提用于多 flag 回执判定，`coordinator_schedule_dispatch.py` 的任务所有者和 `coordinator_finalize.py` 的交付用于根职责/报告对照；ARTEX `computeLayout` 用于分层、长边走廊和关系身份；pi `agent-loop.ts` 继续作为工具结果先结算再终止的唯一循环。此次新增逻辑是 Trace 现有结构上的适配，未搬入第二调度器、Store 或 CTF 引擎。服务器验收结果按开发计划与部署文档单列。
+
+本轮图鼠标实测暴露：平行 Bézier 路径虽不同，16px 命中笔画仍可重叠。沿 ARTEX 的既有分层与重心排序，参考 Cairn 固定版本 Dagre 独立轨道/edgesep=20 原则适配相邻列平行边，保留命中宽度及单边曲线；未引入 Dagre 库。R3 验收包含两图两关系的真实半弧长中点唯一命中域、反序/坡向几何、长边避节点与清除负控。短视口结合 ARTEX 视口预算和 Muteki 原生 scroll-padding 处理固定输入遮挡。具体通过范围及截图限制见部署说明。
+
+2026-11-18 浏览器增量：按用户指定以 Lightpanda 为首选、CloakBrowser 备用。检索 pi/ARTEX/Muteki 未发现可直接复用的 Lightpanda/CDP 适配；参考 Muteki task-owned browser 生命周期，复用 Trace 原 localtool/JSONL/Worker，而非复制上游内置 Agent/MCP 循环。官方 Lightpanda 源码固定 `166f503a7b55a287539bf3fd4f18419600c1bb8d`，CLI/CDP 仅做最小 Python 协议适配；冻结 binary 版本/hash、真实验收及发布边界见 DEPLOYMENT.md。网页像素渲染、web-analysis 场景采集和 UI 验收仍采用备用 CloakBrowser，不宣称 Lightpanda 等价图形浏览器。

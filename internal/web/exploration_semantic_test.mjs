@@ -30,7 +30,13 @@ assert.equal(graph.nodes.find(n=>n.id==='report').state,'未完成','run complet
 assert.ok(graph.nodes.every(n=>typeof n.title==='string'&&typeof n.summary==='string'));
 assert.match(explorationGraph({snap}),/exploration-node-summary/);
 assert.match(renderExplorationDetail(snap,'report'),/报告引用证据/);
-assert.match(renderExplorationDetail(snap,'report'),/data-format="report"/);
+assert.doesNotMatch(renderExplorationDetail(snap,'report'),/data-format="report"/,'a business result alone is not a saved report file');
+const archived={...snap,reports:[{id:'semantic-v1',kind:'final',subject_id:'result',version:1,source_status:'current',files:[{name:'summary.zh-CN.md'}]}]};
+const archivedDetail=renderExplorationDetail(archived,'report');
+assert.match(archivedDetail,/data-format="report"/);
+assert.match(archivedDetail,/data-run="semantic-run"/);
+assert.match(archivedDetail,/data-report-id="semantic-v1"/);
+assert.match(archivedDetail,/data-language="zh-CN"/);
 assert.match(renderExplorationDetail(snap,'evidence:original'),/来源与完整原文/);
 
 const filtered=explorationSubset(graph,'finding');

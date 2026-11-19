@@ -563,14 +563,6 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) exportRun(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	snap, err := s.store.Load(id)
-	if err == nil && snap.Run.Deleted {
-		err = os.ErrNotExist
-	}
-	if err != nil {
-		respond(w, nil, err)
-		return
-	}
 	format := r.URL.Query().Get("format")
 	if format == "report" {
 		if language := r.URL.Query().Get("language"); language != "" && language != "zh-CN" && language != "en" {
@@ -582,6 +574,7 @@ func (s *Server) exportRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var body, filename string
+		var err error
 		if hash := r.URL.Query().Get("source_hash"); hash != "" {
 			body, err = s.store.ReportVersion(id, hash)
 			filename = "trace-" + id + ".md"
@@ -601,6 +594,14 @@ func (s *Server) exportRun(w http.ResponseWriter, r *http.Request) {
 	}
 	if format != "" && format != "json" && format != "evidence" {
 		writeError(w, 400, errors.New("format must be report, json or evidence"))
+		return
+	}
+	snap, err := s.store.Load(id)
+	if err == nil && snap.Run.Deleted {
+		err = os.ErrNotExist
+	}
+	if err != nil {
+		respond(w, nil, err)
 		return
 	}
 	w.Header().Set("Content-Disposition", `attachment; filename="trace-`+snap.Run.ID+`.json"`)

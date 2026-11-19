@@ -6,6 +6,54 @@ import (
 	"testing"
 )
 
+func TestCompletedChildRevalidatesRequiredBusinessSuccess(t *testing.T) {
+	for _, backend := range []string{"json", "sqlite"} {
+		for _, strict := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/strict=%t", backend, strict), func(t *testing.T) {
+				a, store := treeCapacityAgent(t, backend, MockProvider{})
+				a.SetRequireVerifiedCompletion(strict)
+				root := createTestRun(t, a)
+				if _, err := a.SetPlan(root, []PlanTask{{ID: "read", Goal: "read a fixture"}, {ID: "next", Goal: "review", Dependencies: []string{"read"}}}); err != nil {
+					t.Fatal(err)
+				}
+				_, w := capacityFixtureChild(t, a, root, "read")
+				if err := settlementOperation(t, a, store, root, w, func(s *Snapshot) {
+					resultValidationSource(t, s, "proof", "read", "builtin", "fixture-ready")
+					resultValidationClaim(t, s, Result{Status: "success", EvidenceIDs: []string{"proof"}, Answers: []Answer{{Value: "fixture-ready", EvidenceIDs: []string{"proof"}}}})
+					if s.Result.Status != "success" {
+						t.Fatalf("valid source did not establish child success: %+v", s.Result)
+					}
+				}); err != nil {
+					t.Fatal(err)
+				}
+				before, err := store.Load(root)
+				if err != nil || before.Plan.Tasks[0].Status != "completed" || !hasString(before.Plan.Frontier, "next") {
+					t.Fatalf("valid child completion: %+v, %v", before.Plan, err)
+				}
+				child, err := store.Update(w.RunID, func(s *Snapshot) error {
+					s.Evidence[0].Content += "changed"
+					return nil
+				})
+				if err != nil || child.Run.Status != StatusCompleted || child.Result.Status != "incomplete" || child.Run.RequireVerifiedCompletion != strict {
+					t.Fatalf("revoked source: run=%s result=%s strict=%t err=%v", child.Run.Status, child.Result.Status, child.Run.RequireVerifiedCompletion, err)
+				}
+				after, err := store.Load(root)
+				want := "completed"
+				if strict {
+					want = "uncertain"
+				}
+				if err != nil || after.Plan.Tasks[0].Status != want || hasString(after.Plan.Frontier, "next") != (want == "completed") || after.Workers[0].CleanupStatus != "completed" {
+					t.Fatalf("parent task should be %s with historical cleanup intact: %+v, %v", want, after.Plan, err)
+				}
+				again, err := store.Load(root)
+				if err != nil || again.Run.EventSeq != after.Run.EventSeq || len(again.WorkerMessages) != len(before.WorkerMessages) {
+					t.Fatalf("revalidation emitted a second settlement or invalidation: %v", err)
+				}
+			})
+		}
+	}
+}
+
 func TestProvenanceWindowRevalidatesRepeatedChildSources(t *testing.T) {
 	for _, backend := range []string{"json", "sqlite"} {
 		t.Run(backend, func(t *testing.T) {

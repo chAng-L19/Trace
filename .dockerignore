@@ -21,3 +21,4 @@
 !docker/entrypoint.sh
 !docker/install-capabilities.sh
 !docker/capabilities.sha256
+!docker/lightpanda.sha256

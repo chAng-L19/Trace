@@ -5,6 +5,7 @@ import path from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {createRequire} from 'node:module';
 import {pathToFileURL} from 'node:url';
+import {workspaceInteractions} from './workspace_browser.mjs';
 const require=createRequire(import.meta.url),modulePath=process.env.TRACE_CLOAKBROWSER_NODE_MODULE;
 assert.ok(modulePath&&process.env.CLOAKBROWSER_BINARY_PATH&&process.env.DISPLAY,'fixed SDK/binary and headed DISPLAY required');
 assert.ok(fs.existsSync(process.env.CLOAKBROWSER_BINARY_PATH),'fixed browser binary is absent');
@@ -62,7 +63,19 @@ async function layout(page,label){
  const graphBox=await preview.locator('.graph-shell').evaluate(el=>({height:el.getBoundingClientRect().height,width:el.clientWidth,scrollWidth:el.scrollWidth,overflow:getComputedStyle(el).overflow}));
  assert.ok(graphBox.height>=200&&graphBox.height<=245,label+': preview height is unstable');
  assert.equal(graphBox.overflow,'auto',label+': graph has no independent scroll owner');
- await preview.locator('a.child_report').click();
+ const graphClick={label};(report.graphClicks??=[]).push(graphClick);
+ const childReport=preview.locator('a.child_report');
+ await childReport.evaluate(el=>{
+  window.__p0.graphPointer=null;
+  el.addEventListener('pointerdown',event=>{window.__p0.graphPointer={x:event.clientX,y:event.clientY,onNode:el.contains(document.elementFromPoint(event.clientX,event.clientY))}},{once:true});
+ });
+ try{await childReport.click();graphClick.clicked=true}
+ finally{graphClick.geometry=await page.evaluate(()=>{
+  const box=selector=>{const r=document.querySelector(selector).getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,height:r.height}};
+  const workspace=box('#workspace'),tabs=box('.task-tabs'),head=box('.workspace-dialogue-head'),pane=box('.conversation');
+  return {viewport:{width:innerWidth,height:innerHeight,dpr:devicePixelRatio},workspace,tabs,head,pane,graph:box('.exploration-preview .graph-shell'),pointer:window.__p0.graphPointer,scrollPadding:getComputedStyle(document.querySelector('#workspace')).scrollPaddingTop};
+ })}
+ assert.ok(graphClick.geometry.pointer?.onNode,label+': native pointer did not hit the graph node');
  await page.waitForSelector('.exploration-detail');
  assert.match(await page.locator('.exploration-detail').textContent(),/P0 inline child report/);
  await page.keyboard.press('Escape');
@@ -86,7 +99,9 @@ async function layout(page,label){
  assert.ok(result.messages>0&&result.messages<=40,label+': unbounded message window');
  assert.ok(result.viewport.documentWidth<=result.viewport.width+3,label+': document horizontal overflow '+JSON.stringify(result.viewport));
  if(result.viewport.width<=700){assert.ok(result.rail.height<120,label+': mobile navigation retained desktop height');assert.ok(result.masthead.height<220,label+': mobile header is not compact')}
- await page.locator('#message-content').scrollIntoViewIfNeeded();await frame(page);
+ // Hit-test the actual scrolled position; scrolling the textarea into view
+ // would hide a lost dock after interacting with the graph.
+ await frame(page);
  const hit=await page.locator('#message-content').evaluate(el=>{const r=el.getBoundingClientRect(),x=Math.min(innerWidth-1,Math.max(0,r.x+r.width/2)),y=Math.min(innerHeight-1,Math.max(0,r.y+r.height/2)),at=document.elementFromPoint(x,y);return at===el||el.contains(at)});
  assert.ok(hit,label+': composer textarea blocked by overlay');
  result.overlayAfterComposerScroll=await overlayState(page);
@@ -309,6 +324,17 @@ async function nativeZoom(page){
  return result;
 }
 try{
+ if(process.argv[2]==='workspace'){
+  report.scope='Focused workspace UI: real Store/API and browser input, no tool execution';
+  const context=await browser.newContext({viewport:{width:1440,height:1000}});contexts.push(context);
+  context.setDefaultTimeout(10000);await instrument(context);
+  const page=current=await context.newPage();
+  report.interactions={};
+  await workspaceInteractions({page,base,id:ids[0],output,waitWorkspace,frame,stage,result:report.interactions});
+  report.runtime=await page.evaluate(()=>({errors:window.__p0.errors,unhandled:window.__p0.unhandled}));
+  assert.deepEqual(report.runtime,{errors:[],unhandled:[]});
+  report.result='PASS';
+ }else{
  for(const [index,width] of [1440,1024,390].entries()){
   stage('viewport '+width);const context=await browser.newContext({viewport:{width,height:1000}});context.setDefaultTimeout(15000);context.setDefaultNavigationTimeout(20000);contexts.push(context);await instrument(context);
   const page=current=await context.newPage();page.on('pageerror',error=>report.errors.push(String(error)));
@@ -336,6 +362,7 @@ try{
  report.zoom.runtime=await zoomPage.evaluate(()=>({errors:window.__p0.errors,unhandled:window.__p0.unhandled}));assert.deepEqual(report.zoom.runtime.errors,[]);assert.deepEqual(report.zoom.runtime.unhandled,[]);
  await zoomContext.close();contexts.pop();current=null;
  assert.deepEqual(report.errors,[]);report.executedChecksPassed=true;report.completeCoverage=report.zoom?.verified===true;report.result=report.completeCoverage?'PASS':'PASS_WITH_UNCOVERED_NATIVE_ZOOM';
+ }
 }catch(error){report.result='FAIL';report.error=String(error);stage('failed '+error);try{await current?.screenshot({path:path.join(output,'p0-failure.png'),fullPage:true})}catch{}throw error}
 finally{
  report.http=await getTraffic().catch(error=>({error:String(error)}));

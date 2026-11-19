@@ -2,10 +2,14 @@ import {esc,json,label,btn,empty,evidenceLinks} from './ui.js';
 import {evidenceReading,evidenceDetail} from './evidence.js';
 import {evidencePresentation,evidenceText} from './evidence-report.js';
 import {graphSnapshot,replayToolbar,mountGraphPan} from './history-projection.js';
+import {reportDownloads} from './delivery.js';
 
 // References: ARTEX e6ec56999175509551a1e43a3ee3b053d0941bd9,
 // web/src/components/exploration-graph.tsx + db/exploration.go (AGPL-3.0);
 // Muteki 144df7666dc78ef331e7746357d31c9e0f57c558, EvidenceChain.tsx (AGPL-3.0);
+// Cairn 8e7e0ea67552383851dfcabfba0c4e9c8d007878, index.html: edge/background tap;
+// LuaN1aoAgentv2 a035429766746866bcab30550cd0aac9c539be04, GraphView.tsx
+// and graph.test.ts: dim non-neighbors; Trace keeps parallel relations, not a tree.
 // pi 8a7b0c03dfb702663acafb6dc29f8acaa4ffe391, tree-selector.ts (MIT).
 // Typed reasoning, provenance disclosure and ancestor-preserving filtering only;
 // this projects Trace Store references, not tool activity or a second graph ledger.
@@ -16,7 +20,7 @@ const queries=new Map();let matchIndex=0;
 const viewStates=new Map(),snapshots=new Map();
 let resizeObserver;
 const mountedCanvases=new WeakSet();
-const viewState=id=>{if(!viewStates.has(id))viewStates.set(id,{zoom:1,mode:'initial',kind:''});return viewStates.get(id)};
+const viewState=id=>{if(!viewStates.has(id))viewStates.set(id,{zoom:1,mode:'initial',kind:'',get size(){return ['width','height'].filter(k=>this[k]).map(k=>k+':'+this[k]).join(';')}});return viewStates.get(id)};
 const rootView=root=>viewState(root.dataset.explorationRun+(root.dataset.explorationPreview?':preview':''));
 export const explorationViewStyle=(run,preview=false)=>viewState(run+(preview?':preview':'')).size||'';
 export function explorationSubset(data,kind){
@@ -111,45 +115,71 @@ export function explorationLayout(nodes,edges){
   columns.forEach((ids,c)=>ids.forEach((id,i)=>positions.set(id,{x:24+c*340,y:24+((count-ids.length)/2+i)*164})));
   return {positions,width:(columns.length-1)*340+294,height:count*164+30};
 }
-// Route shortcuts and back edges outside the node rows. Adjacent edges keep
-// their direct, monotone path so the barycenter order still applies.
+// The horizontal section crosses only intervening columns (both end columns
+// for a back edge). Prefer the nearest open row gap over a trip to the roof.
 export function explorationRoutes(layout,edges,{nodeWidth,port,columnGap}){
   const {positions,height}=layout;
   const width=Math.max(layout.width,...Array.from(positions.values(),p=>p.x+nodeWidth+24));
-  const isDetour=(a,b)=>b.x-a.x>columnGap+.01||b.x<=a.x;
-  const lanes=edges.filter(e=>isDetour(positions.get(e.from),positions.get(e.to))).length;
-  const inset=lanes?lanes*10+12:0;
-  const placed=new Map([...positions].map(([id,p])=>[id,{x:p.x,y:p.y+inset}]));
+  const nodeHeight=port*2+2,tracks=[]; // Both renderers put ports 1px above the card center.
   const pairs=new Map(),counts=new Map();
   for(const e of edges){const key=JSON.stringify([e.from,e.to]);counts.set(key,(counts.get(key)||0)+1)}
-  let lane=0;
-  const routes=edges.map(e=>{
-    const a=placed.get(e.from),b=placed.get(e.to),key=JSON.stringify([e.from,e.to]);
+  const paths=edges.map(e=>{
+    const a=positions.get(e.from),b=positions.get(e.to),key=JSON.stringify([e.from,e.to]);
     const i=pairs.get(key)||0; pairs.set(key,i+1);
-    const offset=(i-(counts.get(key)-1)/2)*Math.min(8,port/counts.get(key));
+    const count=counts.get(key),rank=i-(count-1)/2;
+    const offset=rank*Math.min(20,2*port/count);
     const x=a.x+nodeWidth,y=a.y+port+offset,tx=b.x,ty=b.y+port+offset;
     const gutter=(columnGap-nodeWidth)/2;
-    if(!isDetour(a,b))return {d:`M${x} ${y} C${x+gutter} ${y},${tx-gutter} ${ty},${tx} ${ty}`,x:(x+tx)/2,y:(y+ty)/2-6};
-    const top=inset-10*(++lane),out=Math.min(width-8,x+gutter+offset),into=Math.max(8,tx-gutter-offset);
-    return {d:`M${x} ${y} H${out} V${top} H${into} V${ty} H${tx}`,x:(out+into)/2,y:top-4,detour:true};
+    const out=Math.min(width-8,x+gutter),into=Math.max(8,tx-gutter);
+    if(b.x>a.x&&b.x-a.x<=columnGap+.01){
+      // Cairn 8e7e0ea, vendor/dagre.min.js: independent edge tracks, edgesep=20.
+      // Vertical translation alone collapses the normal gap of steep Beziers.
+      // Reverse track order down the slope so the port approaches do not cross.
+      const lane=count>1?(x+tx)/2-rank*Math.min(20,(tx-x)/count)*(Math.sign(ty-y)||1):undefined;
+      return {x,y,tx,ty,out,into,lane};
+    }
+    const left=Math.min(out,into),right=Math.max(out,into),blocked=[];
+    for(const p of positions.values())if(p.x<right&&p.x+nodeWidth>left)blocked.push([p.y-10,p.y+nodeHeight+10]);
+    for(const t of tracks)if(t.left<right&&t.right>left)blocked.push([t.y-18,t.y+18]);
+    const bands=[];
+    for(const interval of blocked.sort((u,v)=>u[0]-v[0])){
+      const last=bands.at(-1);
+      if(last&&interval[0]<last[1])last[1]=Math.max(last[1],interval[1]);else bands.push(interval);
+    }
+    const mid=(y+ty)/2,band=bands.find(([lo,hi])=>lo<mid&&mid<hi);
+    const track=!band?mid:mid-band[0]<=band[1]-mid?band[0]:band[1];
+    tracks.push({left,right,y:track});return {x,y,tx,ty,out,into,track};
   });
-  return {positions:placed,width,height:height+inset,routes};
+  const inset=Math.max(0,...tracks.map(t=>14-t.y));
+  const placed=new Map([...positions].map(([id,p])=>[id,{x:p.x,y:p.y+inset}]));
+  const routes=paths.map(({x,y,tx,ty,out,into,track,lane})=>{
+    y+=inset;ty+=inset;
+    if(lane!==undefined)return {d:`M${x} ${y} H${lane} V${ty} H${tx}`,x:lane,y:(y+ty)/2-6};
+    if(track===undefined)return {d:`M${x} ${y} C${out} ${y},${into} ${ty},${tx} ${ty}`,x:(x+tx)/2,y:(y+ty)/2-6};
+    track+=inset;return {d:`M${x} ${y} H${out} V${track} H${into} V${ty} H${tx}`,x:(out+into)/2,y:track-4,detour:true};
+  });
+  return {positions:placed,width,height:inset+Math.max(height,...tracks.map(t=>t.y+14)),routes};
 }
 // Traverse upstream and downstream separately: visiting a shared ancestor must
 // not highlight unrelated siblings. A selection is presentation state only.
 export function explorationChain(nodes,edges,selection){
   const ids=new Set(nodes.map(n=>n.id)),active=new Set(),linked=new Set();
   if(!selection||!ids.has(selection.from)||!ids.has(selection.to))return {active,linked};
+  const nodeSelection=selection.from===selection.to;
+  const exact=e=>e.from===selection.from&&e.to===selection.to&&e.relation===selection.relation;
+  if(!nodeSelection&&!edges.some(exact))return {active,linked};
   const walk=(start,reverse)=>{
     const queue=[start],seen=new Set(queue);active.add(start);
     for(let i=0;i<queue.length;i++)edges.forEach((e,index)=>{
       if((reverse?e.to:e.from)!==queue[i])return;
-      const next=reverse?e.from:e.to;linked.add(index);active.add(next);
+      const next=reverse?e.from:e.to;
+      if(!nodeSelection&&next===(reverse?selection.to:selection.from))return;
+      linked.add(index);active.add(next);
       if(!seen.has(next)){seen.add(next);queue.push(next)}
     });
   };
   walk(selection.from,true);walk(selection.to,false);
-  edges.forEach((e,i)=>{if(e.from===selection.from&&e.to===selection.to&&(selection.relation===undefined||e.relation===selection.relation))linked.add(i)});
+  edges.forEach((e,i)=>{if(exact(e))linked.add(i)});
   return {active,linked};
 }
 export function explorationGraph(s){
@@ -183,18 +213,29 @@ export function mountExploration(){
     const canvas=root.querySelector('.graph-shell'),svg=canvas?.querySelector('svg');if(!svg)continue;
     const position=root.querySelector('#replay-position');if(position)position.value=position.getAttribute('value');
     const view=rootView(root),preview=!!root.dataset.explorationPreview;
+    // Native resize is bounded by the column. Reserve first-drag headroom,
+    // and restore geometry via CSSOM on pages that disallow inline attributes.
+    canvas.style.width=view.width||canvas.style.width||'min(100%, max(320px, calc(100% - 96px)))';
+    if(view.height)canvas.style.height=view.height;
     if(!mountedCanvases.has(canvas)){
       mountedCanvases.add(canvas);mountGraphPan(canvas);
+      let blank;
+      canvas.addEventListener('pointerdown',e=>{blank=e.button===0&&e.target.matches('svg,.graph-shell')?[e.clientX,e.clientY]:null});
+      canvas.addEventListener('pointermove',e=>{if(blank&&Math.hypot(e.clientX-blank[0],e.clientY-blank[1])>4)blank=null});
+      canvas.addEventListener('click',e=>{
+        if(blank&&e.target.matches('svg,.graph-shell'))clearExploration(canvas.closest('.exploration-view,.exploration-preview'));
+        blank=null;
+      });
       canvas.addEventListener('keydown',e=>{
         const edge=e.target.closest('[data-action="exploration-chain"]');
-        if(edge&&['Enter',' '].includes(e.key)){e.preventDefault();edge.dispatchEvent(new MouseEvent('click',{bubbles:true}))}
-        if(e.key==='Escape'){view.selection=null;paintExplorationChain(root)}
+        if(edge&&['Enter',' '].includes(e.key)){e.preventDefault();selectExplorationChain(edge)}
+        if(e.key==='Escape')clearExploration(canvas.closest('.exploration-view,.exploration-preview'));
       });
     }
     const fit=()=>{
       // Native resizing writes inline dimensions. Preserve those across live
       // reconciliation; no Store/API persistence or inferred graph mutations.
-      view.size=['width','height'].filter(k=>canvas.style[k]).map(k=>k+':'+canvas.style[k]).join(';');
+      view.width=canvas.style.width;view.height=canvas.style.height;
       if(preview||view.mode==='manual'||!canvas.clientWidth||!canvas.clientHeight)return;
       applyZoom(root,explorationScale(Number(svg.dataset.naturalWidth),Number(svg.dataset.naturalHeight),canvas.clientWidth,canvas.clientHeight,view.mode));if(view.mode==='initial')view.mode='manual';
     };
@@ -209,18 +250,27 @@ function paintExplorationChain(root){
   if(picked&&(picked.from===picked.to?!nodes.some(n=>n.id===picked.from):!edges.some(e=>e.from===picked.from&&e.to===picked.to&&e.relation===picked.relation)))view.selection=null;
   const {active,linked}=explorationChain(nodes,edges,view.selection),selected=view.selection;
   nodeElements.forEach(n=>{n.classList.toggle('chain-active',active.has(n.dataset.id));n.classList.toggle('chain-muted',!!selected&&!active.has(n.dataset.id));n.classList.toggle('chain-selected',!!selected&&(selected.from===n.dataset.id||selected.to===n.dataset.id))});
-  edgeElements.forEach((e,i)=>{const exact=!!selected&&e.dataset.from===selected.from&&e.dataset.to===selected.to&&(selected.relation===undefined||e.dataset.relation===selected.relation);e.classList.toggle('chain-active',linked.has(i));e.classList.toggle('chain-muted',!!selected&&!linked.has(i));e.classList.toggle('chain-selected',exact);e.setAttribute('aria-pressed',String(exact))});
+  const titles=new Map(nodes.map(n=>[n.id,n.title]));
+  edgeElements.forEach((e,i)=>{
+    const {from,to,relation}=edges[i],exact=!!selected&&from===selected.from&&to===selected.to&&relation===selected.relation;
+    e.classList.toggle('chain-active',linked.has(i));e.classList.toggle('chain-muted',!!selected&&!linked.has(i));e.classList.toggle('chain-selected',exact);
+    e.setAttribute('aria-pressed',String(exact));e.setAttribute('aria-label',`${titles.get(from)} → ${titles.get(to)}：${relation||''}`);
+  });
   const selection=root.querySelector('.exploration-selection');
   if(selection)selection.innerHTML=(selected?`<span class="note">已高亮 ${active.size} 个节点 · ${linked.size} 条关系</span>${[...new Set([selected.from,selected.to])].map(id=>btn('exploration-detail','查看 '+esc(nodes.find(n=>n.id===id).title),`data-id="${esc(id)}" ${root.dataset.explorationPreview?'data-current="true"':''}`)).join('')}`:'<span class="note">选择连线或节点查看上下游链路</span>')+btn('exploration-control','清除高亮',`data-command="clear" ${selected?'':'disabled'}`);
+  if(selection&&selected?.relation)selection.firstElementChild.prepend(selected.relation+' · ');
 }
 export function selectExplorationChain(el){
   const root=el.closest('.exploration-view,.exploration-preview');if(!root)return;
   rootView(root).selection=el.dataset.action==='exploration-chain'?{from:el.dataset.from,to:el.dataset.to,relation:el.dataset.relation}:{from:el.dataset.id,to:el.dataset.id};paintExplorationChain(root);
 }
+function clearExploration(root){
+  if(rootView(root).selection){rootView(root).selection=null;paintExplorationChain(root)}
+}
 export function explorationControl(el){
   const root=el.closest('.exploration-view,.exploration-preview');if(!root)return;
   const view=rootView(root),command=el.dataset.command;
-  if(command==='clear'){view.selection=null;paintExplorationChain(root);return}
+  if(command==='clear'){clearExploration(root);return}
   if(command==='kind'){
     view.kind=el.dataset.kind;view.mode='initial';view.zoom=1;matchIndex=0;
     const holder=document.createElement('div');holder.innerHTML=explorationGraph(snapshots.get(root.dataset.explorationRun));const next=holder.firstElementChild;root.replaceWith(next);mountExploration();
@@ -254,7 +304,7 @@ export function renderExplorationDetail(snap,id){
   if(n.kind==='intent')detail=`${r.error?`<p class="inline-error">${esc(r.error)}</p>`:''}<p>完成条件：${esc(r.completion_criteria||r.success_contains||'未设置')}</p><div class="buttons">${btn('task-detail','查看计划记录',`data-id="${esc(r.id)}"`)}${r.child_run_id?btn('select','进入执行子运行 ↗',`data-id="${esc(r.child_run_id)}"`):''}</div>`;
   if(n.kind==='external')detail=btn('select','进入证据来源运行 ↗',`data-id="${esc(r.run_id)}"`);
   if(n.kind==='requirement')detail=`<p>${esc(r.check?.reason||'尚无检查记录')}</p>${evidenceLinks(references(r.check))}${r.check?.review?`<p>独立审阅：${esc(r.check.review.reason)}</p>`:''}<details><summary>验收条件与检查原文</summary><pre>${json(r)}</pre></details>`;
-  if(n.kind==='report')detail=`<p>${esc(r.summary||'尚无报告摘要')}</p><h4>报告引用证据</h4>${evidenceLinks(r.evidence_ids)}${(r.answers||[]).map(a=>`<section><h4>报告结论 · ${a.verified?'引用校验通过':'待核对'}</h4><p>${esc(a.value)}</p>${evidenceLinks(a.evidence_ids)}</section>`).join('')}<p class="note">业务状态：${esc(label(r.status))}；清理状态：${esc(label(r.cleanup_status))}。引用校验不等于语义结论已证明。</p>${btn('export','下载完整报告','data-format="report"')}<details><summary>完整报告记录</summary><pre>${json(r)}</pre></details>`;
+  if(n.kind==='report')detail=`<p>${esc(r.summary||'尚无报告摘要')}</p><h4>报告引用证据</h4>${evidenceLinks(r.evidence_ids)}${(r.answers||[]).map(a=>`<section><h4>报告结论 · ${a.verified?'引用校验通过':'待核对'}</h4><p>${esc(a.value)}</p>${evidenceLinks(a.evidence_ids)}</section>`).join('')}<p class="note">业务状态：${esc(label(r.status))}；清理状态：${esc(label(r.cleanup_status))}。引用校验不等于语义结论已证明。</p>${reportDownloads(snap,true)}<details><summary>完整报告记录</summary><pre>${json(r)}</pre></details>`;
   if(n.kind==='finding')detail=`<dl class="key-values"><dt>影响</dt><dd>${esc(r.impact)}</dd><dt>根因</dt><dd>${esc(r.root_cause)}</dd><dt>修复建议</dt><dd>${esc(r.remediation)}</dd><dt>来源状态</dt><dd>${esc(label(r.source_status))}</dd></dl><h4>引用证据</h4>${evidenceLinks(references(r))}<h4>复现步骤</h4><ol>${(r.reproduction_steps||[]).map(v=>`<li>${esc(v)}</li>`).join('')}</ol>${r.review?`<p>独立审阅：${esc(r.review.reason)}</p>`:''}${(r.retests||[]).map(t=>`<p>复测：${esc(t.status)} · ${esc(t.reason)}</p>${evidenceLinks(references(t))}`).join('')}<p class="note">登记、审阅和复测是不同阶段；以各自记录为准。</p><details><summary>完整发现记录</summary><pre>${json(r)}</pre></details>`;
   const linked=edges.filter(e=>e.from===id||e.to===id);
   return `<div class="exploration-detail"><p class="note">${kinds[n.kind]} · ${esc(n.state)}</p><h3>${esc(n.title)}</h3><p>${esc(n.summary)}</p>${n.original.title||n.original.summary?`<details><summary>查看节点原文</summary><pre>${esc([n.original.title,n.original.summary].filter(Boolean).join('\n'))}</pre></details>`:''}${detail}${linked.length?`<h4>关联节点</h4><div class="exploration-relations">${linked.map(e=>{const other=nodes.find(x=>x.id===(e.from===id?e.to:e.from));return `<div><span class="note">${e.from===id?'→':'←'} ${esc(e.relation)}</span>${btn('exploration-detail',esc(other.title),`data-id="${esc(other.id)}"`)}</div>`}).join('')}</div>`:''}</div>`;

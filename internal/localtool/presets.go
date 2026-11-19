@@ -87,6 +87,11 @@ func Presets(ctx context.Context) ([]Manifest, []DependencyStatus) {
 	webManifests, webStatus := webAnalysisPresets(ctx)
 	manifests = append(manifests, webManifests...)
 	status = append(status, webStatus)
+	lightpanda, lightpandaStatus := discoverLightpanda(ctx, python)
+	if lightpandaStatus.Available {
+		manifests = append(manifests, lightpandaManifest(python, lightpanda))
+	}
+	status = append(status, lightpandaStatus)
 	cloak, cloakStatus := cloakBrowserPreset(ctx, python)
 	if cloakStatus.Available {
 		manifests = append(manifests, cloak)
@@ -137,9 +142,9 @@ print(json.dumps({"version":sys.version.split()[0],"modules":modules,"paths":pat
 var pythonPresets = []struct {
 	name, description, module, schema string
 }{
-	{"capability-inventory", "Read-only offline capability inventory: fixed PATH tools, Python module specs/distribution versions, CloakBrowser binary and display prerequisites, and installed alternatives. Does not import optional packages, launch tools/browser, connect, install or verify SSH login/egress. Read once before choosing tools; missing search matches are not proof a capability is absent.", "", `{"type":"object","properties":{},"additionalProperties":false}`},
+	{"capability-inventory", "Read-only offline capability inventory: fixed PATH tools, Python module specs/distribution versions, Lightpanda/CloakBrowser binary, protocol and display prerequisites, and installed alternatives. Does not import optional packages, launch tools/browser, connect, install or verify SSH login/egress. Read once before choosing tools; missing search matches are not proof a capability is absent.", "", `{"type":"object","properties":{},"additionalProperties":false}`},
 	{"http-request", "发送 HTTP 请求，返回状态码、响应头和限量正文；HTTP 错误状态保留为观测。TLS 默认校验证书，缺链或自签证书需显式 verify_tls=false，结果标明是否校验。", "", `{"type":"object","properties":{"url":{"type":"string"},"method":{"type":"string","default":"GET"},"headers":{"type":"object","additionalProperties":{"type":"string"}},"body":{"type":"string"},"verify_tls":{"type":"boolean","default":true,"description":"是否校验 HTTPS 证书；仅显式 false 时跳过，结果保留校验状态。"},"timeout":{"type":"number","default":10},"max_bytes":{"type":"integer","minimum":1,"default":1048576}},"required":["url"]}`},
-	{"page-fetch", "读取网页标题、可见正文、链接与表单，不执行 JavaScript；交互浏览使用 CloakBrowser。TLS 默认校验证书，缺链或自签证书需显式 verify_tls=false，结果标明是否校验。", "", `{"type":"object","properties":{"url":{"type":"string"},"headers":{"type":"object","additionalProperties":{"type":"string"}},"verify_tls":{"type":"boolean","default":true,"description":"是否校验 HTTPS 证书；仅显式 false 时跳过，结果保留校验状态。"},"timeout":{"type":"number","default":10},"max_bytes":{"type":"integer","minimum":1,"default":1048576}},"required":["url"]}`},
+	{"page-fetch", "读取网页标题、可见正文、链接与表单，不执行 JavaScript；交互浏览优先 Lightpanda；截图/实际渲染或其不可用时使用备用 CloakBrowser。TLS 默认校验证书，缺链或自签证书需显式 verify_tls=false，结果标明是否校验。", "", `{"type":"object","properties":{"url":{"type":"string"},"headers":{"type":"object","additionalProperties":{"type":"string"}},"verify_tls":{"type":"boolean","default":true,"description":"是否校验 HTTPS 证书；仅显式 false 时跳过，结果保留校验状态。"},"timeout":{"type":"number","default":10},"max_bytes":{"type":"integer","minimum":1,"default":1048576}},"required":["url"]}`},
 	{"dns-resolve", "通过系统解析器查询主机名，返回 IPv4 和 IPv6 地址。", "", `{"type":"object","properties":{"host":{"type":"string"},"port":{"type":"integer","default":0}},"required":["host"]}`},
 	{"port-probe", "连接指定主机的 TCP 端口，逐项返回连通性观测。", "", `{"type":"object","properties":{"host":{"type":"string"},"ports":{"type":"array","items":{"type":"integer","minimum":1,"maximum":65535}},"timeout":{"type":"number","default":2}},"required":["host","ports"]}`},
 	{"binary-info", "读取本地文件大小、SHA-256 及 PE/ELF/Mach-O 文件头，不执行文件。", "", `{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`},

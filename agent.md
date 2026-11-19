@@ -1,19 +1,19 @@
 # Trace 维护约定
 
-更新：2026-11-09。维护者使用本文件；运行提示词仅用 `prompts/agent.md`，两者不混用。
+更新：2026-11-19。维护者使用本文件；运行提示词仅用 `prompts/agent.md`，两者不混用。
 
 ## 工作边界
 
 - `E:/cli/trace` 只保留 Agent 源码、源码测试、必要配置/构建文件、许可证和维护文档。交付包、日志、下载、临时脚本及研究副本放项目外；`E:/cli/trace测试` 仅保留带日期 Docker 测试包及其运行配置 `.env`。不得擅自在项目中新建其他交付/审计材料。
-- 产品构建、运行、测试和浏览器验收仅在 `ubuntu@trace.example.com` 执行。本机仅编辑、静态检查、文件整理及 SSH 协调；不在本机启动产品、导入/运行镜像或启动正式 TSecBench。部署、发布和不可逆操作遵循用户明确指令，不推送 GitHub。
+- 产品构建、运行、测试和浏览器验收仅在 `ubuntu@193.112.174.4` 执行。本机仅编辑、静态检查、文件整理及 SSH 协调；不在本机启动产品、导入/运行镜像或启动正式 TSecBench。部署、发布和不可逆操作遵循用户明确指令；默认不推送 GitHub，用户明确要求更新 GitHub 时按本次授权提交并推送。
 - 凭据不写入源码、文档、脚本、镜像或交接记录；使用既有配置和环境通道，输出脱敏。不得因整理文档重连服务器或重做已完成的清理。
-- 所有修复优先检索 `E:/cli/_refs` 的对应实现和测试，记录固定版本及适配差异；只查本次相关链路，沿现有架构最小适配，不为参考而扩展任务范围。
+- 所有修复优先检索 `E:/cli/_refs` 的对应实现和测试；pi、ARTEX、Muteki 是第一参考项。现成实现可直接复用或照搬，保留许可和来源，记录固定版本及适配差异；只查本次相关链路，沿现有架构最小适配，不为参考而扩展任务范围。
 - “压缩文档”指删除重复、合并正文、保留事实和接续信息，不制作文档压缩包。Agent 名称尚未选定，保持 Trace 标识。
 
 ## 架构约束
 
 - pi-agent-core/pi-ai 1.4.0 是唯一模型—工具循环，Node >=22.19。Go 保留 Store/API、Provider/密钥/用量、ToolRegistry、证据 Judge 和五 Worker 调度；不新建第二 Store、知识库或执行循环。
-- 浏览器统一 CloakBrowser 0.6.4 有界面模式；Linux 无 DISPLAY 时用 Xvfb。独立 DrissionPage/Playwright CLI 已移除，SDK 内部协议依赖保留；固定 binary，不自动更新/下载，不回退普通 Chromium。
+- 浏览器优先 Lightpanda（https://github.com/lightpanda-io/browser）；CloakBrowser 0.6.4 为备用。常规导航、DOM、表单和 JavaScript 先选 Lightpanda；截图、实际渲染、原生缩放及其不支持的操作选 CloakBrowser 有界面模式，Linux 无 DISPLAY 时用 Xvfb。两者使用预装冻结 binary，不在发现/请求时自动下载或更新；已执行后失败/uncertain 不跨浏览器自动重放。独立 DrissionPage/Playwright CLI 不恢复，协议依赖保留，不回退普通 Chromium。
 - 保持原有持久化、来源校验、uncertain 不重放和预算边界；`completed`、业务 `success`、来源 `verified` 分开判定。只读状态不修改执行语义。
 - 执行资源模式默认 `cgroup`；用户已选择为TSB托管增加显式 `process-group` 普通容器兼容模式，只由托管镜像/显式配置启用，不因委托失败自动降级。兼容模式保留输出预算、所属进程清理与不重放，但不宣称逐命令内存/PID硬隔离或完整防脱离；旧动作按已保存的后端/资源身份恢复，不能用当前ENV改写归属。正式服务器模式不随打包变更。
 - 已删除的实时轨迹、Muteki CTF、IDA 和完整 REA Runtime 不恢复；只保留既定 web/JS/Electron 静态分析子集。

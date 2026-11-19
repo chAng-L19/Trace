@@ -110,9 +110,9 @@ TSec Benchmark 标准跑分流程如下：
 ### 调度与续访约束
 
 - 首次清单同时记录每题总分、多 Flag 数、阶段依赖、已获进度和剩余全局时间；priority 表达明确的预期收益，estimated_seconds 是产出有价值阶段结果所需窗口，expected_progress 写阶段可观测产物。高价值多阶段题应早覆盖，不能等所有易题做完才首访；不凭空估计成功率或把 total_score 当已获分。
-- 开题前核对剩余时间减提交、close、证据保存及清理余量；没有有效执行窗口时不新 start，选择能在窗口内产出结果的待续阶段或收尾。已知平台截止时间属于规划约束，不能假设 Planner 自动从平台响应设置了硬预算。队列只维护题号、owner/worker_id、阶段、下一步和平台进度；Planner 与平台清单是依据，不另用 queue.txt 作为第二调度权威。
+- 开题前核对剩余时间减提交、close、证据保存及清理余量；没有有效执行窗口时不新 start，选择能在窗口内产出结果的待续阶段或收尾。已知平台截止时间属于规划约束，不能假设 Planner 自动从平台响应设置了硬预算。在现有 Planner 任务中记录题号、owner/worker_id、阶段、下一步和平台进度；Planner 与平台清单是依据，不另用 queue.txt 作为第二调度权威。
 
-- 主会话负责平台题目清单、实例名额和全局预算；按题目创建 Planner 任务，设置 capacity=3，使用 worker_dispatch 并行推进相互独立的题目。同一题同一时刻只能有一个 owner。默认最多 3 个活跃实例，不要额外开第 4 个。需要交接时先确认旧 worker 已停止并清理，再恢复原 worker；不是重复创建同题子会话。
+- 主会话只负责整理平台清单、全局预算、调度/派发、验收和汇总报告；首轮清单可由独立收集任务交回，具体 start/探测/submit/close 由对应题目的 Worker 完成。按一个 unique_code 或一个明确阶段创建 Planner 任务，设置 capacity=3，并为该题的所有阶段使用相同的 resource_keys（如 tsecbench:challenge:b-01）。不要派发“遍历整个 queue.txt 的 worker-1/2/3”，不使用 mkdir claims 或额外文件队列代替 Planner，也不由主会话与 Worker 同时处理同题。默认最多 3 个活跃实例；同题同一时刻只有一个 owner，续访先核对旧 owner 的结算和清理，再恢复原 Worker。
 - worker 的 goal 必须包含 unique_code、题意、当前实例地址、剩余 flag 数、已试路径及禁止重复的提交；凭证只从环境读取。单题查找、提交判定、错误信息分别保存，主会话用 worker_wait 等待新结果，不要一边空转轮询一边抢做 worker 正在做的题。
 - 关闭实例只代表释放资源，不等于题目已完成、失败或永久放弃。未通关前需让出时，先记录已执行方法、负面证据、有效中间进展和下一步具体探测；输出并检查 close 响应，然后调用 worker_yield(reason, checkpoint)。父任务保持 paused、不释放依赖，之后用同一 worker_id 执行 worker_resume；恢复后重新核对平台实例地址与 flag 进度。
 - 有有效中间进展时不要仅因“已经花了几轮”就关题。没有进展时调整假设或策略；释放实例换题也必须保留续访队列。每轮调度在“未尝试题目”与“已有进展的待续题”间选择，空闲槽位不能只因第一轮失败而长期闲置。不要把卡住、无新结果、工具正常退出当成整个评测结束。
@@ -120,12 +120,15 @@ TSec Benchmark 标准跑分流程如下：
 - Python 线程同样消耗 PID 名额。线程池必须读取 `TRACE_EXEC_RECOMMENDED_CONCURRENCY`，先小批验证并分批保存结果；出现 `pids.events:max` 后降低下一批并发并核对已完成项，不直接重跑整批。
 - 主会话在普通总结、worker 正常返回或工作集暂空时继续调度。所有题目均有平台成功判定后才报告任务成功；用户手动停止时如实汇总已完成和未完成项，不能把暂停、失败或未解任务改写成成功。缺失外部输入使用 request_input 并说明具体阻塞。
 - 每个 start/submit/close 请求都要保留并输出题号、HTTP 状态及完整业务判定。禁止把 close 输出丢弃后只显示下一题 start；close 返回异常或结果不确定时先核对实例状态，再决定重试。对 invalid_state 按端点和 message 分类；活跃上限、已完成题 hint 等不终止全局。
+- 派发前写清 completion_criteria 和实际可执行的 requirements：题号、平台接受回执、预期 flag 总数/当前已提交数、实例释放各自验收。已知终态 JSON 可以用 json_equals 按实际 ToolID/参数和字段判定；文字“尽可能多拿 flag 并 close”不是整题通过条件。取得一个 flag 后，下一步先 submit 并读取该次完整判定，处理完这项已取得结果再继续探测、换题或 close；不要把 submit 与无条件 close 串在同一 shell 调用中。correct:false、解析失败或 uncertain 均不得凭 exit 0 宣称本次提交接受；duplicate 只说明该 flag 已接受过，仍须按同题最新进度核对其余 flag。
+- 辅助入口分别返回 submission_accepted、challenge_completed 和 remaining_flags。1/4 的 correct:true 仅代表这一个 flag 提交成功；整题仍有 3 个未完成。关闭一个部分完成实例只释放名额，必须保留该题的待续阶段、证据和下一步；不得把“该阶段成功”投影为整题通关。平台明确结束、操作员停止或具体阻塞时如实保留未提交结果和未完成义务，不为满足报告格式继续发请求。
+- 每次 Worker 交回后，主会话先验收原始提交与 close 回执及剩余 flag，再决定续访、下一题或最终报告。没有提交接受证据时，先向原 Worker 发明确纠正消息；不要自己重复解题或创建替代 Worker。主报告列出已验证提交、部分题、未解项、实例/进程清理和归档状态，最终完成以平台全量进度为准。
 
 恢复既有会话后，先重查平台进度与实例状态，避免重复提交或重新执行不确定操作。
 
 优先使用已随镜像提供的薄辅助入口：`python3 /opt/trace/examples/tsecbench_api.py list`；其他操作是 `start|hint|close --unique-code CODE` 与 `submit --unique-code CODE --flag VALUE`。它只发一次请求，从环境读取地址/鉴权，分别输出 endpoint、http_status、raw_body、解析后的 body 与 assessment；不自动重试有副作用请求、不自动切题或关闭。exit 0 只表示已分类，也包括 incorrect/duplicate，不等于通关。缺入口时才用现有 exec 的 Python 标准库 urllib；同样保留原响应并分离 HTTP 状态与 body，不打印环境变量或鉴权头。模型配置已在启动环境注入，无需修改。
 
-开始依赖重的题目之前，用 tool_search 精确查找 `capability-inventory` 并 select 返回ID读取一次清单；`cloakbrowser` 同样单独查询。tool_search 多词是 AND，零命中时缩短词或用空查询分页，不把一次无命中当没有工具。清单中的 PATH/spec/version 不是执行成功；SSH必须真实握手、认证与会话，缺项选择已安装替代，不循环离线 pip。xxd 可用 Python bytes.hex/bytes.fromhex；pydash行为以目标版本与本地最小验证为准。
+开始依赖重的题目之前，用 tool_search 精确查找 `capability-inventory` 并 select 返回ID读取一次清单；浏览器优先单独查询 `lightpanda`；其缺失、能力不支持或需要截图/实际渲染时单独查询备用 `cloakbrowser`，已执行后结果未知先核对副作用，不跨浏览器自动重放。tool_search 多词是 AND，零命中时缩短词或用空查询分页，不把一次无命中当没有工具。清单中的 PATH/spec/version 不是执行成功；SSH必须真实握手、认证与会话，缺项选择已安装替代，不循环离线 pip。xxd 可用 Python bytes.hex/bytes.fromhex；pydash行为以目标版本与本地最小验证为准。
 
 执行时明确 POSIX /bin/sh 与 Bash 语法边界，Bash 数组显式 `bash -lc`。HTTP 状态与 JSON body 分开，bytes 显式解码，不用 enum.py/json.py/socket.py 等标准库同名脚本；失败的 && 前缀不代表后续检查已执行。只按所创建PID清理，不用宽泛 pkill -f；先保留原始日志/输入证据，再试可能破坏该原语的变体。阴性小样本只证明已测范围，不宣称无入口。恢复 access code、登录成功、获取页面均是阶段进展，不等于取得或提交 Flag；只按题面及实际接口执行，不硬编码未经证实的 /check 步骤。
 

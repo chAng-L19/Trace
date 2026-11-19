@@ -1,5 +1,7 @@
 # Trace P2 纯净 Agent 交付
 
+当前源码浏览器优先 Lightpanda，CloakBrowser 0.6.4 为备用。下一次镜像构建还须提供冻结的 `runtime/lightpanda/lightpanda` 与其来源/摘要记录，包含 `.trace/skills/lightpanda`；禁止构建或启动时解析浮动 nightly。三个 Dockerfile 均已接线；尚未构建/发布含 Lightpanda 的新镜像，下面 CloakBrowser 批次为历史记录。Lightpanda 通过 Python Playwright CDP；截图/实际渲染和 UI 验收继续用 headed CloakBrowser。安装与冻结身份见 `examples/lightpanda.md`、`DEPLOYMENT.md`。
+
 ## 完整镜像构建入口（2026-11-11）
 
 `Dockerfile.hosted` 从已验收干净基底的不可变ID构建，包含完整操作系统与冻结工具/环境，而非只交付程序或补丁层。当前入口完整替换 Web Analysis 的 `dist`、Linux `node_modules`、package/lock、bridge 和许可，先删除再复制 asc/cloakbrowser/frida/web-analysis 四个 Skill 目录，更新根许可证、程序、运行提示、示例和入口；pi host、Python localtool helper 与 UI 资源嵌入新程序。pi依赖锁与基底一致时继承1.4.0完整运行树，Python/Node/浏览器依赖保留。最终镜像的 `hosted_startup_test.py` 不传 `--source` / `--binary`，通过真实 pi/exec 调用镜像内的 `tsecbench_api.py`。
@@ -49,7 +51,7 @@ Docker 的 systemd driver 下，`--cgroup-parent` 只选择父 slice，仍会创
 
 当时 `Dockerfile.p2` 保留原 `-f` / `BASE_IMAGE` 接口，默认输入为当时服务器使用的已验收 `trace:frontend-docker-20261029`。仅该批新镜像移除 `runtime/chromium`、独立 `runtime/playwright` CLI、Python `DrissionPage` 包及其 `.dist-info`，替换完整 `tools/web-analysis`，加入官方 **CloakBrowser SDK 0.6.4** 与冻结官方浏览器。DrissionGet/DrissionRecord 及其他工具不随该批清理。第二阶段从 `scratch` 复制合并 rootfs，删除的浏览器不再保留在最终历史层。该批原有回滚保留状态已由11月6日清理记录覆盖。
 
-本轮全部安装、构建、测试与浏览器验收仅在 `ubuntu@trace.example.com` 执行；本机只编辑和静态阅读。Docker 构建仅复制服务器预先冻结的依赖，不联网安装 Python/npm/浏览器。经典构建器使用显式独立上下文和根 `.dockerignore`，不依赖 `Dockerfile.p2.dockerignore` 的自动识别，也不安装 buildx。
+本轮全部安装、构建、测试与浏览器验收仅在 `ubuntu@193.112.174.4` 执行；本机只编辑和静态阅读。Docker 构建仅复制服务器预先冻结的依赖，不联网安装 Python/npm/浏览器。经典构建器使用显式独立上下文和根 `.dockerignore`，不依赖 `Dockerfile.p2.dockerignore` 的自动识别，也不安装 buildx。
 
 `scratch` 不继承元数据；保留非浏览器 ENV、trace 用户、工作目录、tini/-g、SIGINT、CMD 和 Ubuntu 版本标签。浏览器 ENV 的明确差异：删除旧 `TRACE_BROWSER_EXECUTABLE`、`REA_BROWSER_EXECUTABLE`、`PLAYWRIGHT_MCP_EXECUTABLE_PATH`、`PLAYWRIGHT_MCP_SANDBOX`；PATH 移除独立 Playwright CLI；PYTHONPATH 最前加入 CloakBrowser 冻结 site-packages。固定 `CLOAKBROWSER_BINARY_PATH=/opt/trace/runtime/cloakbrowser/binary/chrome` 与 `CLOAKBROWSER_AUTO_UPDATE=false`。原镜像没有 VOLUME/EXPOSE/HEALTHCHECK，COPY 不改 owner。
 
@@ -123,7 +125,7 @@ bash docker/pack-p2.sh trace:cloakbrowser-20261030 /tmp/trace-cloakbrowser-deliv
 
 ## 交付边界
 
-- 本批镜像名：`trace:p2-20261029`；冻结依赖基底：`trace:p1-20261029`。仅在服务器 `ubuntu@trace.example.com` 构建、运行与验收。
+- 本批镜像名：`trace:p2-20261029`；冻结依赖基底：`trace:p1-20261029`。仅在服务器 `ubuntu@193.112.174.4` 构建、运行与验收。
 - pi 唯一模型—工具循环使用 `@earendil-works/pi-agent-core`、`@earendil-works/pi-ai` **1.4.0**；不以整个 pi CLI 或其他循环回退替代。Go 保留 Provider、工具执行、持久状态和证据账本。
 - 纯净 Linux Agent 包只携带 `bin/trace`、`prompts`、`.trace/skills`、`tools`、`runtime`、`licenses`、必要 Docker/启动材料、环境模板及官方任务提示词；另交付 `docker save` 镜像归档。
 - 不带 Trace 整个源码树、开发计划、部署记录、测试日志、历史会话、答题记忆、用户 `state` / `workspace`、真实 API key、已保存 Provider/MCP 配置或 `.env`。运行库和工具随附的源文件、锁文件及许可属于依赖材料，不等于复制开发工作区。Docker镜像包含系统工具及共享库；Linux tar依赖宿主OS系统库，不是任意Linux自包含包。
