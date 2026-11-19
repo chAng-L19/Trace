@@ -45,7 +45,7 @@ export async function enlargeExplorationForOuterScroll({page,root,frame,result={
   await canvas.evaluate(el=>el.scrollIntoView({block:'end',inline:'nearest'}));await frame();
   const before=result.before=await canvas.boundingBox(),x=before.x+before.width-5,y=before.y+before.height-5;
   await page.mouse.move(x,y);await page.mouse.down();
-  await page.mouse.move(x,y+260,{steps:16});await page.mouse.up();await frame();
+  await page.mouse.move(x,y+Math.max(260,800-before.height),{steps:16});await page.mouse.up();await frame();
   const after=result.after=await canvas.boundingBox();
   assert.ok(after.height>=before.height+160,`native enlargement for outer scroll: ${before.height} -> ${after.height}`);
   const geometry=result.geometry=await page.locator('#workspace').evaluate(el=>({top:el.scrollTop,height:el.scrollHeight,client:el.clientHeight,max:el.scrollHeight-el.clientHeight}));

@@ -15,7 +15,7 @@ const action={call_id:'c',request_id:'q',name:'exec',status:'uncertain',result:{
 const snap={run,messages:[],requests:[{id:'q'}],actions:[action],plan:{tasks:[{id:'short-title',goal:'A very long worker objective that should stay in its tooltip'}]},workers:[{id:'w',task_id:'short-title',run_id:'child',status:'uncertain',cleanup_status:'completed'}]};
 const state={snap,tools:[],config:{provider:{}},settingTab:'tools',runs:[run]};
 const html=runWorkspace(state);
-assert.ok(html.indexOf('id="message-form"')<html.indexOf('class="conversation"'));
+assert.match(html,/<aside class="task-inspector"[^>]*><section class="workspace-composer"[^>]*><form id="message-form"/);
 assert.ok(html.indexOf('id="message-form"')<html.indexOf('class="workspace-secondary"'));
 assert.ok(html.indexOf('id="run-mailbox"')<html.indexOf('class="workspace-secondary"'));
 assert.ok(html.indexOf('id="workspace-notice"')<html.indexOf('class="conversation"'));
@@ -80,7 +80,8 @@ assert.match(settings({...state,settingTab:'local'}),/href="#local-tools" aria-c
 assert.equal(resolveRoute('#mcp').settingTab,'tools');
 assert.equal(resolveRoute('#local-tools').settingTab,'local');
 const loading=renderPage({...state,page:'history',historyDetail:true,runLoading:true,snap:null});
-assert.ok(loading.indexOf('class="workspace-composer"')<loading.indexOf('class="conversation"'),'loading and loaded composer share the conversation column');
+assert.match(loading,/<div class="workspace-dialogue-head"><div id="workspace-notice"><\/div><header class="workspace-heading">[^]*?<\/header><\/div><div class="conversation">/);
+assert.doesNotMatch(loading,/<form|<textarea/,'loading exposes the reader, not an editor for the previous run');
 const index=fs.readFileSync(new URL('./static/index.html',import.meta.url),'utf8');
 assert.equal((index.match(/href="#local-tools"/g)||[]).length,0);
 assert.match(index,/MCP管理/);

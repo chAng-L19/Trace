@@ -19,11 +19,15 @@ try{
  await page.locator('[data-action="copy-link"]').first().click();
  await page.waitForFunction(()=>!document.getElementById('notice').hidden);
  const position=await page.evaluate(()=>{
-  const n=document.getElementById('notice').getBoundingClientRect(),c=document.querySelector('.workspace-panel').getBoundingClientRect();
-  return {notice:{left:n.left,top:n.top},conversation:{right:c.right,top:c.top}};
+  const n=document.querySelector('#workspace-notice>#notice'),h=document.querySelector('.workspace-dialogue-head');
+  const box=el=>el.getBoundingClientRect().toJSON();
+  return {notice:box(n),head:box(h),pane:box(document.querySelector('.conversation')),editor:box(document.querySelector('.task-inspector .workspace-composer')),
+   first:h.firstElementChild===n.parentElement,hit:n.contains(document.elementFromPoint(box(n).left+20,box(n).top+8))};
  });
- assert.ok(position.notice.left>=position.conversation.right,'notice must sit beside the conversation');
- assert.ok(Math.abs(position.notice.top-position.conversation.top)<4,'notice must align with the conversation top');
+ assert.ok(position.first&&position.hit,'visible live notice must be the first, hittable item in the reader');
+ assert.ok(Math.abs(position.notice.left-position.pane.left)<=2&&Math.abs(position.notice.right-position.pane.right)<=2);
+ assert.ok(Math.abs(position.notice.top-position.head.top)<=2&&position.notice.right<=position.editor.left);
+ assert.ok(position.notice.height>0&&position.notice.height<=40,'single-line notice must be compact');
  await page.evaluate(async id=>{const r=await fetch('/_p0/report?id='+id,{method:'POST'});if(!r.ok)throw Error('fixture update failed')},ids[0]);
  await page.waitForFunction(()=>document.querySelector('.workspace-secondary')?.textContent.includes('task-second-report'));
  assert.equal(await page.evaluate(()=>document.querySelectorAll('#notice').length===1&&document.getElementById('notice')===window.__notice&&document.getElementById('notice').parentElement.id==='workspace-notice'),true);
@@ -34,7 +38,10 @@ try{
  await page.waitForSelector('#workspace-notice>#notice',{state:'attached'});
  assert.equal(await page.evaluate(()=>document.querySelectorAll('#notice').length===1&&document.getElementById('notice')===window.__notice&&document.getElementById('notice').getAttribute('aria-live')==='polite'&&document.getElementById('notice').getAttribute('role')==='status'),true);
  await page.waitForFunction(()=>window.__notice.hidden);
+ await page.waitForSelector('.task-inspector #message-form');
+ const hidden=await page.locator('#workspace-notice').evaluate(el=>({host:el.offsetHeight,notice:el.firstElementChild.offsetHeight}));
+ assert.deepEqual(hidden,{host:0,notice:0},'a hidden notice reserves no space');
  await page.screenshot({path:path.join(output,'notice-desktop.png')});
- fs.writeFileSync(path.join(output,'notice-browser.json'),JSON.stringify({passed:true,sqlite,position,sse_repaint:true,navigation_identity:true,unique_live_region:true},null,2));
+ fs.writeFileSync(path.join(output,'notice-browser.json'),JSON.stringify({passed:true,sqlite,position,hidden,sse_repaint:true,navigation_identity:true,unique_live_region:true},null,2));
  console.log('Notice: desktop position, SSE repaint, navigation and live-region identity passed.');
 }finally{await browser.close()}

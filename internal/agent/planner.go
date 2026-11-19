@@ -126,7 +126,21 @@ func (a *Agent) SetPlan(id string, tasks []PlanTask) (Snapshot, error) {
 
 // UpdatePlan applies append/patch atomically using the same frozen-contract checks.
 func (a *Agent) UpdatePlan(id string, tasks []PlanTask, mode string) (Snapshot, error) {
+	return a.updatePlan(id, tasks, mode, 0, false)
+}
+
+// ARTEX e6ec569 server/conversations.go:622 reserves admission under its queue
+// lock before launch. Trace publishes the DAG and ceiling under its Store lock.
+func (a *Agent) updatePlan(id string, tasks []PlanTask, mode string, capacity int, modelCall bool) (Snapshot, error) {
 	return a.store.Update(id, func(s *Snapshot) error {
+		if modelCall && s.Run.ParentTaskID == "" && len(tasks) > 0 && len(s.Plan.Tasks) == 0 && s.Plan.Capacity == 0 && capacity == 0 {
+			return fmt.Errorf("first task plan requires explicit capacity: use the observed shared resource limit; five is the default ceiling, not a dispatch target")
+		}
+		if capacity != 0 {
+			if err := setPlanCapacity(s, capacity); err != nil {
+				return err
+			}
+		}
 		tasks = append([]PlanTask(nil), tasks...)
 		switch mode {
 		case "", "replace":
@@ -336,7 +350,7 @@ func (a *Agent) UpdatePlan(id string, tasks []PlanTask, mode string) (Snapshot, 
 			}
 		}
 		s.Plan.Tasks = tasks
-		if s.Plan.Capacity == 0 {
+		if s.Plan.Capacity == 0 && (!modelCall || len(tasks) > 0) {
 			s.Plan.Capacity = 5
 		}
 		// Updating a plan does not acknowledge observations. Only a successful
@@ -692,17 +706,19 @@ func compactWorkerState(s Snapshot) map[string]any {
 }
 
 func (a *Agent) SetPlanCapacity(id string, capacity int) (Snapshot, error) {
+	return a.store.Update(id, func(s *Snapshot) error { return setPlanCapacity(s, capacity) })
+}
+
+func setPlanCapacity(s *Snapshot, capacity int) error {
 	if capacity < 1 || capacity > 32 {
-		return Snapshot{}, fmt.Errorf("capacity must be 1..32")
+		return fmt.Errorf("capacity must be 1..32")
 	}
-	return a.store.Update(id, func(s *Snapshot) error {
-		if s.Run.ParentTaskID != "" {
-			return fmt.Errorf("worker capacity belongs to the root conversation")
-		}
-		s.Plan.Capacity = capacity
-		addEvent(s, "worker_capacity_updated", "根会话整树 Worker 并发容量已更新", map[string]int{"capacity": capacity})
-		return nil
-	})
+	if s.Run.ParentTaskID != "" {
+		return fmt.Errorf("worker capacity belongs to the root conversation")
+	}
+	s.Plan.Capacity = capacity
+	addEvent(s, "worker_capacity_updated", "根会话整树 Worker 并发容量已更新", map[string]int{"capacity": capacity})
+	return nil
 }
 
 func (a *Agent) DispatchFrontier(ctx context.Context, id string) ([]AgentWorker, error) {

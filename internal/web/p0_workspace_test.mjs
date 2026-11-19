@@ -33,7 +33,7 @@ assert.match(html,/class="exploration-preview"/,'workspace directly renders the 
 assert.match(html,/data-scroll="workspace-lineage"/);
 assert.match(html,/workspace-composer/);assert.match(html,/workspace-secondary/);
 assert.match(renderPage({...state,runLoading:true}),/aria-busy="true"/);
-assert.match(renderPage({...state,runLoading:true}),/textarea disabled/);
+assert.match(renderPage({...state,runLoading:true}),/data-action="latest"[^>]* disabled>[^]*?正在读取会话/);
 
 const report={source_run_id:'child1',parent_run_id:'root',task_id:'active',worker_id:'w1',visit:1,source_hash:'abc',run_status:'completed',result_status:'incomplete',cleanup_status:'unknown',source_status:'valid',current:true,summary:'child conclusion',report_path:'/api/runs/child1/reports/abc',findings:[],unresolved:['pending']};
 const graph=explorationData({...snap,child_reports:[report,report,{...report,visit:2,source_hash:'def'}]});

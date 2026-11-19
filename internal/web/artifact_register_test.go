@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -26,7 +27,14 @@ func TestRegisteredFileDownloadMatchesRecordedSource(t *testing.T) {
 		if calls == 1 {
 			return agent.ModelResponse{ToolCalls: []agent.ToolCall{{ID: "register", Name: "artifact_register", Arguments: string(args)}}}, nil
 		}
-		return agent.ModelResponse{Content: "file captured"}, nil
+		if calls > 2 {
+			return agent.ModelResponse{}, fmt.Errorf("unexpected model call after report delivery: %d", calls)
+		}
+		body, _ := json.Marshal(map[string]any{"trace_report": agent.ReportText{
+			ZhCN: "已注册实际报告文件并记录内容摘要和来源；本测试仅核对交付字节，不声明目标验证成功，影响与清理状态保持独立。",
+			En:   "The actual report file was registered with its content hash and producing source. This fixture verifies delivered bytes only; target success, impact and cleanup remain separate claims.",
+		}})
+		return agent.ModelResponse{Content: "file captured\n\n```json\n" + string(body) + "\n```"}, nil
 	})
 	s, a := fixture(t, p)
 	created, err := a.Create("deliver report")

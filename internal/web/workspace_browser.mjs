@@ -63,21 +63,22 @@ async function graphs({page,base,id,output,frame,stage,result,change}){
 
 async function geometry(page){
  return page.evaluate(()=>{
-  const h=document.querySelector('.workspace-dialogue-head'),input=h.querySelector('textarea'),pane=h.nextElementSibling;
-  const {x,y,width,height}=input.getBoundingClientRect();
-  const header=h.getBoundingClientRect(),body=pane.getBoundingClientRect(),tabs=document.querySelector('.task-tabs')?.getBoundingClientRect();
-  const owner=document.querySelector('#workspace');
-  return {x,y,width,height,scroll:pane.scrollTop,outer:owner.scrollTop,outerMax:owner.scrollHeight-owner.clientHeight,hit:document.elementFromPoint(x+width/2,y+height/2)===input,
-   headerTop:header.top,tabsBottom:tabs?.bottom,travel:tabs?tabs.bottom-h.closest('.task-workbench').getBoundingClientRect().top:0,gap:body.top-header.bottom,bodyHit:pane.contains(document.elementFromPoint(body.left+body.width/2,body.top+12)),
-   sameColumn:h.parentElement.matches('.workspace-panel')&&pane.matches('.conversation')&&h.querySelector('.workspace-heading').textContent.includes('运行对话'),
-   paging:!!h.querySelector('.conversation-pages')};
+  const h=document.querySelector('.workspace-dialogue-head'),pane=h.nextElementSibling,owner=document.querySelector('#workspace');
+  const title=h.querySelector('.workspace-heading').getBoundingClientRect(),header=h.getBoundingClientRect(),body=pane.getBoundingClientRect(),tabs=document.querySelector('.task-tabs')?.getBoundingClientRect();
+  const graph=document.querySelector('.exploration-preview .graph-shell')?.getBoundingClientRect(),input=document.querySelector('.task-inspector #message-content');
+  const hit=(el,r,top)=>{const bottom=Math.min(r.bottom,innerHeight);return bottom>top&&el.contains(document.elementFromPoint(r.left+r.width/2,(top+bottom)/2))};
+  return {title:title.toJSON(),headHit:hit(h,title,title.top),headerTop:header.top,tabsBottom:tabs?.bottom,headHeight:header.height,
+   layout:h.firstElementChild.id==='workspace-notice'&&pane.matches('.conversation')&&!h.querySelector('form,input,textarea,select,#run-mailbox'),
+   scroll:pane.scrollTop,outer:owner.scrollTop,outerMax:owner.scrollHeight-owner.clientHeight,paneHeight:body.height,
+   bodyHit:hit(pane,body,Math.max(header.bottom,body.top)),graphHit:graph&&hit(document.querySelector('.exploration-preview .graph-shell'),graph,Math.max(header.bottom,graph.top)),
+   paging:!!h.querySelector('.conversation-pages'),input:input?.getBoundingClientRect().toJSON()};
  });
 }
 
-function sameInput(before,after,stage){
- assert.ok(after.hit&&after.sameColumn,stage+': input is covered or in another column');
- assert.ok(after.gap>=-1,stage+': heading overlaps transcript');
- for(const key of ['x','y','width','height'])assert.ok(Math.abs(before[key]-after[key])<=2,`${stage}: input ${key} changed from ${before[key]} to ${after[key]}`);
+function sameHeading(before,after,stage){
+ assert.ok(after.layout&&after.headHit,stage+': reader heading is covered or contains editor controls');
+ for(const k of ['x','y','width','height'])assert.ok(Math.abs(before.title[k]-after.title[k])<=2,stage+': heading '+k+' moved');
+ assert.ok(Math.abs(before.paneHeight-after.paneHeight)<=1,stage+': transcript shrank');
 }
 
 export async function workspaceInteractions({page,base,id,output,waitWorkspace,frame,stage,result}){
@@ -88,51 +89,40 @@ export async function workspaceInteractions({page,base,id,output,waitWorkspace,f
  const gate=new Promise(resolve=>release=resolve),workspace='**/api/runs/'+id+'?view=workspace*';
  await page.route(workspace,async route=>{await gate;await route.continue()});
  const nav=page.goto(base+'/#history/'+id);
- stage('same-column loading and history');
+ stage('reader loading, history and independent scrolling');
  try{
-  await page.waitForSelector('.workspace-loading .workspace-dialogue-head textarea:disabled');
-  result.loading=await geometry(page);assert.ok(result.loading.sameColumn&&result.loading.hit);
+  await page.waitForSelector('.workspace-loading .workspace-dialogue-head [data-action=latest]:disabled');
+  result.loading=await geometry(page);assert.ok(result.loading.layout&&result.loading.headHit&&!result.loading.input);
   await shot(page,output,'loading');
  }finally{release();await nav;await page.unroute(workspace)}
  await waitWorkspace(page,id);
- const before=await geometry(page);sameInput(result.loading,before,'loading to ready');assert.ok(before.paging);
+ const before=await geometry(page);sameHeading(result.loading,before,'loading to ready');assert.ok(before.paging&&before.input&&before.bodyHit&&before.graphHit);
  await page.locator('.conversation').evaluate(el=>{el.scrollTop=el.scrollHeight/2});await frame(page);
- const scrolled=await geometry(page);assert.ok(scrolled.scroll>100&&scrolled.hit);
- sameInput(before,scrolled,'inside transcript');
- // Move the actual outer owner beyond the activity tabs, not the transcript.
- await page.locator('#workspace').evaluate(el=>{el.scrollTop+=el.querySelector('.workspace-panel').getBoundingClientRect().top-el.getBoundingClientRect().top+50});await frame(page);
- const docked=await geometry(page);assert.ok(docked.outer>scrolled.outer&&Math.abs(docked.headerTop-docked.tabsBottom)<=2&&docked.bodyHit);
- await page.locator('#workspace').evaluate(el=>{el.scrollTop+=90});await frame(page);
- const outer=await geometry(page);assert.ok(outer.outer-docked.outer>60&&outer.bodyHit,'outer scroll must move and leave the transcript readable');
- sameInput(docked,outer,'outer scroll');
- await page.locator('.workspace-dialogue-head [data-action=messages-page][data-before]').click();
- await page.waitForSelector('.workspace-dialogue-head [data-action=messages-latest]');
- await frame(page);const history=await geometry(page);sameInput(outer,history,'older page');assert.ok(history.paging);
- await page.locator('.workspace-dialogue-head [data-action=messages-latest]').click();
- await page.waitForSelector('[data-message-id=p0-history-119]');
- await frame(page);const latest=await geometry(page);sameInput(history,latest,'back to live');
+ const scrolled=await geometry(page);assert.ok(scrolled.scroll>100&&scrolled.outer===before.outer);sameHeading(before,scrolled,'inner scroll');
  const root=page.locator('.exploration-preview'),preview=root.locator('.graph-shell');
  const originalHeight=await preview.evaluate(el=>el.style.height);
  const enlargement=await enlargeExplorationForOuterScroll({page,root,frame:()=>frame(page)});
- let deep=await geometry(page);
- // The Run header consumes some of the first wheel's travel before docking.
- if(deep.travel<=560){
-  const delta=Math.ceil(576-deep.travel);
-  await page.mouse.wheel(0,delta);
-  await page.waitForFunction(target=>{const w=document.querySelector('#workspace');return w.scrollTop>=Math.min(target,w.scrollHeight-w.clientHeight)-1},deep.outer+delta);
-  await frame(page);deep=await geometry(page);
- }
- assert.ok(deep.outer>560&&deep.travel>560&&deep.bodyHit,'deep outer scroll: '+JSON.stringify({enlargement,deep}));
- for(const max of [enlargement.scrolled.max,deep.outerMax])assert.ok(Math.abs(max-enlargement.geometry.max)<=2,'wheel changed outer scroll range: '+JSON.stringify({before:enlargement.geometry.max,after:max}));
- sameInput(docked,deep,'expanded preview beyond 560px');
- assert.ok(Math.abs(deep.headerTop-deep.tabsBottom)<=2);
+ const deep=await geometry(page);
+ assert.ok(deep.outer>560&&deep.layout&&deep.headHit&&deep.graphHit&&Math.abs(deep.headerTop-deep.tabsBottom)<=2,'deep wheel must dock the reader without hiding the graph');
+ assert.ok(Math.abs(deep.paneHeight-before.paneHeight)<=1,'outer scroll must not shrink the transcript');
+ for(const max of [enlargement.scrolled.max,deep.outerMax])assert.ok(Math.abs(max-enlargement.geometry.max)<=2,'wheel changed scroll range');
  await shot(page,output,'deep-scroll');
- result.composer={before,scrolled,docked,outer,history,latest,enlargement,deep};
+ await page.locator('#workspace').evaluate(el=>{el.scrollTop+=el.querySelector('.workspace-column').getBoundingClientRect().top-el.querySelector('.task-tabs').getBoundingClientRect().bottom+35});await frame(page);
+ const docked=await geometry(page);assert.ok(docked.bodyHit&&Math.abs(docked.headerTop-docked.tabsBottom)<=2);
+ await page.locator('#workspace').evaluate(el=>{el.scrollTop+=90});await frame(page);
+ const outer=await geometry(page);assert.ok(outer.outer-docked.outer>60&&outer.bodyHit);sameHeading(docked,outer,'outer scroll');
+ await page.locator('.workspace-dialogue-head [data-action=messages-page][data-before]').click();
+ await page.waitForSelector('.workspace-dialogue-head [data-action=messages-latest]');
+ await frame(page);const history=await geometry(page);sameHeading(outer,history,'older page');assert.ok(history.paging);
+ await page.locator('.workspace-dialogue-head [data-action=messages-latest]').click();
+ await page.waitForSelector('[data-message-id=p0-history-119]');
+ await frame(page);const latest=await geometry(page);sameHeading(history,latest,'return to live');
+ result.reader={before,scrolled,docked,outer,history,latest,enlargement,deep};
 
  stage('real HTTP acknowledgement');
  const content='Workspace browser acceptance fixture '+id;
  await textarea.fill(content);await frame(page);
- const sending=await geometry(page);sameInput(deep,sending,'draft');
+ const sending=await geometry(page);assert.ok(sending.input&&sending.layout);
  const receipt=page.waitForResponse(r=>r.url()===api+'/steer'&&r.request().method()==='POST');
  await page.locator('#message-form button.primary').click();
  const response=await receipt;assert.equal(response.status(),200);
@@ -144,8 +134,9 @@ export async function workspaceInteractions({page,base,id,output,waitWorkspace,f
  await page.locator('#run-mailbox .queue-message').filter({hasText:content}).waitFor({state:'attached'});
  assert.equal(await textarea.inputValue(),'');await frame(page);
  const received=await geometry(page);
- for(const k of ['x','y','width','height'])assert.ok(Math.abs(sending[k]-received[k])<=2,`ACK moved input ${k}: ${sending[k]} to ${received[k]}`);
- assert.ok(received.hit&&received.sameColumn&&received.gap>=-1);
+ for(const k of ['x','y','width','height'])assert.ok(Math.abs(sending.input[k]-received.input[k])<=2,'ACK moved the right-hand input: '+k);
+ sameHeading(sending,received,'queued ACK');
+ assert.ok(await textarea.evaluate(el=>{const r=el.getBoundingClientRect();return document.elementFromPoint(r.left+r.width/2,r.top+r.height/2)===el}));
  result.ack={http:response.status(),status:ack.status,operation:ack.operation_id,message:ack.message_id,sending,received};
  await shot(page,output,'ack');
  await preview.evaluate((el,h)=>{el.style.height=h},originalHeight);await frame(page);

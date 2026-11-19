@@ -51,9 +51,17 @@ async function overlayState(page){
 async function layout(page,label){
  const preview=page.locator('.exploration-preview');
  await preview.waitFor({state:'visible'});
- const initialGraph=await preview.evaluate(el=>{const r=el.getBoundingClientRect();return {width:innerWidth,height:innerHeight,visible:Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(r.top,0))}});
- // Conversation and composer precede exploration; the graph remains reachable
- // by scrolling without requiring it to displace the conversation's first view.
+ const initialGraph=await page.evaluate(()=>{
+  const pane=document.querySelector('.conversation'),head=document.querySelector('.workspace-dialogue-head'),canvas=document.querySelector('.exploration-preview .graph-shell'),inspector=document.querySelector('.task-inspector');
+  const hr=head.getBoundingClientRect(),bounds=document.querySelector('#workspace').getBoundingClientRect();
+  const visible=el=>{const r=el.getBoundingClientRect(),top=Math.max(0,bounds.top,hr.bottom,r.top),bottom=Math.min(innerHeight,bounds.bottom,r.bottom);return {height:Math.max(0,bottom-top),hit:bottom>top&&el.contains(document.elementFromPoint(r.left+r.width/2,(top+bottom)/2))}};
+  return {width:innerWidth,height:innerHeight,head:hr.height,conversation:visible(pane),canvas:visible(canvas),editorRight:inspector.getBoundingClientRect().left>=pane.getBoundingClientRect().right};
+ });
+ if(initialGraph.width>=1024&&initialGraph.height>=900){
+  assert.ok(initialGraph.head<=88&&initialGraph.editorRight,label+': reader header or inspector misplaced: '+JSON.stringify(initialGraph));
+  assert.ok(initialGraph.conversation.height>=300&&initialGraph.conversation.hit,label+': insufficient visible transcript: '+JSON.stringify(initialGraph));
+  assert.ok(initialGraph.canvas.height>=140&&initialGraph.canvas.hit,label+': insufficient visible graph canvas: '+JSON.stringify(initialGraph));
+ }
  await preview.scrollIntoViewIfNeeded();await frame(page);
  assert.ok(await preview.evaluate(el=>{const r=el.getBoundingClientRect();return Math.min(r.bottom,innerHeight)-Math.max(r.top,0)>=100}),label+': exploration preview is not reachable');
  assert.ok(await preview.locator('svg a').count()>=10,label+': inline graph nodes missing');
@@ -84,7 +92,7 @@ async function layout(page,label){
   const pane=document.querySelector('.conversation'),composer=document.querySelector('.workspace-composer'),inspector=document.querySelector('.workspace-secondary');
   const overflows=[...document.querySelectorAll('body *')].map(el=>{const r=el.getBoundingClientRect(),s=getComputedStyle(el);return {tag:el.tagName,id:el.id,class:typeof el.className==='string'?el.className:'',left:r.left,right:r.right,width:r.width,height:r.height,overflowX:s.overflowX,position:s.position,minWidth:s.minWidth,display:s.display}}).filter(r=>r.width&&r.height&&(r.right>innerWidth+3||r.left< -3)).slice(0,40);
   const panel=pane.closest('.workspace-panel'),column=pane.closest('.workspace-column'),graph=document.querySelector('.task-exploration');
-  return {viewport:{width:innerWidth,height:innerHeight,dpr:devicePixelRatio,documentWidth:document.documentElement.scrollWidth},masthead:box('.masthead'),rail:box('.rail'),conversation:box('.conversation'),composer:box('.workspace-composer'),secondary:box('.workspace-secondary'),overflows,ownership:{composerAboveConversation:!!panel&&composer.parentElement===panel.querySelector('.workspace-dialogue-head')&&!pane.contains(composer)&&!!(composer.compareDocumentPosition(pane)&Node.DOCUMENT_POSITION_FOLLOWING),graphAfterComposer:!!column&&graph.parentElement===column&&!!(composer.compareDocumentPosition(graph)&Node.DOCUMENT_POSITION_FOLLOWING),statusSeparate:!!inspector.closest('.task-inspector')&&!inspector.contains(composer)},messages:pane.querySelectorAll('[data-message-id]').length};
+  return {viewport:{width:innerWidth,height:innerHeight,dpr:devicePixelRatio,documentWidth:document.documentElement.scrollWidth},masthead:box('.masthead'),rail:box('.rail'),conversation:box('.conversation'),composer:box('.workspace-composer'),secondary:box('.workspace-secondary'),overflows,ownership:{editorInInspector:composer.parentElement.matches('.task-inspector')&&composer.contains(document.getElementById('message-form'))&&composer.contains(document.getElementById('run-mailbox')),readerOnly:!panel.querySelector('.workspace-dialogue-head').querySelector('form,textarea,input,select,#run-mailbox')&&!!panel.querySelector('.workspace-dialogue-head>#workspace-notice>#notice')&&!!panel.querySelector('.workspace-dialogue-head>.conversation-pages'),graphAfterConversation:graph.parentElement===column&&!!(pane.compareDocumentPosition(graph)&Node.DOCUMENT_POSITION_FOLLOWING),statusSeparate:composer.nextElementSibling===inspector},messages:pane.querySelectorAll('[data-message-id]').length};
  });
  result.initialGraph=initialGraph;
  report.layoutChecks??=[];report.layoutChecks.push({label,...result});
@@ -99,8 +107,8 @@ async function layout(page,label){
  assert.ok(result.messages>0&&result.messages<=40,label+': unbounded message window');
  assert.ok(result.viewport.documentWidth<=result.viewport.width+3,label+': document horizontal overflow '+JSON.stringify(result.viewport));
  if(result.viewport.width<=700){assert.ok(result.rail.height<120,label+': mobile navigation retained desktop height');assert.ok(result.masthead.height<220,label+': mobile header is not compact')}
- // Hit-test the actual scrolled position; scrolling the textarea into view
- // would hide a lost dock after interacting with the graph.
+ // The editor stacks below the graph on phones. Scroll to it as a user would.
+ if(result.viewport.width<=900)await page.locator('#message-content').scrollIntoViewIfNeeded();
  await frame(page);
  const hit=await page.locator('#message-content').evaluate(el=>{const r=el.getBoundingClientRect(),x=Math.min(innerWidth-1,Math.max(0,r.x+r.width/2)),y=Math.min(innerHeight-1,Math.max(0,r.y+r.height/2)),at=document.elementFromPoint(x,y);return at===el||el.contains(at)});
  assert.ok(hit,label+': composer textarea blocked by overlay');
@@ -341,7 +349,7 @@ try{
   let release;const gate=new Promise(resolve=>release=resolve);let held=false;
   await page.route('**/api/runs/'+ids[index]+'?view=workspace*',async route=>{if(!held){held=true;await gate}await route.continue()});
   const navigation=page.goto(base+'/#history/'+ids[index]);
-  try{await page.waitForSelector('.workspace-loading[aria-busy=true]');await page.waitForSelector('.workspace-loading textarea[disabled]');release();await navigation;await waitWorkspace(page,ids[index])}finally{release();await page.unroute('**/api/runs/'+ids[index]+'?view=workspace*')}
+  try{await page.waitForSelector('.workspace-loading[aria-busy=true]');await page.waitForSelector('.workspace-loading .workspace-dialogue-head [data-action=latest]:disabled');assert.equal(await page.locator('.workspace-loading form,.workspace-loading textarea').count(),0);release();await navigation;await waitWorkspace(page,ids[index])}finally{release();await page.unroute('**/api/runs/'+ids[index]+'?view=workspace*')}
   const row={width,skeleton:true};report.viewports.push(row);
   row.layout=await layout(page,'width-'+width);stage('layout ready '+width);
   row.streaming=await anchorAndDraft(page,ids[index],'width-'+width);

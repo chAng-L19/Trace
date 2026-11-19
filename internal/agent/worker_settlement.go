@@ -287,8 +287,11 @@ func (a *Agent) applyWorkerSettlementLocked(s *Snapshot, w AgentWorker) error {
 	if alreadySettled {
 		eventType = "worker_cleanup_reconciled"
 	}
-	addEvent(s, eventType, "子智能 worker 结果已保存", map[string]string{"worker_id": w.ID, "status": status, "run_id": w.RunID})
 	report := newChildReport(s.Run.ID, w, &child, current.CleanupStatus)
+	addEvent(s, eventType, fmt.Sprintf("子任务结算：运行 %s，业务 %s，清理 %s", report.RunStatus, report.ResultStatus, report.CleanupStatus), map[string]string{
+		"worker_id": w.ID, "run_id": w.RunID, "status": status,
+		"run_status": string(report.RunStatus), "result_status": report.ResultStatus, "cleanup_status": report.CleanupStatus,
+	})
 	appendChildReport(s, report)
 	return appendWorkerMessage(s, w.ID, "parent", childReportMessage(report))
 }

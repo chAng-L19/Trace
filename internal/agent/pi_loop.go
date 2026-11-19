@@ -81,7 +81,7 @@ func (a *Agent) runPi(ctx context.Context, id string) (Snapshot, error) {
 					return map[string]string{"error": modelErr.Error()}, nil
 				}
 				if delay == 0 {
-					if reportDeliveryPending(&snap) && len(response.ToolCalls) > 0 {
+					if (reportDeliveryPending(&snap) || request.Purpose == "outcome_delivery") && len(response.ToolCalls) > 0 {
 						request, err = a.preparePiConversation(ctx, id, &retries)
 						if err != nil {
 							return nil, err
@@ -519,11 +519,14 @@ func (a *Agent) preparePiRequest(ctx context.Context, id string) (ModelRequest, 
 			addEvent(s, "attachment_delivery_failed", "输入附件校验失败；运行结束并保留原始记录", map[string]string{"error": err.Error()})
 			return nil
 		}
+		handoffOnly := outcomeHandoffPending(s)
 		var definitions []ToolDefinition
 		var toolHint string
 		var contextErr error
 		if reportDeliveryPending(s) {
 			definitions, toolHint = nil, "Report delivery only: return source-bound bilingual report text. No tool execution is admitted in this phase."
+		} else if handoffOnly {
+			definitions, toolHint = nil, "Outcome delivery only: return trace_result from existing sources. No tools are admitted; unsupported outcomes remain incomplete."
 		} else {
 			definitions, toolHint, contextErr = a.modelTools(s, catalog, runtimeObservations)
 		}
@@ -549,6 +552,9 @@ func (a *Agent) preparePiRequest(ctx context.Context, id string) (ModelRequest, 
 		}
 		s.Run.RequestSeq++
 		request := ModelRequest{ID: fmt.Sprintf("%s-%04d", id, s.Run.RequestSeq), PromptHash: s.Run.PromptHash, Messages: messages, Tools: definitions, CreatedAt: now, MaxOutputTokens: s.Run.Context.OutputReserve, ContextTokens: estimate, CompactionID: compactionID, PlannerThrough: plannerThrough}
+		if handoffOnly {
+			request.Purpose = "outcome_delivery"
+		}
 		if summary != nil {
 			request.Purpose = "context_summary"
 			request.PlannerThrough = 0
@@ -678,6 +684,13 @@ func (a *Agent) settlePiResponse(ctx context.Context, id string, request ModelRe
 			return nil
 		}
 		*requestRetries = 0
+		if request.Purpose == "outcome_delivery" && len(response.ToolCalls) > 0 {
+			s.Responses[len(s.Responses)-1].Error = "outcome delivery does not admit tool execution"
+			s.Run.Status, s.Run.PauseReason = StatusRunning, ""
+			s.Messages = append(s.Messages, Message{Role: "user", Content: "Runtime completion audit: " + workerOutcomeHandoffReason + ". The attempted tool calls were not executed; return the outcome using the existing sources.", CreatedAt: time.Now().UTC()})
+			addEvent(s, "outcome_delivery_tool_rejected", "结果补交回合未执行工具；保留已有观察等待结构化结果", map[string]string{"request_id": request.ID})
+			return nil
+		}
 		if reportDeliveryPending(s) && len(response.ToolCalls) > 0 {
 			s.Responses[len(s.Responses)-1].Error = "report delivery does not admit tool execution"
 			s.Run.Status, s.Run.PauseReason = StatusRunning, ""

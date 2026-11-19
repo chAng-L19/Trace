@@ -4,7 +4,8 @@
 
 | 状态 | 版本或构建 | SHA-256（binary） | 证据 |
 | --- | --- | --- | --- |
-| 正式，2026-11-19 10:43:50（上海）发布 | dispatch-lightpanda-20261119 | `de4951b4801f55933c91392c40c67b7b8e1e4df834c60f852f47f057c3bfe911` | 私有 trace-release-20261119/release-receipt.json；备份与线上身份校验通过 |
+| 正式，2026-11-19T12:48:14.814286+08:00（上海）发布 | workspace-layout-20261119 | `7bab4744550a6df172628a94f82667568cdd3c7ffe832fd53cea5998a33d6307` | 私有 trace-workspace-layout-20261119/release-receipt.json；备份与线上身份校验通过 |
+| 历史正式，2026-11-19 10:43:50（上海）发布 | dispatch-lightpanda-20261119 | `de4951b4801f55933c91392c40c67b7b8e1e4df834c60f852f47f057c3bfe911` | 私有 trace-release-20261119/release-receipt.json；备份与线上身份校验通过 |
 | 历史正式，已被 11-19 替代 | optimize-pi-20261117 | `b8a71dc31f619e8821c8e635f3657e39f228cd464d84686969608eb29c7d21eb` | 私有 validation/optimize-20261117、release-optimize-20261117 发布回执 |
 | 隔离验收，已并入 11-19 正式版 | Lightpanda 优先 / CloakBrowser 备用（2026-11-18） | `de4951b4801f55933c91392c40c67b7b8e1e4df834c60f852f47f057c3bfe911` | 私有 trace-lightpanda-20261118/evidence-final；独立签收通过 |
 | 隔离验收，已并入 11-19 正式版 | 调度/报告/工作区 R3 + D2 R4（2026-11-18） | `acf7a55b4e4b73e57283699803c3f2369685bfa76970cbb8ad0c0aa7ff32e972` | 私有 trace-acceptance-20261118/final-evidence、supplement-evidence-r4；独立复核完成，D2 补充签收通过 |
@@ -13,7 +14,15 @@
 
 11-17 旧 UI 隔离验收输入清单：1188 项，SHA-256 `d3d0901f4950488c74d371df7554a10f3f0c71d52c013487addcf01bd0d9d4f2`；正式部署源码清单 SHA-256 `f8386dacf59e2909d6f99fd4443ae00786e2e00acf422de69674ad67f591dada`。文档压缩仅本地，未同步正式服务器源码或冻结清单。
 
-## 2026-11-19 正式发布
+## 2026-11-19 通用调度与工作区修复发布
+
+- 正式版本 `workspace-layout-20261119`，上海时间 `2026-11-19T12:48:14.814286+08:00`。采用 pi/ARTEX/Muteki 的容量准入、完成后释放和来源绑定交接机制，沿现有 Store/pi 循环适配；不添加平台或题型专用求解流程。实际顶层 `prompts/agent.md` 与验收源码同步，source/payload 清单重新生成。
+- 验收：容量 JSON/SQLite 原子性和相关 race、prepared-request 资源/交付约束、真实 pi 两条补交负控、结果边界、任务/生命周期/验收相关组、报告文件 HTTP、vet/build 全通过。前端 42 份 Node、相关 Go、四组固定 CloakBrowser headed/Xvfb 通过；覆盖真实通知、图拖动/关系高亮、390/1024/1440 视口和原生 200%，最终 1440 首屏截图人工复核。独立审查两个 P1 均关闭。仅此范围，不声称全仓或新真实场次通过，不替代历史 UI-ZOOM-01 两帧贴尾专项。
+- 停旧 controller 后完整备份旧 release、state（含 CAS/inputs）、workspace、systemd/nginx 及模块配置链接目标；`1,344,716,800` B、22,330 项逐一核对内容 hash、类型、权限、UID/GID 和链接。归档 SHA256 `c3152c219ad29e4a464fe2782e4691bfd9b2fc3c0e5f7d6521749093f519b8ad`，路径 `/var/backups/trace-workspace-layout-20261119/rollback.tar`；目录 0700、归档 0600。旧完整 release 保留，未做回滚演练。
+- 上线核对实际 `/proc/exe` binary、运行用户/cwd/state/config 和主备依赖路径；HTTP 200、异 Host/Origin 403、公共入口未认证 401；四份实际 HTTP 资源 hash 与源码一致。工具 83 项、Skill 5 项，Lightpanda/CloakBrowser 和首选 Skill 正常；最终提示词同步。7 份 Run 业务内容、请求/动作/事件不变，0 份仅 updated_at 刷新，未恢复暂停 Run。
+- 私有原件保留在服务器 `validation/workspace-layout-20261119` 和本地项目外 `_work/trace-workspace-layout-20261119`，日志根因在 `_work/trace-scheduler-20261119`。先期失败记录保留：测试缺委托 cgroup、报告下载夹具缺合法报告、补交 raw toolcall 仍送 pi；均定位后修复并由 R4 复验通过，没有放宽产品报告/验收约束。本次不构建或发布 Docker/TSB 镜像。
+
+## 2026-11-19 早期正式发布
 
 - 按用户“发布，github也更新”指令，将已验收的调度/完成度、编排者职责、报告归档与固定版本下载、运行对话同栏顶部消息窗、隐藏 uncertain 对话、探索图拖拽及链路高亮和浏览器主备调整部署为 `dispatch-lightpanda-20261119`。pi 1.4.0、JSON Store 和正式 cgroup 模式保持原配置。GitHub 源码仓库为 `chAng-L19/Trace`，目标分支 `main`；服务器发布见私有发布回执；GitHub 提交身份以推送后 main 的实际 SHA 为准，逐文件核对结果另存私有 Git 回执。
 - 新 release 复制完整冻结 runtime；web-analysis 编译输入与旧正式版逐项一致，保留其已安装依赖和构建闭包。Lightpanda 使用下方已验收冻结实物，主备浏览器实际工具及启用的 Lightpanda Skill 已从正式 API 核对。发布前用新 release 路径复验真实 Lightpanda HTTPActions 的成功/错误/非 JSON/取消，以及 CloakBrowser 有界面操作与截图；2 组通过、0 跳过。本次未重跑全仓测试。

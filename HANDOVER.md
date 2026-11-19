@@ -2,9 +2,11 @@
 
 更新：2026-11-19。
 
-- 先读 [agent.md](agent.md)，再按 [开发计划.md](开发计划.md) 的逐项验收条件推进。pi、ARTEX、Muteki 为第一参考项，复用保留许可与来源；构建、运行和测试仅在指定服务器。
-- 正式服务已发布 `dispatch-lightpanda-20261119`；调度/完成度、编排职责、报告归档/固定下载、同栏顶部消息窗、uncertain 对话隐藏、探索图拖拽/精确关系高亮及 Lightpanda 优先、CloakBrowser 备用均随本次上线。binary、备份和验收身份只记 [DEPLOYMENT.md](DEPLOYMENT.md)。
-- 发布前完整一致备份及逐项校验通过。正式 HTTP、工具/Skill、实际进程身份与入口鉴权通过；8 份 Run 业务内容、请求/动作/事件不变。一个历史 completed Run 的启动读取时间戳刷新及派生索引变化已逐字段核对，未恢复真实暂停任务。首次停服待核和后续补验失败记录保留在项目外发布证据中。
-- 浏览器完整候选验收为 29 localtool/14 race/45 前端/11 回执及 entrypoint；1 项未改动 web-analysis runtime 跳过。发布前用最终 release 路径复验两组真实浏览器均通过。新发布没有重跑全仓测试、真实模型场次或 UI 像素专项，也未构建新 Docker/TSB 镜像。
-- 原历史八 Run 中根 operator_pause/incomplete、七 Worker 已结算，根未到最终报告阶段；b-01/b-03 为已提交 1/4 后关闭。D1/D3 新真实场次、UI-ZOOM-01 两帧贴尾、B9 性能及其余欠项继续按开发计划验收，不从夹具或上线状态外推完成。
-- 私有发布证据在项目外 `_work/trace-release-20261119`；前批证据在 `_work/trace-acceptance-20261118` 与 `_work/trace-lightpanda-20261118`。GitHub 源码仓库 `chAng-L19/Trace`，分支 `main`，GitHub 提交身份以推送后 main 的实际 SHA 为准。
+- 先读 [agent.md](agent.md)，再按 [开发计划.md](开发计划.md) 的逐项验收条件推进。Trace 是通用求解 Agent；pi、ARTEX、Muteki 为第一参考项。构建、运行、测试仅在指定服务器。
+- 正式服务已发布 `workspace-layout-20261119`，binary、备份与上线身份见 [DEPLOYMENT.md](DEPLOYMENT.md)。容量与计划同一 Store 事务提交；首个模型根计划必须显式设容量或沿用已配置容量，超过上限的任务保持 pending，不创建空等 Worker。容量来自已观察资源约束，不硬编码平台配额。
+- 已执行子任务缺业务声明时，沿现有审计请求补交来源绑定结果；该回合零工具且拒绝实际工具执行。诚实的部分成果保留 incomplete，strict/requirements/predicate 及无效引用仍受原验收约束。结算回执分列运行、业务和清理状态，普通根聊天不增加结构化要求。
+- 唯一真实 #notice 位于运行对话同栏顶部；补充指令、附件、类型和 mailbox 回右栏，外层滚动不压缩对话。图拖动放大/链路高亮保留；Lightpanda 优先、CloakBrowser 备用保持原配置。
+- 服务器后端专项、相关 race、真实 pi 补交负控、报告下载 HTTP、vet/build 通过；42 份 Node、前端相关 Go 与四组 CloakBrowser headed/Xvfb 通过，覆盖 390/1024/1440 视口与原生 200%。独立最终审查无剩余 P0/P1。未重跑全仓、真实模型场次或新建 Docker/TSB 镜像；历史 UI-ZOOM-01 两帧专项和其余欠项仍按开发计划。
+- 本轮停止样本确证：首次计划遗漏 capacity 继承默认五，外部容量三未进入准入；根生成资源不足长轮询。部分 Worker 自然语言交回已有结果，缺 trace_result 导致 completed/incomplete；本场已核对四次实际接受后关闭，未从这些记录确证未提交即关闭。历史样本未回写、未重放，编排者继续负责分发、验收与报告。
+- 发布前一致备份与逐项内容/权限/属主校验通过；正式 HTTP、实际进程、工具/Skill、Host/Origin 与入口鉴权通过。7 份 Run 业务内容、请求/动作/事件不变，仅允许启动读取刷新 updated_at；暂停任务未恢复。私有证据在项目外 `_work/trace-workspace-layout-20261119`，日志根因在 `_work/trace-scheduler-20261119/root-cause.redacted.json`。
+- 本地完整 Git 为 `E:/cli/trace/.git`，远端 `chAng-L19/Trace`、分支 `main`；本批提交身份以实际推送后 main SHA 和项目外 Git 回执为准。

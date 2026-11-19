@@ -411,6 +411,34 @@ func (a *Agent) SetRequireVerifiedCompletion(required bool) {
 	a.requireVerifiedCompletion = required
 }
 
+const workerOutcomeHandoffReason = "delegated execution needs a trace_result handoff using existing observations: declare success, failed or incomplete and retain supported answers, evidence_ids and remaining work; do not repeat target execution to format the handoff"
+
+func outcomeHandoffPending(s *Snapshot) bool {
+	if s.Run.ParentRunID == "" || s.Run.ParentTaskID == "" || s.WorkerContext == nil {
+		return false
+	}
+	final, _ := finalReportContent(s)
+	if _, present := traceResultEnvelope(final); present {
+		return false
+	}
+	for i := len(s.Events) - 1; i >= 0; i-- {
+		switch s.Events[i].Type {
+		case "message_added", "message_consumed", "worker_message_delivered":
+			return false // New business input supersedes a formatting-only turn.
+		case "completion_deferred", "completion_stalled":
+			var audit struct {
+				Reasons []string `json:"reasons"`
+			}
+			raw, _ := json.Marshal(s.Events[i].Data)
+			if json.Unmarshal(raw, &audit) != nil {
+				return false
+			}
+			return len(audit.Reasons) == 1 && audit.Reasons[0] == workerOutcomeHandoffReason
+		}
+	}
+	return false
+}
+
 func continueForEvidence(s *Snapshot) bool {
 	refreshVerification(s)
 	refreshResult(s)
@@ -446,15 +474,30 @@ func continueForEvidence(s *Snapshot) bool {
 	if s.Run.SuccessContains != "" && s.Result.Status != "success" {
 		reasons = append(reasons, fmt.Sprintf("persisted stdout-contains predicate %q has not passed: %s; inspect actual tool stdout and the final claim's evidence_ids/answers, not evidence_check with an invented requirement ID", s.Run.SuccessContains, s.Result.TerminalReason))
 	}
-	for i := len(s.Messages) - 1; i >= 0; i-- {
-		if s.Messages[i].Role != "assistant" {
-			continue
+	if final, _ := finalReportContent(s); final != "" {
+		claim, present := traceResultEnvelope(final)
+		delegated := s.Run.ParentRunID != "" && s.Run.ParentTaskID != "" && s.WorkerContext != nil
+		// Muteki a73535a worker_result.py: publish the outcome before concluding
+		// its intent. Reuse pi's audit turn and the existing source ledger.
+		if !present && delegated && s.Result.Status == "incomplete" {
+			for _, action := range s.Actions {
+				if action.Result != nil && (observationAction(action) || action.Name == "artifact_register") {
+					reasons = append(reasons, workerOutcomeHandoffReason)
+					break
+				}
+			}
 		}
-		claim, present := traceResultEnvelope(s.Messages[i].Content)
-		if present && (claim == nil || claim.Status != "failed") && s.Result.Status != "success" {
+		// A non-strict worker may honestly hand partial work back to its parent.
+		// It does not waive checks, invalid references or a persisted predicate.
+		partialHandoff := delegated && !s.Run.RequireVerifiedCompletion && claim != nil && claim.Status == "incomplete" && len(reasons) == 0
+		for _, issue := range s.Result.ValidationIssues {
+			if issue.Blocking && issue.Code != "outcome_evidence_missing" {
+				partialHandoff = false
+			}
+		}
+		if present && (claim == nil || claim.Status != "failed") && s.Result.Status != "success" && !partialHandoff {
 			reasons = append(reasons, "structured final result remains incomplete: "+s.Result.TerminalReason)
 		}
-		break
 	}
 	if len(reasons) == 0 {
 		return false

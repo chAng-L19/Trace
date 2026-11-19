@@ -210,6 +210,31 @@ func TestRejectedMessagesLeaveTranscriptUnchanged(t *testing.T) {
 	}
 }
 
+func TestPreparedPromptResourceAndReceiptLimits(t *testing.T) {
+	a, _ := newTestAgent(t, MockProvider{})
+	req, err := a.preparePiRequest(context.Background(), createTestRun(t, a))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(req.Messages) == 0 || req.Messages[0].Role != "system" {
+		t.Fatal("missing system prompt in prepared request")
+	}
+	for _, rule := range []string{
+		"concurrency ceiling, not a dispatch target", "summarizes the supplied resource limits and their scope",
+		"first nonempty root plan, specify `capacity`", "unless capacity was already explicitly set",
+		"external acceptance only when the original goal requires that step", "A local result needs no external receipt",
+		"cleanup proves neither delivery nor acceptance", "when no external quota applies, use the ordinary root ceiling",
+		"report the blocker immediately", "uses `worker_yield` to save its checkpoint",
+		"Do not poll for capacity with shell sleep loops, retry helpers or repeated model turns",
+		"does not write long-running retry helpers or maintain a second queue",
+		"Do not select Astra for simple work", "Do not add independent worker time limits",
+	} {
+		if !strings.Contains(req.Messages[0].Content, rule) {
+			t.Errorf("prepared system prompt missing rule: %q", rule)
+		}
+	}
+}
+
 func TestCanonicalPromptAndHistoricalSnapshot(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "prompts", "agent.md"))
 	if err != nil {
