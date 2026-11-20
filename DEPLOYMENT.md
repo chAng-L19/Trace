@@ -4,7 +4,8 @@
 
 | 状态 | 版本或构建 | SHA-256（binary） | 证据 |
 | --- | --- | --- | --- |
-| 正式，2026-11-20T10:17:20.303266+08:00（上海）发布 | mcp-catalog-20261119 | `cfd339039bf165bbfacce5aee44cb5460058e7c00f3c2208bd51210ded77a838` | 私有 trace-mcp-catalog-20261119/release-receipt.json；正式进程环境 HTTP 及历史业务核对通过 |
+| 正式，2026-11-20T11:01:43.490440+08:00（上海）发布 | mcp-name-20261120 | `9d3a68993d58fd558242c11ad0ee9eb145074ba0ab996ff9e834af3494109fd3` | 私有 trace-mcp-name-20261120/release-receipt.json、cleanup-receipt.json；名称统一，旧版及旧版备份已删除 |
+| 历史正式，2026-11-20T10:17:20.303266+08:00（上海）发布 | mcp-catalog-20261119 | `cfd339039bf165bbfacce5aee44cb5460058e7c00f3c2208bd51210ded77a838` | 私有 trace-mcp-catalog-20261119/release-receipt.json；正式进程环境 HTTP 及历史业务核对通过 |
 | 历史正式，2026-11-19T13:57:18.073145+08:00（上海）发布 | runtime-audit-20261119 | `e309b486fd3f2fd3379526c71aa7d6885ffcbce9674db8f6910e4528a2a83e0d` | 私有 trace-runtime-audit-20261119/release-receipt.json；备份与线上身份校验通过 |
 | 历史正式，2026-11-19T12:48:14.814286+08:00（上海）发布 | workspace-layout-20261119 | `7bab4744550a6df172628a94f82667568cdd3c7ffe832fd53cea5998a33d6307` | 私有 trace-workspace-layout-20261119/release-receipt.json；备份与线上身份校验通过 |
 | 历史正式，2026-11-19 10:43:50（上海）发布 | dispatch-lightpanda-20261119 | `de4951b4801f55933c91392c40c67b7b8e1e4df834c60f852f47f057c3bfe911` | 私有 trace-release-20261119/release-receipt.json；备份与线上身份校验通过 |
@@ -15,6 +16,12 @@
 | 历史镜像，2026-11-19 已清理 | trace:full-agent-tsb-20261112 | `68dfb5a71bed513217a0677d40b9d2f1dc47dae74ad2fcaff0f00707d686235a` | 2026-11-12 全量镜像回执 |
 
 11-17 旧 UI 隔离验收输入清单：1188 项，SHA-256 `d3d0901f4950488c74d371df7554a10f3f0c71d52c013487addcf01bd0d9d4f2`；正式部署源码清单 SHA-256 `f8386dacf59e2909d6f99fd4443ae00786e2e00acf422de69674ad67f591dada`。文档压缩仅本地，未同步正式服务器源码或冻结清单。
+
+## 2026-11-20 MCP 管理命名与清理
+
+- 正式版本 `mcp-name-20261120`；仅修改界面名称和对应既有断言，导航、标题、说明统一“MCP 管理”，概览为“MCP 接入”。服务器上两份受影响前端测试、JS 语法和构建通过；发布后 Lightpanda/CloakBrowser 只读页面检查通过，保留两浏览器卡片、滑动开关和本地命令隐藏。
+- 按用户后续要求删除旧 `mcp-catalog-20261119`、`runtime-audit-20261119` release 及两者在 `/var/backups` 的旧版备份，仅留当前正式版；不保留旧版回滚材料，不追加测试验收。删除前将配置 `prompt_path` 从旧版路径迁至 `/home/ubuntu/trace/current/prompts/agent.md` 并重启服务。释放 3,971,895,296 B（约 3.70 GiB）。下文旧 release/备份路径仅是历史身份，目录已删除。
+- 体积为未压缩文件大小：主程序 22,567,143 B；剔除依赖测试/示例/文档后的 pi 运行时及提示词合计，核心 92,129,292 B（约 87.9 MiB），额外携带 Node 后 215,785,164 B（约 205.8 MiB）。不计浏览器、MCP 扩展、Skill、验证脚本、源码、状态和构建工具链；复用现有 Linux 系统库。未另外构建精简包。
 
 ## 2026-11-20 外部目录与 HTTP 传输发布
 

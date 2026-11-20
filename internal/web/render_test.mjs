@@ -45,7 +45,7 @@ assert.doesNotMatch(settings,/data-action="tool-detail" data-index="0"/);
 const mcpTools=Array.from({length:25},(_,i)=>({...tool('mcp',`browser_${i}`),server_name:'browser'}));
 const mcpState={...state,tools:[...mcpTools,tool('local','command')],config:{...state.config,mcp:[{name:'browser',command:'node'}]}};
 const mcpHome=renderPage({...mcpState,page:'overview'});
-assert.match(mcpHome,/<strong>1<\/strong><span>外部工具来源<\/span>/);
+assert.match(mcpHome,/<strong>1<\/strong><span>MCP 接入<\/span>/);
 assert.doesNotMatch(mcpHome,/25/);
 assert.match(renderPage({...mcpState,page:'settings',settingTab:'tools'}),/25 个工具接口/);
 assert.match(settings,/id="tool-selection-form"/);

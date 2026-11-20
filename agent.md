@@ -6,6 +6,7 @@
 
 - `E:/cli/trace` 只保留 Agent 源码、源码测试、必要配置/构建文件、许可证和维护文档。交付包、日志、下载、临时脚本及研究副本放项目外；`E:/cli/trace测试` 仅保留带日期 Docker 测试包及其运行配置 `.env`。不得擅自在项目中新建其他交付/审计材料。
 - 产品构建、运行、测试和浏览器验收仅在 `ubuntu@193.112.174.4` 执行。本机仅编辑、静态检查、文件整理及 SSH 协调；不在本机启动产品、导入/运行镜像或启动正式 TSecBench。部署、发布和不可逆操作遵循用户明确指令；默认不推送 GitHub，用户明确要求更新 GitHub 时按本次授权提交并推送。
+- 服务器仅保留当前正式版本；不留旧版 release 或旧版备份，历史源码由 Git 保存，不以回滚为由重新保留服务器旧版。
 - 本地 `E:/cli/trace` 保持完整 Git 仓库，直接在此目录维护分支、提交与远端；不以项目外发布副本代替本地 Git。
 - 凭据不写入源码、文档、脚本、镜像或交接记录；使用既有配置和环境通道，输出脱敏。不得因整理文档重连服务器或重做已完成的清理。
 - 所有修复优先检索 `E:/cli/_refs` 的对应实现和测试；pi、ARTEX、Muteki 是第一参考项。现成实现可直接复用或照搬，保留许可和来源，记录固定版本及适配差异；只查本次相关链路，沿现有架构最小适配，不为参考而扩展任务范围。
@@ -17,7 +18,7 @@
 - pi-agent-core/pi-ai 1.4.0 是唯一模型—工具循环，Node >=22.19。Go 保留 Store/API、Provider/密钥/用量、ToolRegistry、证据 Judge 和默认上限五 Worker 的可配置调度（已知外部资源上限更低时先收紧容量）；不新建第二 Store、知识库或执行循环。
 - 浏览器优先 Lightpanda（https://github.com/lightpanda-io/browser）；CloakBrowser 0.6.4 为备用。常规导航、DOM、表单和 JavaScript 先选 Lightpanda；截图、实际渲染、原生缩放及其不支持的操作选 CloakBrowser 有界面模式，Linux 无 DISPLAY 时用 Xvfb。两者使用预装冻结 binary，不在发现/请求时自动下载或更新；已执行后失败/uncertain 不跨浏览器自动重放。独立 DrissionPage/Playwright CLI 不恢复，协议依赖保留，不回退普通 Chromium。
 - 真实网页交互优先浏览器扩展/工具；Lightpanda 为首选，CloakBrowser 为能力备用。浏览器不适用或不可用时，HTTP/API/下载统一使用 curl_cffi；http-request/page-fetch 共用该真实传输。正式 cgroup 启动入口把 runtime/bin 放 PATH 首位，受管 curl 委托官方 curl-cffi CLI（`curl get URL`，不兼容旧 curl 参数），不绕回系统 curl/其他 HTTP 客户端、不自动重放。依赖按 scripts/http-requirements.txt 的 0.17.0/哈希离线冻结，发现/调用不联网安装；已有保存的内置 helper 在发布时按旧源码精确匹配迁移，保留自定义项、disabled 和秘密值。已有 Run 的持久提示不回写，新运行读取 prompts/agent.md。
-- 外部工具目录仅展示真实 MCP 协议服务与明确支持的 Lightpanda/CloakBrowser 浏览器扩展。本地命令不在卡片或目录接口选择器展示，即使有 GitHub 来源也隐藏；浏览器详情不展示启动命令、启动参数、ARGV/JSONL 或服务端启动路径，主目录不展示本地 Manifest 编辑入口。卡片滑动开关持久化启停（本地项目按组修改 Manifest.disabled，默认启用），停用保留配置并移出真实工具目录，重启/预设合并不得重启用。新保存的 MCP 选择在同一 Run 保存 ID→服务归属，明确停用时保留既有 ID、移除 schema，再启用按真实目录恢复；没有归属的未知旧 ID 不猜测来源。按真实协议标注连接/注册状态；过滤后的详情保留原 Manifest 索引，保存目录接口选择保留隐藏命令的既有选择。
+- 界面名称固定为“MCP 管理”，不得改称“外部工具”；目录仅展示真实 MCP 协议服务与明确支持的 Lightpanda/CloakBrowser 浏览器扩展。本地命令不在卡片或目录接口选择器展示，即使有 GitHub 来源也隐藏；浏览器详情不展示启动命令、启动参数、ARGV/JSONL 或服务端启动路径，主目录不展示本地 Manifest 编辑入口。卡片滑动开关持久化启停（本地项目按组修改 Manifest.disabled，默认启用），停用保留配置并移出真实工具目录，重启/预设合并不得重启用。新保存的 MCP 选择在同一 Run 保存 ID→服务归属，明确停用时保留既有 ID、移除 schema，再启用按真实目录恢复；没有归属的未知旧 ID 不猜测来源。按真实协议标注连接/注册状态；过滤后的详情保留原 Manifest 索引，保存目录接口选择保留隐藏命令的既有选择。
 - 前端固定消息窗口指唯一的 `#notice` 通知区域，只在运行对话同栏顶部停靠；补充指令、附件、消息类型和投递队列保留右栏，不随通知上移，不通过滚动收缩正文高度。
 - 保持原有持久化、来源校验、uncertain 不重放和预算边界；`completed`、业务 `success`、来源 `verified` 分开判定。只读状态不修改执行语义。
 - 执行资源模式默认 `cgroup`；用户已选择为TSB托管增加显式 `process-group` 普通容器兼容模式，只由托管镜像/显式配置启用，不因委托失败自动降级。兼容模式保留输出预算、所属进程清理与不重放，但不宣称逐命令内存/PID硬隔离或完整防脱离；旧动作按已保存的后端/资源身份恢复，不能用当前ENV改写归属。正式服务器模式不随打包变更。

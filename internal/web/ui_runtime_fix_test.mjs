@@ -74,7 +74,7 @@ assert.doesNotMatch(recordDetail('action-detail',action,snap),/id="tool-observat
 const pendingSnap={...snap,messages:[{role:'assistant',request_id:'q',tool_calls:[{id:'c',name:'exec',arguments:'{}'}]}]};
 assert.match(recordDetail('action-detail',action,pendingSnap),/id="tool-observation-form"/);
 assert.doesNotMatch(recordDetail('action-detail',{...action,status:'completed'},snap),/id="tool-observation-form"/);
-assert.match(settings(state),/外部工具统一展示/);
+assert.match(settings(state),/MCP 管理：/);
 assert.match(settings({...state,settingTab:'local'}),/浏览器扩展/);
 assert.doesNotMatch(settings({...state,settingTab:'local'}),/href="#local-tools"/,'legacy route remains readable without a visible navigation link');
 assert.equal(resolveRoute('#mcp').settingTab,'tools');
@@ -84,7 +84,7 @@ assert.match(loading,/<div class="workspace-dialogue-head"><div id="workspace-no
 assert.doesNotMatch(loading,/<form|<textarea/,'loading exposes the reader, not an editor for the previous run');
 const index=fs.readFileSync(new URL('./static/index.html',import.meta.url),'utf8');
 assert.equal((index.match(/href="#local-tools"/g)||[]).length,0);
-assert.match(index,/外部工具/);
+assert.match(index,/MCP 管理/);
 
 // Exercise the production submit listener: one inline form error, zero toast.
 const app=fs.readFileSync(new URL('./static/app.js',import.meta.url),'utf8');
