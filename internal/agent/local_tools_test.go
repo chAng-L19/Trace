@@ -201,6 +201,46 @@ func TestLocalToolTimeoutAndCancel(t *testing.T) {
 	}
 }
 
+func TestLocalToolDisabledRegistrationAndDispatch(t *testing.T) {
+	manifest := localManifest(t, "echo")
+	call := ToolCall{ID: "stale", Name: manifest.StableID(), Arguments: `{}`}
+	manifest.Disabled = true
+	a, store := newTestAgent(t, manualProvider(call))
+	if err := a.AddLocalTools([]localtool.Manifest{manifest}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := a.Registry().Lookup(call.Name); ok {
+		t.Fatal("disabled tool registered")
+	}
+	id := createTestRun(t, a)
+	waitTestRun(t, a, id)
+	ctx := context.Background()
+	if _, err := a.ExecuteRegistered(ctx, id, call.ID, call.Name); err == nil {
+		t.Fatal("explicit dispatch accepted disabled tool")
+	}
+	snap, err := a.executePendingTool(ctx, id, call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result ToolResult
+	last := snap.Messages[len(snap.Messages)-1]
+	if len(snap.Actions) != 0 || last.ToolCallID != call.ID || json.Unmarshal([]byte(last.Content), &result) != nil || result.WorkerStatus != worker.StatusNotStarted {
+		t.Fatal("stale call did not produce a not-started observation without an action")
+	}
+
+	manifest.Disabled = false
+	rebuilt, err := New(store, MockProvider{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rebuilt.AddLocalTools([]localtool.Manifest{manifest}); err != nil {
+		t.Fatal(err)
+	}
+	if tool, ok := rebuilt.Registry().Lookup(call.Name); !ok || tool.Local == nil || tool.Local.Name != manifest.Name {
+		t.Fatal("re-enabled tool missing at original stable ID")
+	}
+}
+
 func TestLocalToolDuplicateRegistrationAtomic(t *testing.T) {
 	r := NewToolRegistry()
 	m := localManifest(t, "echo")
@@ -215,6 +255,105 @@ func TestLocalToolDuplicateRegistrationAtomic(t *testing.T) {
 	}
 	if err := r.AddLocal([]localtool.Manifest{m}); err == nil {
 		t.Fatal("existing identity collision accepted")
+	}
+}
+
+func TestLocalToolDisabledIdentityIsReserved(t *testing.T) {
+	dormant := localtool.Manifest{Name: "fixture", Disabled: true}
+	active := localManifest(t, "echo")
+	r := NewToolRegistry()
+	for _, batch := range [][]localtool.Manifest{{active, dormant}, {dormant, active}, {dormant, dormant}, {{Name: "  ", Disabled: true}}} {
+		if err := r.AddLocal(batch); err == nil {
+			t.Fatal("invalid manifest identities accepted")
+		}
+	}
+	if err := r.AddLocal([]localtool.Manifest{dormant}); err != nil {
+		t.Fatalf("disabled identity should not require a command: %v", err)
+	}
+	clone, _, err := r.Clone(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, registry := range []*ToolRegistry{r, clone} {
+		if _, ok := registry.Lookup(dormant.StableID()); ok {
+			t.Fatal("reserved identity became callable")
+		}
+		if err := registry.AddLocal([]localtool.Manifest{active}); err == nil {
+			t.Fatal("reserved identity could be registered a second time")
+		}
+	}
+}
+
+func TestLocalToolDisabledSelectionSaveResumeAndReenable(t *testing.T) {
+	ctx := context.Background()
+	m := localManifest(t, "echo")
+	other := m
+	other.Name = "other"
+	p := manualProvider(ToolCall{ID: "find", Name: "tool_search", Arguments: `{}`})
+	a, store := newTestAgent(t, p)
+	if err := a.AddLocalTools([]localtool.Manifest{m, other}); err != nil {
+		t.Fatal(err)
+	}
+	id := createTestRun(t, a)
+	if _, err := a.SelectTools(id, []string{m.StableID()}, true); err != nil {
+		t.Fatal(err)
+	}
+	one := 1
+	a.ConfigureBudget(BudgetOverride{MaxModelRequests: &one})
+	paused, err := a.Run(ctx, id)
+	if err != nil || paused.Run.Status != StatusPaused || len(paused.Requests) != 1 {
+		t.Fatalf("expected a paused run before rebuild: %v, %s", err, paused.Run.Status)
+	}
+	rebuild := func(disabled bool) *Agent {
+		t.Helper()
+		m.Disabled = disabled
+		ag, err := New(store, successProvider{}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ag.AddLocalTools([]localtool.Manifest{m, other}); err != nil {
+			t.Fatal(err)
+		}
+		return ag
+	}
+	off := rebuild(true)
+	ids := []string{m.StableID(), other.StableID()}
+	if _, err := off.SelectTools(id, ids, true); err != nil {
+		t.Fatal(err)
+	}
+	fresh := createTestRun(t, off)
+	for _, bad := range []struct{ run, tool string }{{fresh, m.StableID()}, {id, "unknown"}, {id, "exec"}} {
+		if _, err := off.SelectTools(bad.run, []string{bad.tool}, true); err == nil {
+			t.Fatal("accepted an unavailable new selection", bad)
+		}
+	}
+	two := 2
+	off.ConfigureBudget(BudgetOverride{MaxModelRequests: &two})
+	s, err := off.Run(ctx, id)
+	if err != nil || s.Run.Status != StatusCompleted || len(s.Requests) != 2 || s.Run.ToolSelection == nil || !hasString(s.Run.ToolSelection.IDs, m.StableID()) {
+		t.Fatalf("resume lost saved selection or failed to reach provider: %v, %s", err, s.Run.Status)
+	}
+	hasSchema := func(defs []ToolDefinition, id string) bool {
+		for _, d := range defs {
+			if d.Function.Name == id {
+				return true
+			}
+		}
+		return false
+	}
+	if hasSchema(s.Requests[1].Tools, m.StableID()) || !hasSchema(s.Requests[1].Tools, other.StableID()) {
+		t.Fatal("resume did not project only the available selected schema")
+	}
+	on := rebuild(false)
+	defs, _, err := on.modelTools(&s, "")
+	if err != nil || !hasSchema(defs, m.StableID()) {
+		t.Fatal("re-enabled schema not restored from the saved selection", err)
+	}
+	if _, err := off.SelectTools(id, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := off.SelectTools(id, ids, true); err == nil {
+		t.Fatal("cleared disabled ID could be added again")
 	}
 }
 

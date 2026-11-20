@@ -13,7 +13,7 @@ Trace 是以持久 Run 为核心的研究 Agent，CLI 与 WebUI 共用 Go Agent�
 
 模型检测：编辑区检测按钮下方显示当前配置的短请求结果、耗时和检测时间，保存回执也在编辑区；右上角仅补充显示当前默认连接状态。当前标签页内切页及同值配置重读保留。未保存表单的检测明确标“草稿、未保存”，检测后保存同一配置会保留结果；保存不同未检测模型会回到未检测。结果仅存内存，刷新页面后需主动检测，不自动发请求或存储凭据。
 
-MCP 管理：左侧“MCP 管理”→“添加 MCP 服务”，直接打开唯一添加弹窗，选择连接已有服务或从 GitHub 下载源码并接入；页面不再保留添加/编辑折叠表单。保存成功关闭弹窗，取消/Escape/关闭丢弃本次输入；已有服务从详情进入编辑。启用/停用位于每张服务卡片的开关与服务详情顶部；停用保留配置、关闭 Trace 持有的连接并移出工具目录，HTTP 远端服务进程不受影响。检测连接只是临时探测，不改变启用状态。变更前需暂停运行与 Worker；重名新增会提示编辑原服务，旧连接/JSON草稿遇到配置更新会阻止覆盖，可复制草稿后丢弃并按最新配置重编。
+外部工具：左侧“外部工具”统一显示 MCP 协议服务及 Lightpanda、CloakBrowser 浏览器扩展；本地命令即使有 GitHub 来源也不列卡片或目录接口选择项。浏览器的“已注册”表示目录接口存在，实际执行以调用记录为准。“添加 MCP 服务”，直接打开唯一添加弹窗，选择连接已有服务或从 GitHub 下载源码并接入；页面不再保留添加/编辑折叠表单。保存成功关闭弹窗，取消/Escape/关闭丢弃本次输入；已有服务从详情进入编辑。启用/停用位于每张服务卡片的开关与服务详情顶部；停用保留配置、关闭 Trace 持有的连接并移出工具目录，HTTP 远端服务进程不受影响。检测连接只是临时探测，不改变启用状态。变更前需暂停运行与 Worker；重名新增会提示编辑原服务，旧连接/JSON草稿遇到配置更新会阻止覆盖，可复制草稿后丢弃并按最新配置重编。
 
 - [系统架构](#系统架构)：模块职责、执行闭环、协作、存储与实时界面。
 - [构建与运行](#构建与运行) · [命令](#命令) · [已集成工具](#已集成工具)。
@@ -169,7 +169,8 @@ $env:TRACE_DATA_DIR = "E:\trace-state"
 
 | 依赖 | 工具与边界 |
 | --- | --- |
-| Python标准库 | http-request、page-fetch、dns-resolve、port-probe、binary-info、strings、analysis、code-search、python-ast-audit；analysis仅元数据/hash/字符串，AST为启发式。字符串/源码读取在内存，HTTP/匹配结果显式标截断 |
+| curl_cffi 0.17.0 | http-request、page-fetch 使用同一真实 HTTP 传输；真实网页先用浏览器，HTTP/API/下载不适用浏览器时使用。TLS 默认校验、限量正文、无请求自动重试；非 GET/HEAD 不自动跟随重定向。 |
+| Python标准库 | dns-resolve、port-probe、binary-info、strings、analysis、code-search、python-ast-audit；analysis仅元数据/hash/字符串，AST为启发式。字符串/源码读取在内存，HTTP/匹配结果显式标截断 |
 | Capstone | disassemble：指定架构/文件偏移的原始字节反汇编 |
 | Frida SDK | frida：devices/processes/instrument；PID/进程名+任意JS，结束卸载/脱离；不建持久会话/不spawn，脚本/清理错误非零，取消保留uncertain |
 | Droid ASC | droidasc：APK类/Manifest、字符串/类型/方法/字段引用、按需单类反编译；Python CLI，不计MCP |
@@ -453,3 +454,5 @@ P2第18项以动作/证据/计划/用户输入的语义指纹去重completion au
 当前已有本地 JSON/OS 锁、CAS、Skills、语义摘要、Provider/工具流式事件、持久 Planner/child worker 和本地 WebUI。SQLite为显式离线迁移候选后端，默认JSON保持；尚无远程 worker 集群/容器隔离、模型 tokenizer、费用/token 金额上限、完整 extension/session tree。CAS原生输入附件已接通，模型配置显式开启 image_input 才发送图像块；真实外部视觉模型尚未验收。Windows 历史已运行进程级、独立二进制与独立 Frida 验证；本轮全部产品构建/运行验收只在Ubuntu服务器，历史已通过真实DeepSeek长任务/独立证据审阅与新执行复测、REA单元/集成及Chromium/Electron活体；30分钟soak使用受控Provider，不是30分钟真实DeepSeek。各批结果不替代未发布改动验收。服务器访问与运维见 [DEPLOYMENT.md](DEPLOYMENT.md)。
 
 常用回归入口为 `go test ./...`、`go vet ./...` 与前端 Node 用例；每批实际运行范围、退出码和证据以 DEPLOYMENT.md 为准，不把常用命令当本轮全仓通过。临时测试、源码包与日志保留在项目外独立目录，正式用户 state 不承载验收夹具。
+
+受管服务器的 `curl` 已委托官方 `curl-cffi` CLI，使用 `curl get URL` / `curl-cffi get URL --impersonate chrome`，旧 curl flags 会由官方解析器拒绝。离线安装：`PATH=/path/to/venv/bin:$PATH sh scripts/install-http.sh RELEASE_ROOT FROZEN_WHEELS`；轮子版本与 SHA256 见 `scripts/http-requirements.txt`（CPython 3.12/Linux amd64）。`scripts/exec-cgroup-isolated.sh` 把 `RELEASE_ROOT/runtime/bin` 放 PATH 首位；PYTHONPATH 需沿部署配置包含 runtime/site-packages。这是受管命令入口与 Agent 使用约定，不宣称限制任意绝对路径程序。历史 Run 提示保持原样，新运行读取新提示。旧 Docker 镜像尚未重建，本轮发布对象为正式服务器服务。

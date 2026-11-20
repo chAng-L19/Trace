@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"trace/internal/agent"
+	"trace/internal/localtool"
 )
 
 func TestNullConfigurationRetainsSavedFileAndAgent(t *testing.T) {
@@ -99,6 +100,7 @@ func TestLoadConfigRejectsInvalidSavedValuesWithoutChangingFile(t *testing.T) {
 func TestLoadConfigSupportedRoundTripAndMissingBootstrap(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	want := secretConfigFixture(t)
+	want.LocalTools[0].Disabled = true
 	missing, err := LoadConfig(path, want, "")
 	if err != nil || !missing.IsFirstBoot || !missing.ConfigMissing || !reflect.DeepEqual(missing.Config, want) {
 		t.Fatal("missing-file bootstrap changed")
@@ -184,13 +186,17 @@ func TestConfigurationStoredSecretPreserveClearAndReplace(t *testing.T) {
 	for _, tc := range []struct {
 		name, value string
 		replace     bool
-	}{{name: "preserve"}, {name: "clear", replace: true}, {name: "replace", value: "replacement-fixture-key", replace: true}} {
+		disable     bool
+	}{{name: "preserve"}, {name: "disable_local_preserves_stored_values", disable: true}, {name: "clear", replace: true}, {name: "replace", value: "replacement-fixture-key", replace: true}} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, live := fixture(t, nil)
 			old := secretConfigFixture(t)
 			old.Revision, old.Context = s.config.Revision, s.config.Context
 			s.config = old
 			next, want := redactConfig(old), cloneConfig(old)
+			if tc.disable {
+				next.LocalTools[0].Disabled, want.LocalTools[0].Disabled = true, true
+			}
 			if tc.replace {
 				for _, c := range []*Config{&next, &want} {
 					c.Provider.APIKey = tc.value
@@ -227,5 +233,32 @@ func TestConfigurationStoredSecretPreserveClearAndReplace(t *testing.T) {
 				t.Fatal("valid secret update did not survive disk reload")
 			}
 		})
+	}
+}
+
+func TestLocalManifestSecretIdentity(t *testing.T) {
+	a := localtool.Manifest{Name: "first", Disabled: true, Env: map[string]string{"TOKEN": "one"}}
+	b := localtool.Manifest{Name: "second", Command: "other", Env: map[string]string{"TOKEN": "two"}}
+	old := Config{LocalTools: []localtool.Manifest{a, b}}
+	next := redactConfig(old)
+	next.LocalTools[0], next.LocalTools[1] = next.LocalTools[1], next.LocalTools[0]
+	if err := restoreSecrets(&next, old); err != nil || next.LocalTools[0].Env["TOKEN"] != "two" || next.LocalTools[1].Env["TOKEN"] != "one" {
+		t.Fatal("reordering changed secret ownership", err)
+	}
+	for _, duplicateOld := range []bool{false, true} {
+		previous, submitted := cloneConfig(old), redactConfig(old)
+		target := &submitted
+		if duplicateOld {
+			target = &previous
+		}
+		target.LocalTools[1].Name = target.LocalTools[0].Name
+		if err := restoreSecrets(&submitted, previous); err == nil || !strings.Contains(err.Error(), "duplicate local tool name") {
+			t.Fatal("ambiguous secret identity did not fail closed", err)
+		}
+		for _, m := range submitted.LocalTools {
+			if m.Env["TOKEN"] != hiddenSecret {
+				t.Fatal("secret copied before validating all identities")
+			}
+		}
 	}
 }

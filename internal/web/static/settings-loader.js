@@ -1,14 +1,14 @@
 // Reference: Muteki SettingsContent / AgentExtensionsSettings, 144df7666dc7.
 // Adopt per-page loading and stale-response ownership; keep Trace's native modules.
 const paths={config:'/config',tools:'/tools',skills:'/skills',mcpStatuses:'/mcp/status'};
-export const settingsFields=tab=>tab==='tools'?['config','tools','mcpStatuses']:tab==='local'?['config','tools']:tab==='skills'?['config','skills']:['config'];
+export const settingsFields=tab=>['tools','local'].includes(tab)?['config','tools','mcpStatuses']:tab==='skills'?['config','skills']:['config'];
 export function createSettingsLoader({api,state}){
   const resources=Object.fromEntries(Object.keys(paths).map(field=>[field,{loaded:field==='config'&&!!state.config,available:field==='config'&&!!state.config,loading:false,error:''}]));
   const flights=new Map(),versions=Object.fromEntries(Object.keys(paths).map(field=>[field,0]));
   state.settingsResources=resources;
   const report=()=>{state.settingsError=settingsFields(state.settingTab).map(field=>resources[field].error).filter(Boolean).join('；')};
   function invalidate(fields){
-    for(const field of fields){versions[field]++;resources[field].loaded=false;resources[field].error=''}
+    for(const field of fields){versions[field]++;resources[field].loaded=false;if(field!=='config')resources[field].available=false;resources[field].error=''}
     report();
   }
   function read(field){

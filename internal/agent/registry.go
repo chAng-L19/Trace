@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 
@@ -27,6 +28,9 @@ type RegisteredTool struct {
 type ToolRegistry struct {
 	tools   map[string]RegisteredTool
 	configs map[string]mcp.Config
+	// Configured identities only: these tools have no callable registration.
+	disabledLocal map[string]bool
+	disabledMCP   map[string]bool // Server names only; never dialed by Clone.
 }
 
 func NewToolRegistry() *ToolRegistry {
@@ -43,7 +47,7 @@ func (r *ToolRegistry) SetMCPConfig(server string, config mcp.Config) { r.config
 // Clone preserves tool identities while opening independent stateful MCP
 // sessions for each child agent.
 func (r *ToolRegistry) Clone(ctx context.Context) (*ToolRegistry, []*mcp.Client, error) {
-	copy := &ToolRegistry{tools: map[string]RegisteredTool{}, configs: map[string]mcp.Config{}}
+	copy := &ToolRegistry{tools: map[string]RegisteredTool{}, configs: map[string]mcp.Config{}, disabledLocal: maps.Clone(r.disabledLocal), disabledMCP: maps.Clone(r.disabledMCP)}
 	var clients []*mcp.Client
 	for id, t := range r.tools {
 		if t.Client == nil {
@@ -106,20 +110,41 @@ func (r *ToolRegistry) AddMCP(server string, client *mcp.Client, tools []mcp.Too
 	return nil
 }
 
+// IndexLocalManifests checks the exact name used for stable IDs and stored
+// secrets, independently of availability or executable configuration.
+func IndexLocalManifests(manifests []localtool.Manifest) (map[string]localtool.Manifest, error) {
+	byName := make(map[string]localtool.Manifest, len(manifests))
+	for _, m := range manifests {
+		if strings.TrimSpace(m.Name) == "" {
+			return nil, fmt.Errorf("local tool name is required")
+		}
+		if _, exists := byName[m.Name]; exists {
+			return nil, fmt.Errorf("duplicate local tool name: %q", m.Name)
+		}
+		byName[m.Name] = m
+	}
+	return byName, nil
+}
+
 // AddLocal registers generic argv/stdio command adapters. The manifest is
 // copied before registration so callers cannot mutate an active registry.
 func (r *ToolRegistry) AddLocal(manifests []localtool.Manifest) error {
+	if _, err := IndexLocalManifests(manifests); err != nil {
+		return err
+	}
 	entries := map[string]RegisteredTool{}
+	disabled := map[string]bool{}
 	for _, manifest := range manifests {
+		id := manifest.StableID()
+		if _, exists := r.tools[id]; exists || r.disabledLocal[id] {
+			return fmt.Errorf("duplicate registered tool ID: %s", id)
+		}
+		if manifest.Disabled {
+			disabled[id] = true
+			continue
+		}
 		if err := manifest.Validate(); err != nil {
 			return err
-		}
-		id := manifest.StableID()
-		if _, exists := r.tools[id]; exists {
-			return fmt.Errorf("duplicate registered tool ID: %s", id)
-		}
-		if _, exists := entries[id]; exists {
-			return fmt.Errorf("duplicate registered tool ID: %s", id)
 		}
 		definition := manifest.Definition()
 		d := ToolDefinition{Type: "function"}
@@ -140,6 +165,12 @@ func (r *ToolRegistry) AddLocal(manifests []localtool.Manifest) error {
 			copyManifest.Env[key] = value
 		}
 		entries[id] = RegisteredTool{Definition: d, Adapter: "local", LocalName: manifest.Name, Local: &copyManifest}
+	}
+	if len(disabled) != 0 {
+		if r.disabledLocal == nil {
+			r.disabledLocal = map[string]bool{}
+		}
+		maps.Copy(r.disabledLocal, disabled)
 	}
 	for id, tool := range entries {
 		r.tools[id] = tool

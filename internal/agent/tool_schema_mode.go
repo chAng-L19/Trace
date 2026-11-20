@@ -47,7 +47,7 @@ func (a *Agent) executionConfiguration(c RunConfiguration) (*ExecConfig, ToolSch
 	}
 	var selection *ToolSelection
 	if source.ToolSelection != nil {
-		selection = &ToolSelection{IDs: append([]string{}, source.ToolSelection.IDs...)}
+		selection = a.registry.selection(append([]string{}, source.ToolSelection.IDs...), source.ToolSelection)
 		if _, err := a.selectedDefinitions(selection); err != nil {
 			return nil, schema, nil, err
 		}
@@ -88,7 +88,7 @@ func (a *Agent) normalizeToolSchema(c ToolSchemaConfig) (ToolSchemaConfig, *Tool
 	}
 	sort.Strings(ids)
 	c.IDs = append([]string(nil), ids...)
-	return c, &ToolSelection{IDs: ids}, nil
+	return c, a.registry.selection(ids, nil), nil
 }
 
 // Local request diagnostics, not provider usage, tokenization or cache hits.

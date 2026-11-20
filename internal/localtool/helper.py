@@ -10,13 +10,11 @@ import pathlib
 import re
 import shutil
 import socket
-import ssl
 import struct
 import sys
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
+from email.message import Message
 from html.parser import HTMLParser
 
 
@@ -109,7 +107,7 @@ def capability_inventory(args):
     """Fixed, non-executing local probes; optional package imports may have effects."""
     if args:
         raise ValueError("capability-inventory accepts no arguments")
-    names = ("sh", "bash", "python3", "node", "curl", "jq", "nmap", "nc",
+    names = ("sh", "bash", "python3", "node", "curl-cffi", "jq", "nmap", "nc",
              "ssh", "sshpass", "xxd", "od", "flock", "xvfb-run", "xauth")
     tools = {}
     for name in names:
@@ -117,7 +115,7 @@ def capability_inventory(args):
         tools[name] = {"available": path is not None, "path": path[:512] if path else None,
                        "path_truncated": bool(path and len(path) > 512)}
     modules = {}
-    for name in ("pydash", "paramiko", "pexpect", "cloakbrowser", "playwright", "psutil"):
+    for name in ("pydash", "paramiko", "pexpect", "cloakbrowser", "playwright", "psutil", "curl_cffi"):
         item = {"spec_found": False, "version": None, "import_verified": False}
         try:
             item["spec_found"] = importlib.util.find_spec(name) is not None
@@ -147,11 +145,11 @@ def capability_inventory(args):
                              "protocol": modules["playwright"], "lifecycle": modules["psutil"],
                              "launch_verified": False, "tool_search_query": "lightpanda"},
                "cloakbrowser": cloak}
-    alternatives = {"http": ["Python stdlib urllib (available in this helper)"],
+    alternatives = {"http": [],
                     "hex": ["Python bytes.hex()/bytes.fromhex() (stdlib)"],
                     "ssh_protocol_candidates": [], "ssh_password_candidates": []}
-    if tools["curl"]["available"]:
-        alternatives["http"].append("curl")
+    if modules["curl_cffi"]["spec_found"]:
+        alternatives["http"].append("curl_cffi; module import/transport unverified")
     for name in ("xxd", "od"):
         if tools[name]["available"]:
             alternatives["hex"].append(name)
@@ -172,31 +170,47 @@ def capability_inventory(args):
                 "PATH/spec/metadata presence is not execution or import verification; verify the selected operation.",
                 "TCP port-probe/socket proves connectivity only, not SSH handshake, authentication or command execution.",
                 "pydash path semantics require the target version and a small local check, not a hand-written approximation.",
+                "For real web pages prefer the browser; use curl_cffi HTTP tools only when browser use is unsuitable. Never replay an uncertain request with another client.",
                 "Prefer tool_search query=lightpanda; use cloakbrowser for unavailable/unsupported Lightpanda or actual rendering/screenshots. Select the stable ID and read its schema/Skill.",
                 "tool_search matches all query terms; zero matches is not an empty catalog. Retry an exact short term or empty paginated query.",
                 "Browser binary/display checks are prerequisites only; unconfigured binary location remains unknown. Never replay an uncertain action in a backup browser."]}
 
 
 def http_request(args):
+    from curl_cffi import CurlECode, requests
+    from curl_cffi.curl import CURL_WRITEFUNC_ERROR
+    from curl_cffi.requests.exceptions import RequestException
+
     verify_tls = args.get("verify_tls", True)
     if not isinstance(verify_tls, bool):
         raise ValueError("verify_tls must be a boolean")
-    context = None if verify_tls else ssl._create_unverified_context()
+    limit = positive(args, "max_bytes", 1048576)
+    content = bytearray()
+
+    def receive(chunk):
+        content.extend(chunk[:limit + 1 - len(content)])
+        # Abort at the sentinel byte instead of buffering the rest of the response.
+        return CURL_WRITEFUNC_ERROR if len(content) > limit else len(chunk)
+
     body = args.get("body")
-    request = urllib.request.Request(
-        args["url"], data=body.encode("utf-8") if body is not None else None,
-        headers=args.get("headers", {}), method=args.get("method", "GET"))
-    try:
-        response = urllib.request.urlopen(request, timeout=args.get("timeout", 10), context=context)
-    except urllib.error.HTTPError as exc:
-        response = exc
-    with response:
-        limit = positive(args, "max_bytes", 1048576)
-        content = response.read(limit + 1)
-        return {"url": response.geturl(), "status": response.status,
-                "tls_verified": verify_tls if response.geturl().startswith("https:") else None,
-                "headers": list(response.headers.items()),
-                "body": content[:limit].decode(response.headers.get_content_charset() or "utf-8", "replace"),
+    method = args.get("method", "GET").upper()
+    with requests.Session(retry=0) as session:
+        try:
+            response = session.request(
+                method, args["url"], data=body.encode("utf-8") if body is not None else None,
+                headers=args.get("headers", {}), timeout=args.get("timeout", 10),
+                verify=verify_tls, impersonate=args.get("impersonate", "chrome"), content_callback=receive,
+                allow_redirects=method in ("GET", "HEAD"))
+        except RequestException as exc:
+            if exc.code != CurlECode.WRITE_ERROR or len(content) <= limit:
+                raise
+            response = exc.response
+        content_type = Message()
+        content_type["content-type"] = response.headers.get("content-type", "")
+        return {"url": response.url, "status": response.status_code,
+                "tls_verified": verify_tls if response.url.startswith("https:") else None,
+                "headers": response.headers.multi_items(),
+                "body": content[:limit].decode(content_type.get_content_charset() or "utf-8", "replace"),
                 "truncated": len(content) > limit}
 
 

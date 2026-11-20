@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+"""Trace's managed curl entry uses the official curl-cffi CLI and its syntax.
+
+Examples: curl get https://example.com --impersonate chrome
+          curl-cffi post https://example.com/api field=value
+Old native curl flags are rejected by the upstream parser before any request.
+"""
+from curl_cffi.cli import main
+
+if __name__ == "__main__":
+    main()

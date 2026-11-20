@@ -15,7 +15,7 @@ output=$(realpath -m -- "$2")
 [[ ! -e "$output" ]] || { printf 'output path must be new\n' >&2; exit 2; }
 mkdir -- "$output"
 root="$output/trace-p2-linux-amd64"
-mkdir -p "$root/bin" "$root/.trace" "$root/docker" "$root/examples"
+mkdir -p "$root/bin" "$root/.trace" "$root/docker" "$root/examples" "$root/scripts"
 container=$(docker create "$image_id")
 cleanup() {
   if [[ -n ${container:-} ]]; then docker rm "$container" >/dev/null; fi
@@ -31,6 +31,7 @@ docker cp "$container:/opt/trace/examples/tsecbench-task.md" "$root/examples/tse
 docker cp "$container:/opt/trace/examples/tsecbench_api.py" "$root/examples/tsecbench_api.py"
 docker cp "$container:/opt/trace/docker/entrypoint.sh" "$root/docker/entrypoint.sh"
 cp -- "$source_root/.dockerignore" "$root/.dockerignore"
+cp -- "$source_root/scripts/http-requirements.txt" "$root/scripts/http-requirements.txt"
 for file in Dockerfile run-linux.sh hosted.env.example install-capabilities.sh capabilities.sha256 lightpanda.sha256; do
   cp -- "$source_root/docker/$file" "$root/docker/$file"
 done

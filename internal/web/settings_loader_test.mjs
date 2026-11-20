@@ -81,3 +81,8 @@ try{
   input.value='saved-model';redraw(providerState,'provider-after-load');assert.equal(input.value,'unsaved-model');
 }finally{delete globalThis.document}
 console.log('Settings loader checks passed: page reads, single flight, stale invalidation, retry, MCP path and run selection states.');
+
+// Saving a rebuild makes retained catalog observations stale until refreshed.
+loader.saved(newer);state.settingTab="tools";assert.equal(state.settingsResources.tools.available,false);
+const failedCatalog=loader.load("tools");next("/config").resolve(newer);next("/tools").reject(new Error("catalog offline"));next("/mcp/status").resolve([]);await failedCatalog;
+assert.match(settings(state),/设置资源读取失败/);assert.doesNotMatch(settings(state),/data-action="mcp-toggle"|data-action="local-toggle"|run-tool-selection/);

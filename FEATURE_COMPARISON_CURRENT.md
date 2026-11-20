@@ -33,3 +33,5 @@ Trace 自有结果与报告仍须校验原始来源及资源清理，审阅、�
 ARTEX 原 `Autumn-27/ARTEX` 远端返回 repository not found；保留干净的 `main` 缓存 `e6ec56999175509551a1e43a3ee3b053d0941bd9`，新增 `community` 远端并 fetch `RuoJi6/ARTEX` 的 `community/main` 为 `6997a4661921395072290becc50380db8dacb04e`（AGPL-3.0）。社区分支与原上游身份分别记录，不改写历史来源；可用 `git show community/main:server/engine.go` 读取本轮对照。
 
 本轮入口/状态链对照：ARTEX 社区 `server/task_control.go` 的统一控制与显式准入、`server/engine.go` 领取前终态检查，和 `server/conversations.go:750` 在停止后不消耗排队任务；pi `packages/agent/src/agent.ts` 的 abort 与实际退出分离、`agent-loop.ts` 的本轮消息与工具结果分列，以及 `agent-session.ts` 的上下文恢复；Muteki `muteki/src/reports.py` 冻结来源与渲染正文分离、`muteki/swarm/worker_session.py` 的退出分类。Trace 沿既有 Store 事务、访次结算和 pi 恢复路径适配，不迁入新队列、状态字段或执行循环。验收结果按开发计划与部署文档记录。
+
+2026-11-19 外部工具目录对照：ARTEX 缓存 `e6ec56999175509551a1e43a3ee3b053d0941bd9` 的 `web/src/app/(main)/system/tools/page.tsx` 源项目卡片与详情入口、Muteki `a73535a19fd2c1cddd97dfbeea65f62f4ce136ee` 的 `apps/web/ui/components/ExtensionSettings.tsx` 注册/协议观察分列。Trace 沿现有 local-tools/settings 渲染仅展示真实 MCP 与 Lightpanda/CloakBrowser 浏览器扩展，本地命令无论是否有 GitHub 来源均隐藏，既有选择合并按可见 ID 更新并保留隐藏选择；复用既有实现，不新增适配器或依赖。

@@ -22,3 +22,5 @@
 !docker/install-capabilities.sh
 !docker/capabilities.sha256
 !docker/lightpanda.sha256
+!scripts/
+!scripts/http-requirements.txt

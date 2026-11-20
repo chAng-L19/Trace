@@ -35,6 +35,9 @@ func Presets(ctx context.Context) ([]Manifest, []DependencyStatus) {
 				Command: python, Args: []string{"-c", helperSource, spec.name}, Mode: ModeStdio,
 				Env: map[string]string{"PYTHONIOENCODING": "utf-8"},
 			}
+			if spec.module == "curl_cffi" {
+				manifest.GitHubURL = "https://github.com/lexiforest/curl_cffi"
+			}
 			if spec.name == "capability-inventory" {
 				manifest.TimeoutSeconds = 10
 			}
@@ -58,7 +61,7 @@ func Presets(ctx context.Context) ([]Manifest, []DependencyStatus) {
 			})
 		}
 	}
-	for _, module := range []string{"capstone", "droidasc", "frida"} {
+	for _, module := range []string{"capstone", "droidasc", "frida", "curl_cffi"} {
 		moduleDetail := modules[module]
 		if python == "" {
 			moduleDetail = "Python 3 runtime missing"
@@ -105,7 +108,7 @@ func discoverPython(ctx context.Context) (string, map[string]string, map[string]
 if sys.version_info < (3, 9): raise RuntimeError("Python 3.9+ required")
 modules = {}
 paths = {}
-for name in ("capstone", "droidasc", "frida"):
+for name in ("capstone", "droidasc", "frida", "curl_cffi"):
  try:
   module = importlib.import_module(name)
   modules[name] = ""
@@ -143,8 +146,8 @@ var pythonPresets = []struct {
 	name, description, module, schema string
 }{
 	{"capability-inventory", "Read-only offline capability inventory: fixed PATH tools, Python module specs/distribution versions, Lightpanda/CloakBrowser binary, protocol and display prerequisites, and installed alternatives. Does not import optional packages, launch tools/browser, connect, install or verify SSH login/egress. Read once before choosing tools; missing search matches are not proof a capability is absent.", "", `{"type":"object","properties":{},"additionalProperties":false}`},
-	{"http-request", "发送 HTTP 请求，返回状态码、响应头和限量正文；HTTP 错误状态保留为观测。TLS 默认校验证书，缺链或自签证书需显式 verify_tls=false，结果标明是否校验。", "", `{"type":"object","properties":{"url":{"type":"string"},"method":{"type":"string","default":"GET"},"headers":{"type":"object","additionalProperties":{"type":"string"}},"body":{"type":"string"},"verify_tls":{"type":"boolean","default":true,"description":"是否校验 HTTPS 证书；仅显式 false 时跳过，结果保留校验状态。"},"timeout":{"type":"number","default":10},"max_bytes":{"type":"integer","minimum":1,"default":1048576}},"required":["url"]}`},
-	{"page-fetch", "读取网页标题、可见正文、链接与表单，不执行 JavaScript；交互浏览优先 Lightpanda；截图/实际渲染或其不可用时使用备用 CloakBrowser。TLS 默认校验证书，缺链或自签证书需显式 verify_tls=false，结果标明是否校验。", "", `{"type":"object","properties":{"url":{"type":"string"},"headers":{"type":"object","additionalProperties":{"type":"string"}},"verify_tls":{"type":"boolean","default":true,"description":"是否校验 HTTPS 证书；仅显式 false 时跳过，结果保留校验状态。"},"timeout":{"type":"number","default":10},"max_bytes":{"type":"integer","minimum":1,"default":1048576}},"required":["url"]}`},
+	{"http-request", "使用 curl_cffi（Chrome impersonation）发送 HTTP/API 请求，返回状态码、响应头和限量正文；真实网页优先浏览器，仅浏览器不适用时使用本工具。HTTP 错误状态保留为观测；不自动重试，非 GET/HEAD 返回重定向观测而不跟随，不跨客户端重放。TLS 默认校验证书，缺链或自签证书需显式 verify_tls=false，结果标明是否校验。", "curl_cffi", `{"type":"object","properties":{"url":{"type":"string"},"method":{"type":"string","default":"GET"},"headers":{"type":"object","additionalProperties":{"type":"string"}},"body":{"type":"string"},"impersonate":{"type":"string","default":"chrome","description":"curl_cffi 原生浏览器指纹名称；空字符串关闭模拟；不自动切换或重试。"},"verify_tls":{"type":"boolean","default":true,"description":"是否校验 HTTPS 证书；仅显式 false 时跳过，结果保留校验状态。"},"timeout":{"type":"number","default":10},"max_bytes":{"type":"integer","minimum":1,"default":1048576}},"required":["url"]}`},
+	{"page-fetch", "真实网页优先 Lightpanda；截图/实际渲染或其不支持时使用 CloakBrowser。仅浏览器不适用时，以 curl_cffi（Chrome impersonation）读取静态标题、可见正文、链接与表单，不执行 JavaScript，不自动重试或跨客户端重放。TLS 默认校验证书，缺链或自签证书需显式 verify_tls=false，结果标明是否校验。", "curl_cffi", `{"type":"object","properties":{"url":{"type":"string"},"headers":{"type":"object","additionalProperties":{"type":"string"}},"impersonate":{"type":"string","default":"chrome","description":"curl_cffi 原生浏览器指纹名称；空字符串关闭模拟；不自动切换或重试。"},"verify_tls":{"type":"boolean","default":true,"description":"是否校验 HTTPS 证书；仅显式 false 时跳过，结果保留校验状态。"},"timeout":{"type":"number","default":10},"max_bytes":{"type":"integer","minimum":1,"default":1048576}},"required":["url"]}`},
 	{"dns-resolve", "通过系统解析器查询主机名，返回 IPv4 和 IPv6 地址。", "", `{"type":"object","properties":{"host":{"type":"string"},"port":{"type":"integer","default":0}},"required":["host"]}`},
 	{"port-probe", "连接指定主机的 TCP 端口，逐项返回连通性观测。", "", `{"type":"object","properties":{"host":{"type":"string"},"ports":{"type":"array","items":{"type":"integer","minimum":1,"maximum":65535}},"timeout":{"type":"number","default":2}},"required":["host","ports"]}`},
 	{"binary-info", "读取本地文件大小、SHA-256 及 PE/ELF/Mach-O 文件头，不执行文件。", "", `{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`},

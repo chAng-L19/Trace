@@ -118,6 +118,13 @@ func redactConfig(c Config) Config {
 }
 
 func restoreSecrets(next *Config, old Config) error {
+	if _, err := agent.IndexLocalManifests(next.LocalTools); err != nil {
+		return err
+	}
+	oldLocal, err := agent.IndexLocalManifests(old.LocalTools)
+	if err != nil {
+		return err
+	}
 	restore := func(value *string, previous string, exists bool) error {
 		if *value != hiddenSecret {
 			return nil
@@ -172,13 +179,7 @@ func restoreSecrets(next *Config, old Config) error {
 		}
 	}
 	for i := range next.LocalTools {
-		var previous localtool.Manifest
-		for _, prev := range old.LocalTools {
-			if prev.Name == next.LocalTools[i].Name {
-				previous = prev
-				break
-			}
-		}
+		previous := oldLocal[next.LocalTools[i].Name]
 		for k, v := range next.LocalTools[i].Env {
 			prior, exists := previous.Env[k]
 			if err := restore(&v, prior, exists); err != nil {

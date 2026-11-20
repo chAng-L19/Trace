@@ -48,7 +48,7 @@ COPY .trace/skills/ /opt/trace/.trace/skills/
 COPY licenses/ /opt/trace/licenses/
 # Build context supplies the tiny, hash-locked offline bundle; never fetch at startup.
 COPY runtime/capabilities/ /tmp/trace-capabilities/
-COPY docker/install-capabilities.sh docker/capabilities.sha256 /tmp/trace-capability-build/
+COPY docker/install-capabilities.sh docker/capabilities.sha256 scripts/http-requirements.txt /tmp/trace-capability-build/
 RUN sh /tmp/trace-capability-build/install-capabilities.sh /tmp/trace-capabilities /tmp/trace-capability-build/capabilities.sha256 \
     && rm -rf /tmp/trace-capabilities /tmp/trace-capability-build
 COPY bin/trace /usr/local/bin/trace

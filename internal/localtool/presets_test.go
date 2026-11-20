@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -86,24 +87,29 @@ func TestPresetsNetworkTools(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	out := invokePreset(t, tools["http-request"], map[string]any{"url": server.URL + "/post", "method": "POST", "body": "payload 中文", "headers": map[string]string{"X-Fixture": "present"}}, false)
-	if out["status"] != float64(200) || out["body"] != "payload 中文" || out["truncated"] != false || out["tls_verified"] != nil {
-		t.Fatalf("HTTP output: %+v", out)
-	}
-	out = invokePreset(t, tools["http-request"], map[string]any{"url": server.URL + "/missing", "max_bytes": 3}, false)
-	if out["status"] != float64(404) || out["body"] != "abs" || out["truncated"] != true {
-		t.Fatalf("HTTP error observation: %+v", out)
-	}
-	out = invokePreset(t, tools["page-fetch"], map[string]any{"url": server.URL}, false)
-	forms := out["forms"].([]any)
-	if out["title"] != "中文 & title" || strings.Contains(out["text"].(string), "hidden") || out["links"].([]any)[0] != server.URL+"/link" || len(forms) != 1 {
-		t.Fatalf("page: %+v", out)
-	}
-	form := forms[0].(map[string]any)
-	if form["action"] != server.URL+"/submit" || form["method"] != "POST" || len(form["fields"].([]any)) != 2 {
-		t.Fatalf("form: %+v", form)
-	}
-	out = invokePreset(t, tools["dns-resolve"], map[string]any{"host": "127.0.0.1"}, false)
+	t.Run("http", func(t *testing.T) {
+		if _, ok := tools["http-request"]; !ok {
+			t.Skip("curl_cffi not installed")
+		}
+		out := invokePreset(t, tools["http-request"], map[string]any{"url": server.URL + "/post", "method": "POST", "body": "payload 中文", "headers": map[string]string{"X-Fixture": "present"}}, false)
+		if out["status"] != float64(200) || out["body"] != "payload 中文" || out["truncated"] != false || out["tls_verified"] != nil {
+			t.Fatalf("HTTP output: %+v", out)
+		}
+		out = invokePreset(t, tools["http-request"], map[string]any{"url": server.URL + "/missing", "max_bytes": 3}, false)
+		if out["status"] != float64(404) || out["body"] != "abs" || out["truncated"] != true {
+			t.Fatalf("HTTP error observation: %+v", out)
+		}
+		out = invokePreset(t, tools["page-fetch"], map[string]any{"url": server.URL}, false)
+		forms := out["forms"].([]any)
+		if out["title"] != "中文 & title" || strings.Contains(out["text"].(string), "hidden") || out["links"].([]any)[0] != server.URL+"/link" || len(forms) != 1 {
+			t.Fatalf("page: %+v", out)
+		}
+		form := forms[0].(map[string]any)
+		if form["action"] != server.URL+"/submit" || form["method"] != "POST" || len(form["fields"].([]any)) != 2 {
+			t.Fatalf("form: %+v", form)
+		}
+	})
+	out := invokePreset(t, tools["dns-resolve"], map[string]any{"host": "127.0.0.1"}, false)
 	if out["addresses"].([]any)[0].(map[string]any)["address"] != "127.0.0.1" {
 		t.Fatalf("DNS: %+v", out)
 	}
@@ -131,17 +137,20 @@ func TestPresetsNetworkTools(t *testing.T) {
 
 func TestPresetsHTTPExplicitTLSVerification(t *testing.T) {
 	tools := installedPresets(t)
+	if _, ok := tools["http-request"]; !ok {
+		t.Skip("curl_cffi not installed")
+	}
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "<title>TLS fixture</title>")
 	}))
 	defer server.Close()
 	for _, name := range []string{"http-request", "page-fetch"} {
 		out := invokePreset(t, tools[name], map[string]any{"url": server.URL}, true)
-		if !strings.Contains(fmt.Sprint(out["error"]), "CERTIFICATE_VERIFY_FAILED") {
+		if out["error"].(map[string]any)["type"] != "CertificateVerifyError" {
 			t.Fatalf("%s accepted an untrusted certificate: %+v", name, out)
 		}
 		out = invokePreset(t, tools[name], map[string]any{"url": server.URL, "verify_tls": true}, true)
-		if !strings.Contains(fmt.Sprint(out["error"]), "CERTIFICATE_VERIFY_FAILED") {
+		if out["error"].(map[string]any)["type"] != "CertificateVerifyError" {
 			t.Fatalf("%s ignored explicit certificate verification: %+v", name, out)
 		}
 		out = invokePreset(t, tools[name], map[string]any{"url": server.URL, "verify_tls": false}, false)
@@ -156,6 +165,144 @@ func TestPresetsHTTPExplicitTLSVerification(t *testing.T) {
 			t.Fatalf("%s invalid TLS option: %+v", name, out)
 		}
 	}
+}
+
+func TestPresetsHTTPTransport(t *testing.T) {
+	tools := installedPresets(t)
+	if _, ok := tools["http-request"]; !ok {
+		t.Skip("curl_cffi not installed")
+	}
+	for _, name := range []string{"http-request", "page-fetch"} {
+		m := tools[name]
+		if m.GitHubURL != "https://github.com/lexiforest/curl_cffi" {
+			t.Fatalf("%s source identity: %+v", name, m)
+		}
+		var schema struct {
+			Properties map[string]struct {
+				Default any `json:"default"`
+			} `json:"properties"`
+		}
+		if err := json.Unmarshal(m.InputSchema, &schema); err != nil || schema.Properties["impersonate"].Default != "chrome" {
+			t.Fatalf("%s impersonation schema: %+v %v", name, schema, err)
+		}
+	}
+	var dropped, redirected, unavailable atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/fingerprint":
+			if !strings.Contains(r.Header.Get("User-Agent"), "Chrome/") {
+				t.Error("missing default Chrome impersonation")
+			}
+			_, _ = io.WriteString(w, "<title>Chrome fixture</title>")
+		case "/headers":
+			if r.Header.Get("User-Agent") != "fixture-agent" {
+				t.Error("explicit User-Agent overridden by impersonation")
+			}
+			w.Header().Set("Content-Type", `text/plain; charset="ISO-8859-1"`)
+			w.Header().Add("Set-Cookie", "a=1")
+			w.Header().Add("Set-Cookie", "b=2")
+			_, _ = w.Write([]byte{'c', 'a', 'f', 0xe9})
+		case "/redirect":
+			http.Redirect(w, r, "/dir/page", http.StatusFound)
+		case "/dir/page":
+			_, _ = io.WriteString(w, `<title>Final page</title><a href="child">child</a><form action="submit"></form>`)
+		case "/drop":
+			dropped.Add(1)
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			_ = conn.Close()
+		case "/post-redirect":
+			redirected.Add(1)
+			http.Redirect(w, r, "/post-redirect", http.StatusTemporaryRedirect)
+		case "/unavailable":
+			unavailable.Add(1)
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+		default:
+			_, _ = io.WriteString(w, "abcdefgh")
+		}
+	}))
+	defer server.Close()
+	for _, name := range []string{"http-request", "page-fetch"} {
+		invokePreset(t, tools[name], map[string]any{"url": server.URL + "/fingerprint"}, false)
+	}
+	out := invokePreset(t, tools["http-request"], map[string]any{"url": server.URL + "/headers", "headers": map[string]string{"User-Agent": "fixture-agent"}}, false)
+	if out["body"] != "café" || out["url"] != server.URL+"/headers" || out["status"] != float64(200) || out["truncated"] != false {
+		t.Fatalf("charset/URL/status: %+v", out)
+	}
+	var cookies []string
+	for _, raw := range out["headers"].([]any) {
+		header := raw.([]any)
+		if strings.EqualFold(header[0].(string), "Set-Cookie") {
+			cookies = append(cookies, header[1].(string))
+		}
+	}
+	if strings.Join(cookies, ",") != "a=1,b=2" {
+		t.Fatalf("duplicate headers: %+v", out)
+	}
+	for _, limit := range []int{7, 8, 9} {
+		out = invokePreset(t, tools["http-request"], map[string]any{"url": server.URL, "max_bytes": limit}, false)
+		want := "abcdefgh"
+		if limit < len(want) {
+			want = want[:limit]
+		}
+		if out["body"] != want || out["truncated"] != (limit < 8) {
+			t.Fatalf("limit=%d: %+v", limit, out)
+		}
+	}
+	out = invokePreset(t, tools["page-fetch"], map[string]any{"url": server.URL + "/redirect"}, false)
+	if out["url"] != server.URL+"/dir/page" || out["title"] != "Final page" || out["links"].([]any)[0] != server.URL+"/dir/child" || out["forms"].([]any)[0].(map[string]any)["action"] != server.URL+"/dir/submit" {
+		t.Fatalf("redirected page base: %+v", out)
+	}
+	out = invokePreset(t, tools["http-request"], map[string]any{"url": server.URL + "/drop", "method": "POST", "body": "effect"}, true)
+	if dropped.Load() != 1 || out["error"].(map[string]any)["type"] == "" {
+		t.Fatalf("transport failure replayed: count=%d output=%+v", dropped.Load(), out)
+	}
+	out = invokePreset(t, tools["http-request"], map[string]any{"url": server.URL + "/post-redirect", "method": "POST", "body": "effect"}, false)
+	if redirected.Load() != 1 || out["status"] != float64(307) {
+		t.Fatalf("POST redirect replayed: count=%d output=%+v", redirected.Load(), out)
+	}
+	out = invokePreset(t, tools["http-request"], map[string]any{"url": server.URL + "/unavailable", "method": "POST", "body": "effect"}, false)
+	if unavailable.Load() != 1 || out["status"] != float64(503) || out["body"] != "unavailable\n" {
+		t.Fatalf("HTTP error retried: count=%d output=%+v", unavailable.Load(), out)
+	}
+	out = invokePreset(t, tools["http-request"], map[string]any{"url": server.URL, "impersonate": ""}, false)
+	if out["body"] != "abcdefgh" {
+		t.Fatalf("explicit impersonation opt-out: %+v", out)
+	}
+	invokePreset(t, tools["http-request"], map[string]any{"url": server.URL, "impersonate": "fixture-unsupported-browser"}, true)
+}
+
+func TestPresetsHTTPMissingDependency(t *testing.T) {
+	installedPresets(t)
+	path := writeFixture(t, "curl_cffi.py", []byte("raise ImportError('fixture curl_cffi unavailable')\n"))
+	t.Setenv("PYTHONPATH", filepath.Dir(path))
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	manifests, statuses := Presets(ctx)
+	otherTools := false
+	for _, m := range manifests {
+		if m.Name == "binary-info" {
+			otherTools = true
+		}
+		if m.Name == "http-request" || m.Name == "page-fetch" {
+			t.Fatalf("HTTP registered without curl_cffi: %+v", m)
+		}
+	}
+	if !otherTools {
+		t.Fatal("missing curl_cffi suppressed unrelated Python tools")
+	}
+	for _, status := range statuses {
+		if status.Name == "curl_cffi" {
+			if status.Available || !strings.Contains(status.Detail, "fixture curl_cffi unavailable") {
+				t.Fatalf("missing dependency observation: %+v", status)
+			}
+			return
+		}
+	}
+	t.Fatal("missing curl_cffi dependency status")
 }
 
 func TestPresetsBinaryTools(t *testing.T) {
@@ -275,7 +422,7 @@ func TestPresetsFrida(t *testing.T) {
 func TestPresetsMissingDependencies(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	manifests, status := Presets(context.Background())
-	want := map[string]bool{"Python 3": true, "capstone": true, "droidasc": true, "frida": true, "CloakBrowser": true, "Lightpanda": true, "Rizin/radare2": true, "Trace Web Analysis": true}
+	want := map[string]bool{"Python 3": true, "curl_cffi": true, "capstone": true, "droidasc": true, "frida": true, "CloakBrowser": true, "Lightpanda": true, "Rizin/radare2": true, "Trace Web Analysis": true}
 	if len(manifests) != 0 || len(status) != len(want) {
 		t.Fatalf("missing runtimes: %+v %+v", manifests, status)
 	}

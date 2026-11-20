@@ -71,11 +71,13 @@ assert.deepEqual(mergeToolSelection(['mcp_tool','local_tool','unavailable-id'],t
 assert.deepEqual(mergeToolSelection(undefined,tools,'local',[]),['mcp_tool']);
 const view={config,tools,skills:[],runs:[],snap:{run:{id:'run',goal:'fixture',tool_selection:{ids:['mcp_tool','local_tool']}}}};
 assert.doesNotMatch(settings({...view,settingTab:'tools'}),/data-action="local-detail"|data-tool-id="local_tool"|id="local-json"/);
-assert.doesNotMatch(settings({...view,settingTab:'local'}),/data-action="mcp-new"|data-tool-id="mcp_tool"|id="mcp-json"/);
-assert.deepEqual(settingsFields('local'),['config','tools']);
-const loads=[],loaderState={settingTab:'local',config:null};await createSettingsLoader({state:loaderState,api:async p=>{loads.push(p);return p==='/config'?config:tools}}).load('local');assert.deepEqual(loads,['/config','/tools']);
+assert.match(settings({...view,settingTab:'local'}),/data-action="mcp-new"/);
+assert.match(settings({...view,settingTab:'local'}),/data-tool-id="mcp_tool"/);
+assert.doesNotMatch(settings({...view,settingTab:'local'}),/data-tool-id="local_tool"|id="mcp-json"/);
+assert.deepEqual(settingsFields('local'),['config','tools','mcpStatuses']);
+const loads=[],loaderState={settingTab:'local',config:null};await createSettingsLoader({state:loaderState,api:async p=>{loads.push(p);return p==='/config'?config:tools}}).load('local');assert.deepEqual(loads,['/config','/tools','/mcp/status']);
 const groups=localToolGroups({local_tools:[{name:'one',command:'/env/bin/python'},{name:'two',command:'/env/bin/python'},{name:'true-bin',command:'/project/bin/tool',local_path:'/project/bin'}]});
-assert.deepEqual(groups.map(g=>g.name),['one','two','bin']);assert.match(sourceLinks({command:'/env/bin/python',dir:'/tmp/task'}),/执行工作目录/);assert.doesNotMatch(sourceLinks({dir:'/tmp/task'}),/<span>项目目录/);
+assert.deepEqual(groups.map(g=>g.name),[]);assert.match(sourceLinks({command:'/env/bin/python',dir:'/tmp/task'}),/执行工作目录/);assert.doesNotMatch(sourceLinks({dir:'/tmp/task'}),/<span>项目目录/);
 
 const call={call_id:'same',request_id:'r1',name:'read',arguments:'{"path":"a"}',status:'completed',result:{stdout:'LAZY_LARGE_OUTPUT',artifacts:[{hash:'h',kind:'file'}]}},snap={run:{id:'run',status:'completed'},messages:[],actions:[call],events:[]};
 const collapsed=conversation(snap,{lazy:true});assert.doesNotMatch(collapsed,/LAZY_LARGE_OUTPUT/);assert.match(collapsed,/data-tool-key="r1:same"/);

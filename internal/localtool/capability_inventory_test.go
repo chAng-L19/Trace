@@ -28,7 +28,7 @@ func TestCapabilityInventoryOffline(t *testing.T) {
 			marker := filepath.Join(root, "import-side-effect")
 			browser := filepath.Join(root, "browser")
 			if present {
-				for _, name := range []string{"ssh", "sshpass", "xvfb-run", "xauth"} {
+				for _, name := range []string{"ssh", "sshpass", "xvfb-run", "xauth", "curl-cffi"} {
 					if runtime.GOOS == "windows" {
 						name += ".exe"
 					}
@@ -39,7 +39,7 @@ func TestCapabilityInventoryOffline(t *testing.T) {
 				if err := os.WriteFile(browser, []byte("do not launch"), 0700); err != nil {
 					t.Fatal(err)
 				}
-				for _, name := range []string{"pydash", "cloakbrowser"} {
+				for _, name := range []string{"pydash", "cloakbrowser", "curl_cffi"} {
 					quoted, _ := json.Marshal(marker)
 					source := "from pathlib import Path\nPath(" + string(quoted) + ").write_text('unexpected import')\nraise RuntimeError('must not import')\n"
 					if err := os.WriteFile(filepath.Join(root, name+".py"), []byte(source), 0600); err != nil {
@@ -69,6 +69,14 @@ func TestCapabilityInventoryOffline(t *testing.T) {
 			}
 			if present && pydash["version"] != "9.9" {
 				t.Fatalf("distribution metadata: %+v", pydash)
+			}
+			curl := mods["curl_cffi"].(map[string]any)
+			if curl["spec_found"] != present || curl["import_verified"] != false || paths["curl-cffi"].(map[string]any)["available"] != present {
+				t.Fatalf("curl_cffi presence: %+v %+v", curl, paths)
+			}
+			httpCandidates := out["alternatives"].(map[string]any)["http"].([]any)
+			if len(httpCandidates) != map[bool]int{false: 0, true: 1}[present] || (present && !strings.Contains(httpCandidates[0].(string), "curl_cffi")) {
+				t.Fatalf("HTTP alternatives: %+v", httpCandidates)
 			}
 			browsers := out["browser"].(map[string]any)
 			if browsers["preferred"] != "lightpanda" || browsers["fallback"] != "cloakbrowser" {

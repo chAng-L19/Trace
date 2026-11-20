@@ -4,7 +4,7 @@ import {integrationImport,integrationFeedback,readIntegration,sourceLinks} from 
 import {createProviderProbe} from './static/provider-probe.js';
 import {localToolDetail} from './static/local-tools.js';
 
-const config={provider:{url:'https://fixture.invalid/v1',model:'fixture',api_key:'[stored secret]'},context:{window_tokens:250000,output_reserve:16384,compaction_mode:'semantic'},mcp:[],local_tools:[{name:'local-command',command:'python',args:['-c','print("LONG_COMMAND_FIXTURE")'],description:'Readable local tool'}],skill_paths:['/srv/skills'],prompt_path:'/srv/prompt.md'};
+const config={provider:{url:'https://fixture.invalid/v1',model:'fixture',api_key:'[stored secret]'},context:{window_tokens:250000,output_reserve:16384,compaction_mode:'semantic'},mcp:[],local_tools:[{name:'lightpanda',github_url:'https://github.com/lightpanda-io/browser',command:'python',args:['-c','print("LONG_COMMAND_FIXTURE")'],description:'Readable browser tool'}],skill_paths:['/srv/skills'],prompt_path:'/srv/prompt.md'};
 const state={page:'settings',settingTab:'provider',config,tools:[],skills:[],runs:[]};
 const providerHTML=settings(state);
 assert.match(providerHTML,/<details id="provider-advanced-config" class="config-section">/);
@@ -14,16 +14,15 @@ assert.match(providerHTML,/Trace 服务所在机器/);
 assert.match(providerHTML,/留空密钥会清除已有值/);
 assert.doesNotMatch(providerHTML,/只保存在本机/);
 
-const mcpHTML=settings({...state,settingTab:'tools'});assert.doesNotMatch(mcpHTML,/data-action="local-detail"|id="local-json"/);
+const mcpHTML=settings({...state,settingTab:'tools'});assert.match(mcpHTML,/data-action="local-detail"/);assert.doesNotMatch(mcpHTML,/id="local-json"/);
 const toolsHTML=settings({...state,settingTab:'local'});
 assert.match(toolsHTML,/data-action="local-detail"/);
 assert.doesNotMatch(toolsHTML,/id="local-tool-catalog"/);
 const localHTML=localToolDetail(config,[],0,0);
-assert.match(localHTML,/<details id="local-command-0" class="request-details">/);
-assert.match(localHTML,/每行是一个完整参数/);
-assert.doesNotMatch(toolsHTML,/<p class="mono">python/);
-assert.ok(localHTML.indexOf('LONG_COMMAND_FIXTURE')>localHTML.indexOf('id="local-command-0"'));
-assert.match(toolsHTML,/<details id="advanced-tool-config">/);
+assert.match(localHTML,/浏览器扩展/);
+assert.ok(localHTML.includes('https://github.com/lightpanda-io/browser'));
+assert.doesNotMatch(localHTML,/本地命令|ARGV|JSONL|命令接口|启动|local-command-|LONG_COMMAND_FIXTURE|python/);
+assert.doesNotMatch(mcpHTML+toolsHTML,/href="#local-tools"/);
 const skillsHTML=settings({...state,settingTab:'skills'});
 assert.match(skillsHTML,/重新保存根目录以发现技能/);
 assert.match(skillsHTML,/每行一个服务端绝对路径/);

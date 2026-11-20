@@ -40,7 +40,7 @@ class BenchmarkContract(unittest.TestCase):
     def test_frozen_build_inputs_and_helper_are_not_omitted(self):
         root = HELPER.parents[1]
         allow = (root / ".dockerignore").read_text()
-        for path in ("examples/tsecbench_api.py", "docker/install-capabilities.sh", "docker/capabilities.sha256", "docker/lightpanda.sha256"):
+        for path in ("examples/tsecbench_api.py", "docker/install-capabilities.sh", "docker/capabilities.sha256", "docker/lightpanda.sha256", "scripts/", "scripts/http-requirements.txt"):
             self.assertIn("!" + path, allow)
         for name in ("Dockerfile", "Dockerfile.release", "Dockerfile.hosted"):
             source = (root / "docker" / name).read_text()
@@ -50,12 +50,38 @@ class BenchmarkContract(unittest.TestCase):
             self.assertIn("COPY docker/lightpanda.sha256 /opt/trace/runtime/lightpanda/SHA256SUMS", source)
             self.assertIn("sha256sum -c SHA256SUMS", source)
             self.assertIn("COPY runtime/capabilities/ /tmp/trace-capabilities/", source)
+            self.assertIn("COPY docker/install-capabilities.sh docker/capabilities.sha256 scripts/http-requirements.txt /tmp/trace-capability-build/", source)
             self.assertIn("install-capabilities.sh /tmp/trace-capabilities /tmp/trace-capability-build/capabilities.sha256", source)
         installer = (root / "docker/install-capabilities.sh").read_text()
         self.assertLess(installer.index("sha256sum -c"), installer.index("dpkg -i"))
         self.assertIn("--no-index --no-deps", installer)
         lines = (root / "docker/capabilities.sha256").read_text().splitlines()
-        self.assertEqual(len(lines), 8)
+        self.assertEqual(len(lines), 16)
+        self.assertIn('--no-index --require-hashes --find-links "$bundle" --no-compile --upgrade', installer)
+        self.assertIn('--target /opt/trace/runtime/site-packages -r "$(dirname "$lock")/http-requirements.txt"', installer)
+        for command in ("curl", "curl-cffi"):
+            self.assertIn(f"install -m 0755 /opt/trace/runtime/site-packages/bin/curl-cffi /usr/local/bin/{command}\n", installer)
+        locked = {name: digest for digest, name in (line.split() for line in lines)}
+        self.assertEqual(len(locked), 16)
+        requirements = [line for line in (root / "scripts/http-requirements.txt").read_text().splitlines()
+                        if line.strip() and not line.startswith("#")]
+        self.assertEqual(len(requirements), 8)
+        self.assertTrue(any(line.startswith("curl_cffi[cli]==0.17.0 --hash=sha256:") for line in requirements))
+        pins = {}
+        for requirement in requirements:
+            pin, digest = requirement.split(" --hash=sha256:")
+            package, version = pin.split("==")
+            package = package.split("[")[0].replace("-", "_").lower()
+            pins[package] = version
+            self.assertRegex(digest, r"^[0-9a-f]{64}$")
+            wheels = [name for name in locked if name.endswith(".whl") and name.lower().startswith(package + "-" + version + "-")]
+            self.assertEqual(len(wheels), 1, requirement)
+            self.assertEqual(locked[wheels[0]], digest, requirement)
+        self.assertEqual(pins, {
+            "certifi": "2026.10.23", "cffi": "2.1.1", "curl_cffi": "0.17.0",
+            "markdown_it_py": "4.3.0", "mdurl": "0.1.2", "pycparser": "3.12",
+            "pygments": "2.21.0", "rich": "15.0.0",
+        })
         self.assertTrue(any(line.endswith("  NotoSansCJK-Regular.ttc") for line in lines))
         self.assertTrue(any(line.endswith("  NotoSansCJK-LICENSE.txt") for line in lines))
         self.assertLess(installer.index("sha256sum -c"), installer.index("install -m 0644"))
@@ -80,6 +106,8 @@ class BenchmarkContract(unittest.TestCase):
         self.assertIn("FROM updated", hosted)
         pack = (root / "docker/pack-p2.sh").read_text()
         self.assertIn("capabilities.sha256 lightpanda.sha256;", pack)
+        self.assertIn('"$root/scripts"', pack)
+        self.assertIn('cp -- "$source_root/scripts/http-requirements.txt" "$root/scripts/http-requirements.txt"', pack)
         self.assertIn('sha256sum -c "$root/docker/lightpanda.sha256"', pack)
         self.assertIn('test -s "$root/.trace/skills/lightpanda/SKILL.md"', pack)
 

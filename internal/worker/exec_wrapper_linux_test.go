@@ -66,3 +66,49 @@ func TestExecWrapperGoMemoryBudget(t *testing.T) {
 		})
 	}
 }
+
+func TestExecWrapperManagedHTTP(t *testing.T) {
+	_, file, _, _ := runtime.Caller(0)
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "scripts", "exec-cgroup-isolated.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, tail, ok := strings.Cut(string(data), "# Managed HTTP command")
+	if !ok {
+		t.Fatal("managed HTTP setup absent")
+	}
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "scripts"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(root, "scripts", "wrapper.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nset -eu\nfail() { echo \"$*\" >&2; exit 2; }\n# Managed HTTP command"+tail), 0755); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(root, "runtime", "bin", "curl")
+	for _, state := range []string{"missing-directory", "missing-entry", "not-executable", "ready"} {
+		if state == "missing-entry" {
+			if err := os.MkdirAll(filepath.Dir(entry), 0755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if state == "not-executable" {
+			if err := os.WriteFile(entry, []byte("#!/bin/sh\nprintf managed"), 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if state == "ready" {
+			if err := os.Chmod(entry, 0755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		out, err := exec.Command("/bin/sh", script, "/bin/sh", "-c", "command -v curl").CombinedOutput()
+		if state == "ready" {
+			if err != nil || strings.TrimSpace(string(out)) != entry {
+				t.Fatalf("managed PATH: %q %v", out, err)
+			}
+		} else if err == nil || !strings.Contains(string(out), "managed curl-cffi entry missing") {
+			t.Fatalf("%s fell through to native curl: %q %v", state, out, err)
+		}
+	}
+}

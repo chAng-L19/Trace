@@ -114,13 +114,13 @@ func (a *Agent) DispatchTask(ctx context.Context, id, taskID string) (AgentWorke
 		s.Run.ParentRunID = id
 		s.Run.ParentTaskID = taskID
 		if s.Run.ToolSelection != nil && len(task.RequiredToolIDs) > 0 {
-			selection := &ToolSelection{IDs: append([]string(nil), s.Run.ToolSelection.IDs...)}
+			ids := append([]string(nil), s.Run.ToolSelection.IDs...)
 			for _, toolID := range task.RequiredToolIDs {
-				if tool, ok := a.registry.Lookup(toolID); ok && externalTool(tool) && !hasString(selection.IDs, toolID) {
-					selection.IDs = append(selection.IDs, toolID)
+				if tool, ok := a.registry.Lookup(toolID); ok && externalTool(tool) && !hasString(ids, toolID) {
+					ids = append(ids, toolID)
 				}
 			}
-			s.Run.ToolSelection = selection
+			s.Run.ToolSelection = a.registry.selection(ids, s.Run.ToolSelection)
 		}
 		s.Run.SuccessContains = task.SuccessContains
 		s.WorkerContext = workerContext

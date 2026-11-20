@@ -7,14 +7,7 @@ import json
 import math
 import os
 import sys
-import urllib.error
 import urllib.parse
-import urllib.request
-
-
-class NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None  # Never forward the benchmark credential to a redirect.
 
 
 def decode_body(raw):
@@ -158,16 +151,32 @@ def request(operation, unique_code=None, flag=None):
         endpoint += "?" + urllib.parse.urlencode({"unique_code": unique_code})
     data = json.dumps({"unique_code": unique_code, "flag": flag}, ensure_ascii=False).encode("utf-8") if operation == "submit" else None
     method = "GET" if operation in ("list", "hint") else "POST"
-    req = urllib.request.Request(base.rstrip("/") + endpoint, data=data, method=method, headers={"BENCHMARK_TOKEN": token, "Content-Type": "application/json"})
     result = {"endpoint": endpoint, "method": method, "unique_code": unique_code, "http_status": None, "raw_body": None, "body": None, "assessment": {"operation": operation, "outcome": "unknown"}}
     try:
-        try:
-            response = urllib.request.build_opener(NoRedirect()).open(req, timeout=15)
-        except urllib.error.HTTPError as exc:
-            response = exc
-        with response:
-            result["http_status"] = response.code
-            raw = response.read(4 * 1024 * 1024 + 1)
+        from curl_cffi import CurlECode, requests
+        from curl_cffi.curl import CURL_WRITEFUNC_ERROR
+        from curl_cffi.requests.exceptions import RequestException
+
+        raw = bytearray()
+
+        def receive(chunk):
+            raw.extend(chunk[:4 * 1024 * 1024 + 1 - len(raw)])
+            return CURL_WRITEFUNC_ERROR if len(raw) > 4 * 1024 * 1024 else len(chunk)
+
+        with requests.Session(retry=0) as session:
+            try:
+                response = session.request(
+                    method, base.rstrip("/") + endpoint, data=data,
+                    headers={"BENCHMARK_TOKEN": token, "Content-Type": "application/json"},
+                    timeout=15, allow_redirects=False, accept_encoding="identity",
+                    content_callback=receive)
+            except RequestException as exc:
+                if exc.response is not None and exc.response.status_code:
+                    result["http_status"] = exc.response.status_code
+                if exc.code != CurlECode.WRITE_ERROR or len(raw) <= 4 * 1024 * 1024:
+                    raise
+                response = exc.response
+            result["http_status"] = response.status_code
         result["raw_body"] = raw.decode("utf-8", errors="replace")
         if len(raw) > 4 * 1024 * 1024:
             raise ValueError("body exceeds 4MiB capture limit; truncated, not authoritative")

@@ -12,9 +12,9 @@ const source=fs.readFileSync(new URL('./static/app.js',import.meta.url),'utf8');
 const section=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start)));
 function deferred(){let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no});return {promise,resolve,reject}}
 function harness(){
-  const dialog={open:true,showModal(){this.open=true}},title={textContent:'shared'},content={innerHTML:'original',prepend(){}};
+  const dialog={open:true,showModal(){this.open=true},close(){this.open=false}},title={textContent:'shared'},content={innerHTML:'original',prepend(){}};
   const elements={'#detail-dialog':dialog,'#dialog-title':title,'#dialog-content':content};
-  const state={page:'settings',settingTab:'tools',config:{mcp:[{name:'shared'}]},tools:[],skills:[{name:'shared'}]};
+  const state={page:'settings',settingTab:'tools',settingsResources:{tools:{available:true}},config:{mcp:[{name:'shared'}]},tools:[],skills:[{name:'shared'}]};
   const context={chainEvents:{action:async()=>false},state,detailRevision:0,navigation:0,structuredClone,TextDecoder,Uint8Array,atob,$:selector=>elements[selector],document:{createElement:()=>({setAttribute(){}})},render(){},notice(){},esc:String,
     mcpStatus:{close(){},open(){}},mcpDetail:()=>'<mcp-detail/>',sourceLinks:()=>'<source/>',integrationActions:()=>'',integrationResult,applyPending(){},loadSettings:async()=>{},settingsLoader:{saved(){}},api:async()=>({content:'body'}),viewScope:()=> 'settings:tools'};
   createContext(context);
@@ -135,4 +135,14 @@ console.log('Integration async checks passed: same-name identity, Skill and MCP 
   h.context.state.tools=[{definition:{function:{name:'new'}}},{local_name:'right',definition:{function:{name:'right'}}}];
   h.context.toolDetail=tool=>{assert.equal(tool.definition.function.name,'right');return '<right-tool/>'};
   await h.run("dispatch('tool-detail',{dataset:{index:'0',toolName:'right'}})");assert.equal(h.content.innerHTML,'<right-tool/>');
+}
+
+for(const operation of ['toggle','update']){
+  const h=harness();
+  const stale=()=>{h.context.state.settingsResources.tools.available=false;h.context.state.settingsError='tools: offline'};
+  if(operation==='toggle'){h.context.saveConfig=async()=>{stale();return {}};await h.run("dispatch('mcp-toggle',{dataset:{index:'0'}})")}
+  else{h.context.loadSettings=async()=>stale();h.context.api=async()=>({status:'updated'});await h.run("runIntegration('update',{kind:'mcp',name:'shared'})")}
+  assert.equal(h.dialog.open,false,operation+' must close the detail when its catalog refresh fails');
+  assert.equal(h.content.innerHTML,'original','stale catalog must not repaint a current detail');
+  assert.equal(h.context.state.integrationFeedback?.error??h.context.state.extensionFeedback.error,true);
 }

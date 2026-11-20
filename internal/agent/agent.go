@@ -80,11 +80,15 @@ func (a *Agent) AddMCP(ctx context.Context, config mcp.Config) ([]mcp.Tool, erro
 	if a.mcpState.closed {
 		return nil, fmt.Errorf("agent MCP lifecycle is closed")
 	}
-	if config.Disabled {
-		return nil, nil
-	}
-	if _, exists := a.registry.configs[config.Name]; exists {
+	if _, exists := a.registry.configs[config.Name]; exists || a.registry.disabledMCP[config.Name] {
 		return nil, fmt.Errorf("MCP server %q is already registered", config.Name)
+	}
+	if config.Disabled {
+		if a.registry.disabledMCP == nil {
+			a.registry.disabledMCP = map[string]bool{}
+		}
+		a.registry.disabledMCP[config.Name] = true
+		return nil, nil
 	}
 	client, err := mcp.Dial(ctx, config)
 	if err != nil {

@@ -1,6 +1,6 @@
 # Trace 维护约定
 
-更新：2026-11-19。维护者使用本文件；运行提示词仅用 `prompts/agent.md`，两者不混用。
+更新：2026-11-20。维护者使用本文件；运行提示词仅用 `prompts/agent.md`，两者不混用。
 
 ## 工作边界
 
@@ -16,6 +16,8 @@
 - Trace 是通用求解 Agent；调度、信息收集、结果交接与验收围绕原始目标和已观察资源约束工作，不把题目、flag、固定容器数量或某个平台流程设成产品前提。
 - pi-agent-core/pi-ai 1.4.0 是唯一模型—工具循环，Node >=22.19。Go 保留 Store/API、Provider/密钥/用量、ToolRegistry、证据 Judge 和默认上限五 Worker 的可配置调度（已知外部资源上限更低时先收紧容量）；不新建第二 Store、知识库或执行循环。
 - 浏览器优先 Lightpanda（https://github.com/lightpanda-io/browser）；CloakBrowser 0.6.4 为备用。常规导航、DOM、表单和 JavaScript 先选 Lightpanda；截图、实际渲染、原生缩放及其不支持的操作选 CloakBrowser 有界面模式，Linux 无 DISPLAY 时用 Xvfb。两者使用预装冻结 binary，不在发现/请求时自动下载或更新；已执行后失败/uncertain 不跨浏览器自动重放。独立 DrissionPage/Playwright CLI 不恢复，协议依赖保留，不回退普通 Chromium。
+- 真实网页交互优先浏览器扩展/工具；Lightpanda 为首选，CloakBrowser 为能力备用。浏览器不适用或不可用时，HTTP/API/下载统一使用 curl_cffi；http-request/page-fetch 共用该真实传输。正式 cgroup 启动入口把 runtime/bin 放 PATH 首位，受管 curl 委托官方 curl-cffi CLI（`curl get URL`，不兼容旧 curl 参数），不绕回系统 curl/其他 HTTP 客户端、不自动重放。依赖按 scripts/http-requirements.txt 的 0.17.0/哈希离线冻结，发现/调用不联网安装；已有保存的内置 helper 在发布时按旧源码精确匹配迁移，保留自定义项、disabled 和秘密值。已有 Run 的持久提示不回写，新运行读取 prompts/agent.md。
+- 外部工具目录仅展示真实 MCP 协议服务与明确支持的 Lightpanda/CloakBrowser 浏览器扩展。本地命令不在卡片或目录接口选择器展示，即使有 GitHub 来源也隐藏；浏览器详情不展示启动命令、启动参数、ARGV/JSONL 或服务端启动路径，主目录不展示本地 Manifest 编辑入口。卡片滑动开关持久化启停（本地项目按组修改 Manifest.disabled，默认启用），停用保留配置并移出真实工具目录，重启/预设合并不得重启用。新保存的 MCP 选择在同一 Run 保存 ID→服务归属，明确停用时保留既有 ID、移除 schema，再启用按真实目录恢复；没有归属的未知旧 ID 不猜测来源。按真实协议标注连接/注册状态；过滤后的详情保留原 Manifest 索引，保存目录接口选择保留隐藏命令的既有选择。
 - 前端固定消息窗口指唯一的 `#notice` 通知区域，只在运行对话同栏顶部停靠；补充指令、附件、消息类型和投递队列保留右栏，不随通知上移，不通过滚动收缩正文高度。
 - 保持原有持久化、来源校验、uncertain 不重放和预算边界；`completed`、业务 `success`、来源 `verified` 分开判定。只读状态不修改执行语义。
 - 执行资源模式默认 `cgroup`；用户已选择为TSB托管增加显式 `process-group` 普通容器兼容模式，只由托管镜像/显式配置启用，不因委托失败自动降级。兼容模式保留输出预算、所属进程清理与不重放，但不宣称逐命令内存/PID硬隔离或完整防脱离；旧动作按已保存的后端/资源身份恢复，不能用当前ENV改写归属。正式服务器模式不随打包变更。

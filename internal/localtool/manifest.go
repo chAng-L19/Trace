@@ -31,6 +31,7 @@ const (
 // snapshot; only the model-facing definition and action invocation are saved.
 type Manifest struct {
 	Name               string            `json:"name"`
+	Disabled           bool              `json:"disabled,omitempty"`
 	Description        string            `json:"description,omitempty"`
 	GitHubURL          string            `json:"github_url,omitempty"`
 	LocalPath          string            `json:"local_path,omitempty"`

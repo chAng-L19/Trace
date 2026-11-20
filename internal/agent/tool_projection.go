@@ -7,9 +7,38 @@ import (
 )
 
 // A nil selection preserves the complete directory for small registries. A
-// non-nil selection persists exactly which external schemas the model sees.
+// non-nil selection projects only its currently registered external schemas.
 type ToolSelection struct {
-	IDs []string `json:"ids"`
+	IDs        []string          `json:"ids"`
+	MCPServers map[string]string `json:"mcp_servers,omitempty"` // Selected registration ID -> owning server.
+}
+
+// Capture ownership from live registrations, or carry it forward for a retained
+// selection. IDs are opaque (including MCP method bridge IDs).
+func (r *ToolRegistry) selection(ids []string, previous *ToolSelection) *ToolSelection {
+	next := &ToolSelection{IDs: ids}
+	for _, id := range ids {
+		var server string
+		if tool, ok := r.Lookup(id); ok {
+			if tool.Adapter == "mcp" {
+				server = tool.ServerName
+			}
+		} else if previous != nil {
+			server = previous.MCPServers[id]
+		}
+		if server != "" {
+			if next.MCPServers == nil {
+				next.MCPServers = map[string]string{}
+			}
+			next.MCPServers[id] = server
+		}
+	}
+	return next
+}
+
+func (r *ToolRegistry) disabledSelection(s *ToolSelection, id string) bool {
+	server, known := s.MCPServers[id]
+	return r.disabledLocal[id] || (known && r.disabledMCP[server])
 }
 
 type ToolMatch struct {
@@ -68,7 +97,7 @@ func (a *Agent) selectedDefinitions(selection *ToolSelection) ([]ToolDefinition,
 	}
 	selected := map[string]bool{}
 	for _, id := range selection.IDs {
-		if _, ok := a.registry.Lookup(id); !ok {
+		if _, ok := a.registry.Lookup(id); !ok && !a.registry.disabledSelection(selection, id) {
 			return nil, fmt.Errorf("selected tool is no longer registered: %s", id)
 		}
 		selected[id] = true
@@ -135,17 +164,23 @@ func (a *Agent) SelectTools(id string, ids []string, replace bool) (Snapshot, er
 			}
 		}
 		for _, id := range ids {
+			// A disabled identity may survive this run's save, never enter a new selection.
+			if s.Run.ToolSelection != nil && a.registry.disabledSelection(s.Run.ToolSelection, id) && hasString(s.Run.ToolSelection.IDs, id) {
+				selected[id] = true
+				continue
+			}
 			t, ok := a.registry.Lookup(id)
 			if !ok || !externalTool(t) {
 				return fmt.Errorf("unknown external tool ID: %s", id)
 			}
 			selected[id] = true
 		}
-		next := &ToolSelection{IDs: []string{}}
+		nextIDs := make([]string, 0, len(selected))
 		for id := range selected {
-			next.IDs = append(next.IDs, id)
+			nextIDs = append(nextIDs, id)
 		}
-		sort.Strings(next.IDs)
+		sort.Strings(nextIDs)
+		next := a.registry.selection(nextIDs, s.Run.ToolSelection)
 		definitions, err := a.selectedDefinitions(next)
 		if err != nil {
 			return err

@@ -4,7 +4,8 @@
 
 | 状态 | 版本或构建 | SHA-256（binary） | 证据 |
 | --- | --- | --- | --- |
-| 正式，2026-11-19T13:57:18.073145+08:00（上海）发布 | runtime-audit-20261119 | `e309b486fd3f2fd3379526c71aa7d6885ffcbce9674db8f6910e4528a2a83e0d` | 私有 trace-runtime-audit-20261119/release-receipt.json；备份与线上身份校验通过 |
+| 正式，2026-11-20T10:17:20.303266+08:00（上海）发布 | mcp-catalog-20261119 | `cfd339039bf165bbfacce5aee44cb5460058e7c00f3c2208bd51210ded77a838` | 私有 trace-mcp-catalog-20261119/release-receipt.json；正式进程环境 HTTP 及历史业务核对通过 |
+| 历史正式，2026-11-19T13:57:18.073145+08:00（上海）发布 | runtime-audit-20261119 | `e309b486fd3f2fd3379526c71aa7d6885ffcbce9674db8f6910e4528a2a83e0d` | 私有 trace-runtime-audit-20261119/release-receipt.json；备份与线上身份校验通过 |
 | 历史正式，2026-11-19T12:48:14.814286+08:00（上海）发布 | workspace-layout-20261119 | `7bab4744550a6df172628a94f82667568cdd3c7ffe832fd53cea5998a33d6307` | 私有 trace-workspace-layout-20261119/release-receipt.json；备份与线上身份校验通过 |
 | 历史正式，2026-11-19 10:43:50（上海）发布 | dispatch-lightpanda-20261119 | `de4951b4801f55933c91392c40c67b7b8e1e4df834c60f852f47f057c3bfe911` | 私有 trace-release-20261119/release-receipt.json；备份与线上身份校验通过 |
 | 历史正式，已被 11-19 替代 | optimize-pi-20261117 | `b8a71dc31f619e8821c8e635f3657e39f228cd464d84686969608eb29c7d21eb` | 私有 validation/optimize-20261117、release-optimize-20261117 发布回执 |
@@ -15,9 +16,19 @@
 
 11-17 旧 UI 隔离验收输入清单：1188 项，SHA-256 `d3d0901f4950488c74d371df7554a10f3f0c71d52c013487addcf01bd0d9d4f2`；正式部署源码清单 SHA-256 `f8386dacf59e2909d6f99fd4443ae00786e2e00acf422de69674ad67f591dada`。文档压缩仅本地，未同步正式服务器源码或冻结清单。
 
-## 当前清理与保留（2026-11-19）
+## 2026-11-20 外部目录与 HTTP 传输发布
 
-- 正式运行仍为 `runtime-audit-20261119`，binary SHA256 未变。已删除 optimize-pi、dispatch-lightpanda、workspace-layout 三份旧 release、两份过期完整备份、validation/maintenance-current 和相关临时测试目录；未使用的 `trace:full-agent-tsb-20261112` 镜像已删除。服务器实际释放 8,711,561,216 B（约 8.11 GiB）。
+- 正式版本 `mcp-catalog-20261119`，上海时间 `2026-11-20T10:17:20.303266+08:00`。目录仅保留真实 MCP 服务及 Lightpanda/CloakBrowser 浏览器扩展；ASC、web-analysis、HTTP 等本地命令无论 GitHub 来源均不展示卡片或接口选择项，隐藏既有选择保留。浏览器详情只展示用途、注册状态和工具 schema，不显示启动命令/参数/路径、ARGV/JSONL。真实 MCP 当前 0，未伪造服务。
+- MCP 和浏览器的滑动开关沿既有配置保存；停用不注册、重启保持，再启用恢复稳定 ID。新保存的 MCP 选择在同一 Run 记录 ID→服务归属；明确停用时只保留已选身份，不投影 schema、不准新选；无归属的未知历史 ID 仍拒绝。禁止仅凭 ID 前缀放行。
+- 浏览器使用顺序为 Lightpanda、能力不足时 CloakBrowser；浏览器不适用或不可用时 HTTP/API/下载用 curl_cffi 0.17.0。http-request/page-fetch 真实传输已迁移；受管 PATH 的 curl/curl-cffi 为官方 CLI，语法 `curl get URL`，旧 curl flags 解析失败且零网络请求。没有操作系统级阻止任意绝对路径程序；不改写历史 Run 提示，新 Run 使用当前提示。
+- 指定服务器验收：原 Go 35 组零跳过、相关 race 8 组，追加 MCP 选择/投影/继承普通 14 与 race 14 组零跳过；vet/build 通过。42 份前端与文案相关 2 份复验、11 个 API/离线输入契约、4 个 shell 语法检查、8 个新 wheel 哈希通过。真实 Lightpanda/CloakBrowser 覆盖两张卡片、详情/搜索、off→服务重启持久→on、1440/390 无横向溢出；最终截图人工复核。独立审查无剩余 P0/P1。不宣称全仓、新模型真实场次或新 Docker/TSB 镜像通过；镜像源码已补离线闭环，尚未构建。
+- 发布包顶层 examples/scripts/prompts/.trace skills 与源码逐字节一致；受管 HTTP 入口与源码一致。保存配置中的 12 个旧生成 helper 按旧 Git 源码原始字节精确迁移，保留自定义字段、停用状态和秘密。正式进程的解释器、环境和 uid 1000 实测：两 helper 与 PATH 中管理 curl 各一次回环 GET，curl_cffi 0.17.0，未进入真实任务或模型。
+- 完全停旧服务后取同一配置/业务快照并备份；归档 `/var/backups/trace-mcp-catalog-20261119/rollback.tar`，1,341,921,280 B，SHA256 `c246a7b9e27cb6a372c64f5410d7f40b1cd8845df0a8a96506fa5890f7ccde57`，20,361 个文件内容 hash/权限/UID/GID 校验，目录 0700、归档 0600。保留上一 release 作回滚；首次注册核对漏算自动发现的 Lightpanda 触发门禁，旧服务按实际 executable/HTTP/原配置字节/业务摘要核验恢复；预期改为保存项必须保留、实际注册与生效配置一致后重发成功。未主动注入业务变更演练。异常处理先停候选再回链/配，业务摘要不符保留现场且保持停服，旧服务实际 executable/HTTP/配置/业务核对后才标记回滚成功。
+- 正式实际 executable/binary 与版本表一致，在线嵌入资源与源码匹配；83 个工具、5 个 Skill。HTTP 200、公网未认证 401、异 Host/Origin 403；7 份历史 Run 业务不变，暂停运行未恢复。私有回执与脚本保留于项目外 records。
+
+## 前批清理与保留（2026-11-19）
+
+- 此次清理时正式运行为 `runtime-audit-20261119`，binary SHA256 未变。已删除 optimize-pi、dispatch-lightpanda、workspace-layout 三份旧 release、两份过期完整备份、validation/maintenance-current 和相关临时测试目录；未使用的 `trace:full-agent-tsb-20261112` 镜像已删除。服务器实际释放 8,711,561,216 B（约 8.11 GiB）。
 - 保留当前完整 release、deps、正式 state/workspace 及最新完整回滚归档 `/var/backups/trace-runtime-audit-20261119/rollback.tar`；归档 SHA256 `a84a27acd0550d5c4aa7396007fcec0121af8add479792c415988b19916588b4` 已复核。当前旧版本仅在此归档中保留，下文旧 release/validation/备份路径表示历史身份，不代表目录仍存在。
 - OpenVPN 总服务已停用并禁用；旧用户配置、上传缓存、临时 ovpn、VPN 日志和启动材料已删除。确认无 VPN 进程、tun/tap/wg 接口或额外策略规则；系统默认路由及 Docker 本地网桥保留。OpenVPN 系统软件包保留。
 - 本机十批 `_work/trace-*`、系统临时 Trace 文件和孤立测试 `.env` 连同空目录已移入 Windows 回收站，合计 309,431,163 B（约 295.10 MiB）；工作目录已清空。本机源码、完整 `.git`、refs 和版本化回归测试保留。

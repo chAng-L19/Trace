@@ -19,5 +19,10 @@ dpkg -i ./libcbor0.8_0.8.0-2ubuntu1_amd64.deb ./libfido2-1_1.10.0-1_amd64.deb \
     './xxd_2%3a8.2.3995-1ubuntu2.36_amd64.deb'
 python3 -m pip install --no-index --no-deps --no-compile --target /opt/trace/runtime/site-packages \
     ./pydash-8.0.5-py3-none-any.whl
+python3 -m pip install --no-index --require-hashes --find-links "$bundle" --no-compile --upgrade \
+    --target /opt/trace/runtime/site-packages -r "$(dirname "$lock")/http-requirements.txt"
+# Install pip's generated official CLI entry under both managed command names.
+install -m 0755 /opt/trace/runtime/site-packages/bin/curl-cffi /usr/local/bin/curl
+install -m 0755 /opt/trace/runtime/site-packages/bin/curl-cffi /usr/local/bin/curl-cffi
 command -v ssh sshpass xxd
 python3 -c 'import importlib.metadata,pydash; assert importlib.metadata.version("pydash")=="8.0.5"; d={}; pydash.set_(d,"a.b",7); assert d=={"a":{"b":7}}'
