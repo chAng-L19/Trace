@@ -119,7 +119,7 @@ func TestTreeWorkerCapacityDisposedUncertainRootCompletion(t *testing.T) {
 				if continueForEvidence(&finished) {
 					t.Fatalf("completed root still requests continuation: %+v", finished.Result)
 				}
-				a, store = reopenCapacityAgent(t, store)
+				_, store = reopenCapacityAgent(t, store)
 				finished, err = store.Load(root.Run.ID)
 				if err != nil || finished.Result.Status != "success" {
 					t.Fatalf("restart lost root completion: %+v %v", finished.Result, err)

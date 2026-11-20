@@ -81,10 +81,7 @@ func (a *Agent) ProbeSearchSource(ctx context.Context, source string) (SearchPro
 		return out, nil
 	}
 	if response.StatusCode == 429 {
-		out.Status, out.Rate, out.RetryAfterSeconds = "rate_limited", "limited", retryAfter(response.Header.Get("Retry-After"))
-		gate.mu.Lock()
-		gate.blockedUntil = time.Now().Add(time.Duration(out.RetryAfterSeconds) * time.Second)
-		gate.mu.Unlock()
+		out.Status, out.Rate, out.RetryAfterSeconds = "rate_limited", "limited", gate.recordRateLimit(response.Header.Get("Retry-After"))
 		return out, nil
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {

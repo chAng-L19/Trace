@@ -32,7 +32,7 @@ func TestExecOrphanResultRecovery(t *testing.T) {
 		t.Run(backend, func(t *testing.T) {
 			a, store := treeCapacityAgent(t, backend, MockProvider{})
 			id := createTestRun(t, a)
-			before, err := store.Update(id, func(s *Snapshot) error {
+			_, err := store.Update(id, func(s *Snapshot) error {
 				s.Run.Status = StatusPaused
 				s.Run.PauseReason = "operator_pause"
 				s.Actions = []Action{
@@ -47,7 +47,7 @@ func TestExecOrphanResultRecovery(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			before, err = store.Load(id)
+			before, err := store.Load(id)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -83,14 +83,14 @@ func TestExecOrphanResultBusyLockNoWrites(t *testing.T) {
 		t.Run(backend, func(t *testing.T) {
 			a, store := treeCapacityAgent(t, backend, MockProvider{})
 			id := createTestRun(t, a)
-			before, err := store.Update(id, func(s *Snapshot) error {
+			_, err := store.Update(id, func(s *Snapshot) error {
 				s.Actions = []Action{{Name: "exec", Adapter: "exec", Status: "started"}}
 				return nil
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			before, err = store.Load(id)
+			before, err := store.Load(id)
 			if err != nil {
 				t.Fatal(err)
 			}

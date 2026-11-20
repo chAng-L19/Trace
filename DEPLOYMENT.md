@@ -4,7 +4,8 @@
 
 | 状态 | 版本或构建 | SHA-256（binary） | 证据 |
 | --- | --- | --- | --- |
-| 正式，2026-11-20T11:01:43.490440+08:00（上海）发布 | mcp-name-20261120 | `9d3a68993d58fd558242c11ad0ee9eb145074ba0ab996ff9e834af3494109fd3` | 私有 trace-mcp-name-20261120/release-receipt.json、cleanup-receipt.json；名称统一，旧版及旧版备份已删除 |
+| 正式，2026-11-20T12:21:19.105592+08:00（上海）发布 | maintenance-20261120 | `239f98481d088e8543833e3782534026ef8e5b695ac11e7db7358651f1abce5d4` | 私有 trace-maintenance-20261120/release-receipt.json；必要构建与服务启动命令成功，未跑动态验收 |
+| 历史正式，2026-11-20T11:01:43.490440+08:00（上海）发布 | mcp-name-20261120 | `9d3a68993d58fd558242c11ad0ee9eb145074ba0ab996ff9e834af3494109fd3` | 私有 trace-mcp-name-20261120/release-receipt.json、cleanup-receipt.json；名称统一，旧版及旧版备份已删除 |
 | 历史正式，2026-11-20T10:17:20.303266+08:00（上海）发布 | mcp-catalog-20261119 | `cfd339039bf165bbfacce5aee44cb5460058e7c00f3c2208bd51210ded77a838` | 私有 trace-mcp-catalog-20261119/release-receipt.json；正式进程环境 HTTP 及历史业务核对通过 |
 | 历史正式，2026-11-19T13:57:18.073145+08:00（上海）发布 | runtime-audit-20261119 | `e309b486fd3f2fd3379526c71aa7d6885ffcbce9674db8f6910e4528a2a83e0d` | 私有 trace-runtime-audit-20261119/release-receipt.json；备份与线上身份校验通过 |
 | 历史正式，2026-11-19T12:48:14.814286+08:00（上海）发布 | workspace-layout-20261119 | `7bab4744550a6df172628a94f82667568cdd3c7ffe832fd53cea5998a33d6307` | 私有 trace-workspace-layout-20261119/release-receipt.json；备份与线上身份校验通过 |
@@ -16,6 +17,12 @@
 | 历史镜像，2026-11-19 已清理 | trace:full-agent-tsb-20261112 | `68dfb5a71bed513217a0677d40b9d2f1dc47dae74ad2fcaff0f00707d686235a` | 2026-11-12 全量镜像回执 |
 
 11-17 旧 UI 隔离验收输入清单：1188 项，SHA-256 `d3d0901f4950488c74d371df7554a10f3f0c71d52c013487addcf01bd0d9d4f2`；正式部署源码清单 SHA-256 `f8386dacf59e2909d6f99fd4443ae00786e2e00acf422de69674ad67f591dada`。文档压缩仅本地，未同步正式服务器源码或冻结清单。
+
+## 2026-11-20 维护审计发布
+
+- 正式版本 maintenance-20261120；表中无调用代码与测试清理、UTF-8/429/路径重写去重已纳入。服务器必要 Go 构建通过，主程序 22,564,696 B；service stop → current 切换 → service start 命令成功。按用户要求未跑 Go/前端测试、race、跨平台编译、浏览器或模型验收，不将构建成功视为动态行为证明。
+- 旧 mcp-name-20261120 release 已删除，仅当前版本保留；未创建旧版备份。配置、正式 state/workspace 与浏览器/模型运行时未在本批改写；未做业务数据前后对比。暂存源码与构建材料在结束时清理，精简发布回执置于项目外 records。
+- 初次必要构建因 workspace_activity.go 一处旧 workspaceText 引用失败，补齐调用后构建通过；失败发生在正式切换前。无测试执行，不以修复编译错误替代运行时验收。逐项判定及参考版本见开发计划“维护代码审计”。
 
 ## 2026-11-20 MCP 管理命名与清理
 

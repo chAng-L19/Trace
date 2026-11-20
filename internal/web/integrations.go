@@ -345,29 +345,24 @@ func remapIntegration(c *Config, old, next Integration) {
 		// A parent/default discovery root still contains the old checkout. Prefer the updated skill.
 		c.SkillPaths = append([]string{next.SkillPath}, c.SkillPaths...)
 	}
+	rewrite := func(localPath, dir, command *string, args []string, env map[string]string) {
+		*localPath = replace(*localPath)
+		*dir = replace(*dir)
+		*command = replace(*command)
+		for j := range args {
+			args[j] = replace(args[j])
+		}
+		for k, v := range env {
+			env[k] = replace(v)
+		}
+	}
 	for i := range c.MCP {
 		cfg := &c.MCP[i]
-		cfg.LocalPath = replace(cfg.LocalPath)
-		cfg.Dir = replace(cfg.Dir)
-		cfg.Command = replace(cfg.Command)
-		for j := range cfg.Args {
-			cfg.Args[j] = replace(cfg.Args[j])
-		}
-		for k, v := range cfg.Env {
-			cfg.Env[k] = replace(v)
-		}
+		rewrite(&cfg.LocalPath, &cfg.Dir, &cfg.Command, cfg.Args, cfg.Env)
 	}
 	for i := range c.LocalTools {
 		cfg := &c.LocalTools[i]
-		cfg.LocalPath = replace(cfg.LocalPath)
-		cfg.Dir = replace(cfg.Dir)
-		cfg.Command = replace(cfg.Command)
-		for j := range cfg.Args {
-			cfg.Args[j] = replace(cfg.Args[j])
-		}
-		for k, v := range cfg.Env {
-			cfg.Env[k] = replace(v)
-		}
+		rewrite(&cfg.LocalPath, &cfg.Dir, &cfg.Command, cfg.Args, cfg.Env)
 	}
 	found := false
 	for i := range c.Integrations {

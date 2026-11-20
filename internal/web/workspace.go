@@ -7,9 +7,9 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"trace/internal/agent"
+	"trace/internal/textutil"
 )
 
 type workspaceMessage struct {
@@ -30,16 +30,6 @@ type workspaceView struct {
 	HelpRequests   []agent.WorkerHelp     `json:"help_requests,omitempty"`
 	Totals         map[string]int         `json:"totals,omitempty"`
 	Projection     string                 `json:"projection,omitempty"`
-}
-
-func workspaceText(text string, limit int) string {
-	if len(text) <= limit {
-		return text
-	}
-	for limit > 0 && !utf8.RuneStart(text[limit]) {
-		limit--
-	}
-	return text[:limit]
 }
 
 func conversationRequest(r agent.ModelRequest) bool {
@@ -165,8 +155,8 @@ func projectWorkspacePage(snap agent.Snapshot, query agent.MessagePageQuery, bou
 	toolBudget := 80
 	for i, m := range selected {
 		messages[i] = workspaceMessage{Message: m, ContentBytes: len(m.Content), ThinkingBytes: len(m.Thinking)}
-		messages[i].Content = workspaceText(m.Content, 4096)
-		messages[i].Thinking = workspaceText(m.Thinking, 4096)
+		messages[i].Content = textutil.TruncateUTF8(m.Content, 4096)
+		messages[i].Thinking = textutil.TruncateUTF8(m.Thinking, 4096)
 		messages[i].ToolCalls = append([]agent.ToolCall(nil), m.ToolCalls...)
 		messages[i].Preview = messages[i].Content != m.Content || messages[i].Thinking != m.Thinking
 		if len(messages[i].ToolCalls) > toolBudget {
@@ -176,7 +166,7 @@ func projectWorkspacePage(snap agent.Snapshot, query agent.MessagePageQuery, bou
 		toolBudget -= len(messages[i].ToolCalls)
 		for j := range messages[i].ToolCalls {
 			arguments := messages[i].ToolCalls[j].Arguments
-			messages[i].ToolCalls[j].Arguments = workspaceText(arguments, 2048)
+			messages[i].ToolCalls[j].Arguments = textutil.TruncateUTF8(arguments, 2048)
 			messages[i].Preview = messages[i].Preview || messages[i].ToolCalls[j].Arguments != arguments
 		}
 		if m.RequestID != "" {
@@ -209,8 +199,8 @@ func projectWorkspacePage(snap agent.Snapshot, query agent.MessagePageQuery, bou
 			responses[i].Response.Thinking = ""
 			responses[i].Response.ToolCalls = nil
 		}
-		responses[i].Response.Content = workspaceText(responses[i].Response.Content, 4096)
-		responses[i].Response.Thinking = workspaceText(responses[i].Response.Thinking, 4096)
+		responses[i].Response.Content = textutil.TruncateUTF8(responses[i].Response.Content, 4096)
+		responses[i].Response.Thinking = textutil.TruncateUTF8(responses[i].Response.Thinking, 4096)
 		if len(snap.Messages) > 80 && !pageRequests[responses[i].RequestID] && i < len(responses)-1 {
 			responses[i].Response.Content = ""
 			responses[i].Response.Thinking = ""
@@ -238,15 +228,15 @@ func projectWorkspacePage(snap agent.Snapshot, query agent.MessagePageQuery, bou
 	}
 	for i := range actions {
 		a := &actions[i]
-		a.Arguments = workspaceText(a.Arguments, 2048)
+		a.Arguments = textutil.TruncateUTF8(a.Arguments, 2048)
 		if !pageRequests[a.RequestID] && a.Result != nil {
 			a.Arguments = ""
 		}
 		if a.Result != nil {
 			r := *a.Result
 			if pageRequests[a.RequestID] {
-				r.Stdout = workspaceText(r.Stdout, 4096)
-				r.Stderr = workspaceText(r.Stderr, 4096)
+				r.Stdout = textutil.TruncateUTF8(r.Stdout, 4096)
+				r.Stderr = textutil.TruncateUTF8(r.Stderr, 4096)
 			} else {
 				r.Stdout = ""
 				r.Stderr = ""
@@ -255,7 +245,7 @@ func projectWorkspacePage(snap agent.Snapshot, query agent.MessagePageQuery, bou
 			r.LegacyREASession = nil
 			r.LegacyREACheckpoint = nil
 			r.LegacyREARestore = nil
-			r.Error = workspaceText(r.Error, 2048)
+			r.Error = textutil.TruncateUTF8(r.Error, 2048)
 			a.Result = &r
 		}
 	}

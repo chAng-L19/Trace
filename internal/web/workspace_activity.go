@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"trace/internal/agent"
+	"trace/internal/textutil"
 )
 
 // Only activity is a read-only projection. Verification/report/graph routes
@@ -58,7 +59,7 @@ func (s *Server) activityWorkspaceContext(ctx context.Context, projection agent.
 		view.WorkerMessages = view.WorkerMessages[len(view.WorkerMessages)-40:]
 	}
 	for i := range view.WorkerMessages {
-		view.WorkerMessages[i].Content = workspaceText(view.WorkerMessages[i].Content, 2048)
+		view.WorkerMessages[i].Content = textutil.TruncateUTF8(view.WorkerMessages[i].Content, 2048)
 	}
 	if len(view.HelpRequests) > 20 {
 		view.HelpRequests = view.HelpRequests[len(view.HelpRequests)-20:]

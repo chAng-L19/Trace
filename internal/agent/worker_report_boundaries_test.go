@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
@@ -144,7 +143,7 @@ func TestWorkerEarlyReportFindingSourceBinding(t *testing.T) {
 			}
 			rows, err = store.ChildReports(id)
 			if err != nil || rows[len(rows)-1].SourceStatus != "changed" {
-				t.Fatal(fmt.Sprintf("changed title reused early hash: %+v %v", rows, err))
+				t.Fatalf("changed title reused early hash: %+v %v", rows, err)
 			}
 		})
 	}

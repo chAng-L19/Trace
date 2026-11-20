@@ -39,8 +39,9 @@ func TestExecResourceConfiguration(t *testing.T) {
 	if ResourceOwner("ab", "request", "c") == ResourceOwner("a", "request", "bc") {
 		t.Fatal("owner separator missing")
 	}
-	if ResourceOwner("r", "request", "c") != ResourceOwner("r", "request", "c") {
-		t.Fatal("owner is not stable")
+	const wantOwner = "trace-exec-ca6015aafee9fd5800aee40439bbbc41"
+	if owner := ResourceOwner("r", "request", "c"); owner != wantOwner {
+		t.Fatalf("persisted owner changed: got %q, want %q", owner, wantOwner)
 	}
 }
 
