@@ -2,6 +2,7 @@ import type { InspectWebPageInput } from "../domain/browserObservation.js";
 import type { WebPageInspection } from "../domain/browserObservationSchemas.js";
 import {
   allowedSanitizedUrl,
+  numberArray,
   numberValue,
   recordValue,
   recordsValue,
@@ -373,14 +374,6 @@ const uniqueAttributeNames = (
   }
   return names;
 };
-
-const numberArray = (value: unknown): readonly number[] =>
-  Array.isArray(value)
-    ? value.flatMap((item) => {
-        const number = numberValue(item);
-        return number === undefined ? [] : [number];
-      })
-    : [];
 
 interface DomMetadataOptions {
   readonly strings: readonly string[];

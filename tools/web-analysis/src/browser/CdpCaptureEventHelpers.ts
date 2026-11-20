@@ -8,6 +8,8 @@ import {
 } from "./CdpCaptureValues.js";
 import type { CdpEvent } from "./CdpConnection.js";
 
+export { executionContextKey } from "./CdpCaptureValues.js";
+
 /** Identify a top-level navigation event from its untrusted CDP envelope. */
 export const isMainFrameNavigation = (
   event: CdpEvent,
@@ -53,13 +55,6 @@ export const exclusionReasonForUrl = (
 export const integerOrNull = (value: unknown): number | null => {
   const number = numberValue(value);
   return number === undefined ? null : Math.max(0, Math.trunc(number));
-};
-
-export const executionContextKey = (value: unknown): string | null => {
-  const identifier = numberValue(value);
-  return identifier !== undefined && Number.isSafeInteger(identifier)
-    ? String(identifier)
-    : null;
 };
 
 export const isJsonContentType = (

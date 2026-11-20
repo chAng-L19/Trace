@@ -18,7 +18,7 @@ import { ProviderAdapterError } from "../domain/providerAdapterError.js";
 import type { BrowserObservationOperation } from "../domain/browserObservationErrors.js";
 import { err, ok, type Result } from "../domain/result.js";
 import {
-  numberValue,
+  executionContextKey as contextKey,
   recordValue,
   cdpStringValue,
   scriptMetadataValues,
@@ -541,13 +541,6 @@ const retainedMetadataBytes = (value: ScriptDraft | ContextDraft): number => {
     RETAINED_OBJECT_OVERHEAD_BYTES +
     strings.reduce((total, text) => total + (text?.length ?? 0) * 2, 0)
   );
-};
-
-const contextKey = (value: unknown): string | null => {
-  const identifier = numberValue(value);
-  return identifier !== undefined && Number.isSafeInteger(identifier)
-    ? String(identifier)
-    : null;
 };
 
 const providerError = (

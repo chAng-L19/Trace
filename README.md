@@ -4,7 +4,7 @@ Trace 是以持久 Run 为核心的研究 Agent，CLI 与 WebUI 共用 Go Agent�
 
 ## 当前入口
 
-- 源码位于 `E:/cli/trace`；当前正式版本为 `full-audit-20261120`。全库冗余审计落实12项小范围修改；主程序约15.69MB。完整发行身份、验证边界与清理记录见 [DEPLOYMENT.md](DEPLOYMENT.md)。当前无可交付TSB镜像，另批构建与平台验收仍开放。
+- 源码位于 `E:/cli/trace`；当前正式版本为 `article-dedupe-20261120`。全库冗余审计累计落实15项小范围修改；主程序约15.69MB。完整发行身份、验证边界与清理记录见 [DEPLOYMENT.md](DEPLOYMENT.md)。当前无可交付TSB镜像，另批构建与平台验收仍开放。
 - [HANDOVER.md](HANDOVER.md) 是短交接，[开发计划.md](开发计划.md) 是唯一当前待办/待吸收清单，[FEATURE_COMPARISON_CURRENT.md](FEATURE_COMPARISON_CURRENT.md) 保留参考来源与采用理由。
 - 浏览器优先 Lightpanda，CloakBrowser0.6.4固定binary/headed/Xvfb作为备用；浏览器优先级已随正式版发布，身份按部署记录。11月6日P0/cache/T3/D1/UI/Skill与最后浏览器能力合同修补均已正式部署。显式set_document可用，原生set_content和console/pageerror仍为固定binary限制，空事件不证明无日志/无页面错误。
 - TSecBench 历史复盘见维护文档，本批未操作比赛或实例。T2原B9三页面500ms门槛仍FAIL，缓存实际命中率/TTFT/成本及模型策略收益待实测；合成链和部署通过不代替平台成绩。

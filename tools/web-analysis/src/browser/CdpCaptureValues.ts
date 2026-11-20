@@ -26,6 +26,21 @@ export const cdpStringValue = (value: unknown): string | undefined =>
 export const numberValue = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isFinite(value) ? value : undefined;
 
+export const numberArray = (value: unknown): readonly number[] =>
+  Array.isArray(value)
+    ? value.flatMap((item) => {
+        const number = numberValue(item);
+        return number === undefined ? [] : [number];
+      })
+    : [];
+
+export const executionContextKey = (value: unknown): string | null => {
+  const identifier = numberValue(value);
+  return identifier !== undefined && Number.isSafeInteger(identifier)
+    ? String(identifier)
+    : null;
+};
+
 /** Preserve partial script declarations; omitted or invalid fields remain unknown. */
 export const scriptMetadataValues = (
   value: UnknownRecord | undefined,

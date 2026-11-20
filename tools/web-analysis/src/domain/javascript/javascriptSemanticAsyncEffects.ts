@@ -18,6 +18,7 @@ import {
 import { traverseJavaScriptAst } from "./javascriptSemanticTraversal.js";
 import { range } from "./javascriptStaticAnalysisHelpers.js";
 import {
+  dataEffectArgumentBindingId as bindingId,
   dataEffectLiteralString,
   dataEffectMemberCallee,
   assignedSemanticResultBindings,
@@ -343,19 +344,6 @@ const timerNamespaceBinding = (
 
 const timerModule = (specifier: string): boolean =>
   specifier === "timers" || specifier === "node:timers";
-
-const bindingId = (
-  node:
-    | t.Expression
-    | t.SpreadElement
-    | t.JSXNamespacedName
-    | t.ArgumentPlaceholder
-    | undefined,
-  state: JavaScriptSemanticAnalysisState,
-): string | null =>
-  t.isIdentifier(node)
-    ? (resolveSemanticBindingState(state, node, node.name)?.bindingId ?? null)
-    : null;
 
 const timerDelay = (candidate: TimerCandidate): number | null => {
   if (candidate.kind !== "schedule" || candidate.method === "setImmediate")

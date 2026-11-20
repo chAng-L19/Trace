@@ -1,7 +1,7 @@
 import type { CdpEvent } from "./CdpConnection.js";
 import { CdpCaptureCompleteness } from "./CdpCaptureCompleteness.js";
 import {
-  numberValue,
+  executionContextKey,
   recordValue,
   scriptMetadataValues,
   cdpStringValue,
@@ -69,11 +69,4 @@ const retainExecutionContext = (
   const frameId = cdpStringValue(recordValue(runtimeContext?.auxData)?.frameId);
   if (contextKey === null || frameId === undefined) return;
   frames.set(contextKey, frameId);
-};
-
-const executionContextKey = (value: unknown): string | null => {
-  const identifier = numberValue(value);
-  return identifier !== undefined && Number.isSafeInteger(identifier)
-    ? String(identifier)
-    : null;
 };

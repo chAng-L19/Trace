@@ -4,7 +4,8 @@
 
 | 状态 | 版本或构建 | SHA-256（binary） | 证据 |
 | --- | --- | --- | --- |
-| 正式，2026-11-20 发布 | full-audit-20261120 | `5ce09b1a132a865ae927db70de2ab2f750df88d3495303b761cfffba27f0d00b` | 私有 trace-full-audit-20261120/release-receipt.json；相关回归、strip主程序冒烟、实际进程与嵌入资源身份 |
+| 正式，2026-11-20 发布 | article-dedupe-20261120 | `5ce09b1a132a865ae927db70de2ab2f750df88d3495303b761cfffba27f0d00b` | 私有 trace-article-followup-20261120/release-receipt.json；纯函数去重、64文件1300项TS及9项集成通过，Go主程序沿用 |
+| 历史正式，2026-11-20 发布 | full-audit-20261120 | `5ce09b1a132a865ae927db70de2ab2f750df88d3495303b761cfffba27f0d00b` | 私有 trace-full-audit-20261120/release-receipt.json；相关回归、strip主程序冒烟、实际进程与嵌入资源身份 |
 | 历史正式，2026-11-20T12:21:19.105592+08:00（上海）发布 | maintenance-20261120 | `239f98481d088e8543833e3782534026ef8e5b695ac11e7db7358651f1abce5d4` | 私有 trace-maintenance-20261120/release-receipt.json；必要构建与服务启动命令成功，未跑动态验收 |
 | 历史正式，2026-11-20T11:01:43.490440+08:00（上海）发布 | mcp-name-20261120 | `9d3a68993d58fd558242c11ad0ee9eb145074ba0ab996ff9e834af3494109fd3` | 私有 trace-mcp-name-20261120/release-receipt.json、cleanup-receipt.json；名称统一，旧版及旧版备份已删除 |
 | 历史正式，2026-11-20T10:17:20.303266+08:00（上海）发布 | mcp-catalog-20261119 | `cfd339039bf165bbfacce5aee44cb5460058e7c00f3c2208bd51210ded77a838` | 私有 trace-mcp-catalog-20261119/release-receipt.json；正式进程环境 HTTP 及历史业务核对通过 |
@@ -19,7 +20,14 @@
 
 11-17 旧 UI 隔离验收输入清单：1188 项，SHA-256 `d3d0901f4950488c74d371df7554a10f3f0c71d52c013487addcf01bd0d9d4f2`；正式部署源码清单 SHA-256 `f8386dacf59e2909d6f99fd4443ae00786e2e00acf422de69674ad67f591dada`。文档压缩仅本地，未同步正式服务器源码或冻结清单。
 
-## 2026-11-20 全库审计与体积优化发布
+## 2026-11-20 文章适配补充去重发布
+
+- 正式 `article-dedupe-20261120`。J04/J05/J08从现有CdpCaptureValues/DataEffectHelpers复用相同定义，保留旧导出及数值/词法语义；生产7文件+22/−53行，净少31行/831字节；测试1文件净增52行/1600字节。web-analysis dist由7352636降至7350866字节，保留全部source map，无产物文件增删。
+- 指定服务器构建、64文件1300项Vitest及9项集成/资源测试通过；3项新增回归覆盖数组异常值、safe integer及旧公开导出。已验证测试快照与最终源码一致。未新增依赖或生产模块依赖边；未将esbuild/测试称为全量TypeScript类型检查。
+- 本批只更新web-analysis源码和生成文件，Go binary和前端保持原SHA/体积；不重跑上批Go全套或视觉验收。旧11项Go失败、媒体补交超时、大数据race及W-V1类型闭包仍在开发计划，不因本批TS通过关闭。
+- 复用当前冻结依赖，文件解除硬链接后替换；只留当前release，成功切换后删除full-audit旧版及本批隔离测试副本，不创建旧版备份。正式配置和Store不手工改写。发布、逐文件源码与生成物身份、Git和清理回执留在仓库外。
+
+## 前批2026-11-20全库审计与体积优化发布
 
 - 正式 `full-audit-20261120`。生产13文件净少17行/560字节；测试6文件净增189行/8627字节。59项研判，12项落实；依赖与功能构建范围保留，主程序15692039字节（15.69MB/14.97MiB），较上一正式小30.458%。发布采用 `-buildvcs=false -trimpath -ldflags="-s -w"`，同源码debug构建22515849字节，单纯strip减少30.307%。
 - 指定服务器通过：35组相关race、5组Web、45份Node、64文件1297项TS及9项集成、entrypoint Shell、冻结curl_cffi真实CLI六场景、vet、Linux构建和Windows/Darwin交叉构建，最终strip程序临时Store create→native pi MockProvider run→show通过。未跑真实外部模型、新Docker或视觉验收。

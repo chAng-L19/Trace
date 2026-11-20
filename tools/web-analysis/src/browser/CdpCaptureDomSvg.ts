@@ -1,4 +1,4 @@
-import { numberValue } from "./CdpCaptureValues.js";
+import { numberArray, numberValue } from "./CdpCaptureValues.js";
 
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 const XLINK_NAMESPACE = "http://www.w3.org/1999/xlink";
@@ -38,14 +38,6 @@ const stringAt = (strings: readonly string[], index: unknown): string => {
   const integer = numberValue(index);
   return integer === undefined ? "" : (strings[Math.trunc(integer)] ?? "");
 };
-
-const numberArray = (value: unknown): readonly number[] =>
-  Array.isArray(value)
-    ? value.flatMap((item) => {
-        const number = numberValue(item);
-        return number === undefined ? [] : [number];
-      })
-    : [];
 
 // DOMSnapshot has no namespace URI. HTML documents use uppercase `HTML` and
 // the parser's local names. XML documents preserve prefixed names and xmlns
