@@ -108,7 +108,7 @@ func sqliteReadState(tx *sql.Tx, id string) (Snapshot, error) {
 	}
 	// Reuse the bounded authoritative reader in this same transaction. Full
 	// Load still retains the typed history, without a second complete state BLOB.
-	source := newSQLiteStateReader(context.Background(), tx, id, 0)
+	source := newSQLiteStateReader(context.Background(), tx, id)
 	defer source.Close()
 	reader := bufio.NewReader(source)
 	for {

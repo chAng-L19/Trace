@@ -47,6 +47,16 @@ def main(image, report_path, source=None, binary=None):
             self.wfile.write(json.dumps(value).encode())
 
         def do_GET(self):
+            if self.path in ("/health", "/health-followed"):
+                self.server.health_calls += 1
+                status = self.server.health_status if self.path == "/health" else 500
+                self.send_response(status)
+                if status == 302:
+                    self.send_header("Location", "/health-followed")
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(self.server.health_body.encode())
+                return
             self.api()
 
         def do_POST(self):
@@ -111,6 +121,7 @@ def main(image, report_path, source=None, binary=None):
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     server.requests = 0
+    server.health_calls = 0
     threading.Thread(target=server.serve_forever, daemon=True).start()
     name = "trace-hosted-smoke-" + uuid.uuid4().hex[:12]
     report = {"status": "running", "image": image, "container": name,
@@ -123,7 +134,20 @@ def main(image, report_path, source=None, binary=None):
             (root / "state").mkdir(mode=0o777)
             (root / "state").chmod(0o777)
             curl = root / "bin/curl"
-            curl.write_text("#!/bin/sh\ncase \"$*\" in *http://10.0.100.58*) printf '%s\n' '{\"status\":\"ok\"}';; *) exit 91;; esac\n")
+            curl.write_text(r"""#!/bin/bash
+set -euo pipefail
+printf 'call\n' >> /fixture/health-calls
+[[ $# == 6 && "$1" == get && "$2" == http://10.0.100.58 && "$3" == --body && "$4" == --timeout && "$5" == 10 && "$6" == --no-follow ]] || exit 91
+case "${TRACE_FIXTURE_HEALTH:-ok}" in
+  ok) printf '%s\n' '{"status":"ok"}' ;;
+  unhealthy) printf '%s\n' '{"status":"failed"}' ;;
+  invalid-json) printf '%s\n' 'invalid' ;;
+  empty-body) ;;
+  http-error) printf '%s\n' '{"status":"ok"}'; exit 1 ;;
+  transport-error) exit 1 ;;
+  *) exit 92 ;;
+esac
+""")
             curl.chmod(0o755)
             config = json.loads(docker("image", "inspect", image).stdout)[0]["Config"]
             assert config["Cmd"] == ["benchmark"] and config["User"] == "trace"
@@ -135,6 +159,28 @@ def main(image, report_path, source=None, binary=None):
                 assert not image_env.get("TRACE_EXEC_CGROUP_ROOT")
             path = next(e[5:] for e in config["Env"] if e.startswith("PATH="))
             base = "http://127.0.0.1:" + str(server.server_port)
+            # Exercise the shipped CLI, bypassing the private-URL fixture below.
+            # A 503 with an ok body must fail; a 302 must not be followed.
+            health_command = (
+                'set -o pipefail; status=$(/usr/local/bin/curl get "$1" --body --timeout 10 --no-follow | '
+                'python3 -c \'import json,sys; print(json.load(sys.stdin).get("status", ""))\') || exit 1; '
+                '[[ "$status" == ok ]]'
+            )
+            for status, body, expected_exit in (
+                (200, '{"status":"ok"}', 0),
+                (503, '{"status":"ok"}', 1),
+                (200, '{"status":"failed"}', 1),
+                (200, 'invalid', 1),
+                (302, '{"status":"ok"}', 0),
+            ):
+                server.health_status, server.health_body = status, body
+                count = server.health_calls
+                probe = docker("run", "--rm", "--network", "host", "--entrypoint", "/bin/bash",
+                               image, "-c", health_command, "health-check", base + "/health", check=False)
+                assert probe.returncode == expected_exit, (status, body, probe.stdout, probe.stderr)
+                assert server.health_calls == count + 1
+                assert not calls and not server.requests
+            report["frozen_cli_health_contract"] = True
             options = ["--network", "host", "--volume", str(root) + ":/fixture",
                        "--volume", str(root / "state") + ":/state",
                        "--env", "PATH=/fixture/bin:" + path,
@@ -170,14 +216,18 @@ def main(image, report_path, source=None, binary=None):
                 assert rejected.returncode == 2 and expected_error in rejected.stderr
                 assert not (root / "state/service/hosted-run.json").exists()
                 assert not calls and not server.requests
-            curl.write_text("#!/bin/sh\nprintf '%s\n' '{\"status\":\"failed\"}'\n")
-            unhealthy = docker("run", "--rm", *options, image, check=False)
-            assert unhealthy.returncode and "VPN health check failed" in unhealthy.stderr
-            assert not (root / "state/service/hosted-run.json").exists()
-            assert not calls and not server.requests
-            curl.write_text("#!/bin/sh\nprintf '%s\n' '{\"status\":\"ok\"}'\n")
+            health_log = root / "health-calls"
+            assert not health_log.exists()
+            for count, health in enumerate(("unhealthy", "invalid-json", "empty-body", "http-error", "transport-error"), 1):
+                unhealthy = docker("run", "--rm", *options, "--env", "TRACE_FIXTURE_HEALTH=" + health,
+                                   image, check=False)
+                assert unhealthy.returncode == 1 and "VPN health check failed" in unhealthy.stderr
+                assert len(health_log.read_text().splitlines()) == count
+                assert not (root / "state/service/hosted-run.json").exists()
+                assert not calls and not server.requests
             report.update(missing_environment_fails_before_run=True,
                           failed_healthcheck_fails_before_run=True,
+                          strict_health_argv=True, single_health_request_per_attempt=True,
                           invalid_mode_fails_before_run=True,
                           explicit_cgroup_requires_delegation=True)
             docker("run", "--detach", "--name", name, *options, image)
@@ -188,6 +238,7 @@ def main(image, report_path, source=None, binary=None):
                         ["POST", "/openapi/v1/challenges/submit"],
                         ["POST", "/openapi/v1/challenges/close?unique_code=" + challenge]]
             assert calls == expected and not failures, (calls, failures)
+            assert len(health_log.read_text().splitlines()) == 6
             sentinel = json.loads((root / "state/service/hosted-run.json").read_text())
             saved = json.loads((root / "state" / (sentinel["id"] + ".json")).read_text())
             actions = saved.get("actions", [])

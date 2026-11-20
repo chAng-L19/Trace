@@ -282,7 +282,7 @@ func (s *Store) UsageReport(id string, config CostConfig) (UsageReport, error) {
 	report := UsageReport{RootRunID: id, RunIDs: []string{}, Rates: []ModelPrice{}, Cost: CostSummary{Currency: config.Currency, Complete: true, Basis: "estimated_from_reported_tokens"}, ReportedCost: ReportedCostSummary{Currency: config.Currency, Complete: true}}
 	total := new(big.Rat)
 	reportedTotal := new(big.Rat)
-	quotes := map[string]bool{}
+	quotes := map[string]ModelPrice{}
 	seenRuns := map[string]bool{}
 	queue := []Run{root.Run}
 	for len(queue) > 0 {
@@ -369,9 +369,8 @@ func (s *Store) UsageReport(id string, config CostConfig) (UsageReport, error) {
 				report.Cost.CachePricedResponses++
 			}
 			key := valueHash(price)
-			if !quotes[key] {
-				report.Rates = append(report.Rates, *price)
-				quotes[key] = true
+			if _, exists := quotes[key]; !exists {
+				quotes[key] = *price
 			}
 		}
 		// A persisted request without its response may already incur provider cost.
@@ -383,7 +382,14 @@ func (s *Store) UsageReport(id string, config CostConfig) (UsageReport, error) {
 		queue = append(queue, children[run.ID]...)
 	}
 	sort.Strings(report.RunIDs)
-	sort.Slice(report.Rates, func(i, j int) bool { return valueHash(report.Rates[i]) < valueHash(report.Rates[j]) })
+	quoteKeys := make([]string, 0, len(quotes))
+	for key := range quotes {
+		quoteKeys = append(quoteKeys, key)
+	}
+	sort.Strings(quoteKeys)
+	for _, key := range quoteKeys {
+		report.Rates = append(report.Rates, quotes[key])
+	}
 	if report.Cost.PricedResponses > 0 || report.Usage.ModelRequests == 0 {
 		v := total.FloatString(18)
 		report.Cost.KnownAmount = &v

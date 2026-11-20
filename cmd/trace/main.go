@@ -106,10 +106,7 @@ func run(args []string) (runErr error) {
 		}
 		registered = runner
 		snap, err := runner.Run(ctx, args[1])
-		if err != nil {
-			return printJSON(snap, err)
-		}
-		return printJSON(snap, nil)
+		return printJSON(snap, err)
 	case "show":
 		if len(args) != 2 {
 			return fmt.Errorf("usage: trace show RUN_ID")
@@ -226,10 +223,7 @@ func run(args []string) (runErr error) {
 		registered = runner
 		if args[0] == "resume" {
 			snap, err := runner.Run(ctx, args[1])
-			if err != nil {
-				return printJSON(snap, err)
-			}
-			return printJSON(snap, nil)
+			return printJSON(snap, err)
 		}
 		if args[0] == "tool" {
 			if args[3] == "--registered" {
@@ -268,12 +262,6 @@ func run(args []string) (runErr error) {
 			return err
 		}
 		return printJSON(map[string]any{"sha256": runner.PromptHash()}, nil)
-	case "version":
-		fmt.Println(version)
-		return nil
-	case "help", "--help", "-h":
-		printUsage()
-		return nil
 	default:
 		return usageError()
 	}

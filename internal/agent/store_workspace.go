@@ -11,12 +11,9 @@ import (
 // Telemetry generations share only the stable non-event base. A semantic commit
 // or external file replacement constructs a new base and rechecks provenance.
 type workspaceBase struct {
-	activityOnce sync.Once
-	activityData []byte
-	activityErr  error
-	once         sync.Once
-	data         []byte
-	err          error
+	once sync.Once
+	data []byte
+	err  error
 }
 
 type workspaceProjection struct {

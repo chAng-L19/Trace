@@ -90,26 +90,21 @@ func (s *Store) displayWorkspace(ctx context.Context, id string, query MessagePa
 		}
 		v, records = index.view(mode), selected
 	}
-	b := v.workspaceBase
-	b.activityOnce.Do(func() {
-		p, e := buildActivityPage(v.fields, records, query, mode)
-		if e != nil {
-			b.activityErr = e
-			return
-		}
-		if mode != "planner" {
-			trimActivityDisplay(&p)
-		}
-		b.activityData, b.activityErr = json.Marshal(p)
-		if len(b.activityData) > activityProjectionMaxBytes {
-			b.activityData = nil
-			b.activityErr = errActivityTooLarge
-		}
-	})
-	if b.activityErr != nil {
-		return ActivityProjection{}, b.activityErr
+	p, err := buildActivityPage(v.fields, records, query, mode)
+	if err != nil {
+		return ActivityProjection{}, err
 	}
-	out, err := decodeActivity(id, b.activityData, v.fields["run"])
+	if mode != "planner" {
+		trimActivityDisplay(&p)
+	}
+	data, err := json.Marshal(p)
+	if len(data) > activityProjectionMaxBytes {
+		return ActivityProjection{}, errActivityTooLarge
+	}
+	if err != nil {
+		return ActivityProjection{}, err
+	}
+	out, err := decodeActivity(id, data, v.fields["run"])
 	if err != nil {
 		return out, err
 	}
@@ -117,7 +112,7 @@ func (s *Store) displayWorkspace(ctx context.Context, id string, query MessagePa
 		return ActivityProjection{}, err
 	}
 	if cache {
-		s.cacheActivity(id, key, previous, b.activityData, v.fields["run"])
+		s.cacheActivity(id, key, previous, data, v.fields["run"])
 	}
 	return out, nil
 }

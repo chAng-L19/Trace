@@ -31,7 +31,7 @@ func TestSQLiteDisplayChunkCancellationOwnsReturnedRows(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer tx.Rollback()
-			r := newSQLiteStateReader(ctx, tx, "run", 0)
+			r := newSQLiteStateReader(ctx, tx, "run")
 			defer r.Close()
 			if test.before {
 				cancel()

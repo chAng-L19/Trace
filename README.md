@@ -4,9 +4,9 @@ Trace 是以持久 Run 为核心的研究 Agent，CLI 与 WebUI 共用 Go Agent�
 
 ## 当前入口
 
-- 源码位于 `E:/cli/trace`；当前正式版本为 `optimize-pi-20261117`；此前运行时和多模型配置已发布，本轮调度、完成度、报告和工作区修复已在服务器隔离验收并完成独立复核，尚未发布。已登记的完整TSB镜像为 `trace:full-agent-tsb-20261112`，尚未同步后续修复；发行身份、完整包和旧版清理边界见 [DEPLOYMENT.md](DEPLOYMENT.md)。
+- 源码位于 `E:/cli/trace`；当前正式版本为 `full-audit-20261120`。全库冗余审计落实12项小范围修改；主程序约15.69MB。完整发行身份、验证边界与清理记录见 [DEPLOYMENT.md](DEPLOYMENT.md)。当前无可交付TSB镜像，另批构建与平台验收仍开放。
 - [HANDOVER.md](HANDOVER.md) 是短交接，[开发计划.md](开发计划.md) 是唯一当前待办/待吸收清单，[FEATURE_COMPARISON_CURRENT.md](FEATURE_COMPARISON_CURRENT.md) 保留参考来源与采用理由。
-- 浏览器优先 Lightpanda，CloakBrowser0.6.4固定binary/headed/Xvfb作为备用；新增优先级属于未发布源码，正式版本仍按部署记录。11月6日P0/cache/T3/D1/UI/Skill与最后浏览器能力合同修补均已正式部署。显式set_document可用，原生set_content和console/pageerror仍为固定binary限制，空事件不证明无日志/无页面错误。
+- 浏览器优先 Lightpanda，CloakBrowser0.6.4固定binary/headed/Xvfb作为备用；浏览器优先级已随正式版发布，身份按部署记录。11月6日P0/cache/T3/D1/UI/Skill与最后浏览器能力合同修补均已正式部署。显式set_document可用，原生set_content和console/pageerror仍为固定binary限制，空事件不证明无日志/无页面错误。
 - TSecBench 历史复盘见维护文档，本批未操作比赛或实例。T2原B9三页面500ms门槛仍FAIL，缓存实际命中率/TTFT/成本及模型策略收益待实测；合成链和部署通过不代替平台成绩。
 - Muteki 当前固定参考源码为 `a73535a19fd2c1cddd97dfbeea65f62f4ce136ee`（`E:/cli/_refs/muteki`）；其他固定参考见对照文档。pi实际依赖不是换成pi CLI。除pi core外，不迁入参考仓库作为第二运行引擎或CTF控制体系。
 ## 阅读导航

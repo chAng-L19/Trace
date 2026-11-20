@@ -27,7 +27,7 @@ type sqliteStateReader struct {
 	readAtReady  bool
 }
 
-func newSQLiteStateReader(ctx context.Context, tx *sql.Tx, id string, _ int64) *sqliteStateReader {
+func newSQLiteStateReader(ctx context.Context, tx *sql.Tx, id string) *sqliteStateReader {
 	return &sqliteStateReader{ctx: ctx, tx: tx, id: id}
 }
 

@@ -41,9 +41,21 @@ export BENCHMARK_BASE_URL=fixture BENCHMARK_TOKEN=fixture TRACE_PROVIDER_KEY=fix
 export TRACE_PROVIDER_URL=http://provider-fixture.tsecbench.gw/v1 TRACE_MODEL=fixture
 cat > "$test_root/bin/curl" <<'SH'
 #!/bin/bash
-printf '%s\n' '{"status":"ok"}'
+set -euo pipefail
+printf 'call\n' >> "$TRACE_FIXTURE_HEALTH_LOG"
+[[ $# == 6 && "$1" == get && "$2" == http://10.0.100.58 && "$3" == --body && "$4" == --timeout && "$5" == 10 && "$6" == --no-follow ]] || exit 91
+case "${TRACE_FIXTURE_HEALTH:-ok}" in
+  ok) printf '%s\n' '{"status":"ok"}' ;;
+  unhealthy) printf '%s\n' '{"status":"failed"}' ;;
+  invalid-json) printf '%s\n' 'invalid' ;;
+  empty-body) ;;
+  http-error) printf '%s\n' '{"status":"ok"}'; exit 1 ;;
+  transport-error) exit 1 ;;
+  *) exit 92 ;;
+esac
 SH
 chmod +x "$test_root/bin/curl"
+export TRACE_FIXTURE_HEALTH_LOG="$test_root/health-calls"
 export TRACE_FIXTURE_CREATE_LOG="$test_root/creates" TRACE_FIXTURE_RUN_LOG="$test_root/runs"
 export TRACE_FIXTURE_SERVE_LOG="$test_root/serves"
 sentinel="$TRACE_DATA_DIR/service/hosted-run.json"
@@ -76,6 +88,19 @@ assert_no_owned_temp() {
   [[ ${#pending[@]} == 1 && "${pending[0]}" == "$foreign" ]]
   [[ $(cat "$foreign") == preserve ]]
 }
+# HTTP >=400 can print a valid body before returning nonzero. pipefail must
+# reject it; each failed health attempt makes exactly one request and no Run.
+[[ ! -e "$TRACE_FIXTURE_HEALTH_LOG" ]]
+health_count=0
+for health in unhealthy invalid-json empty-body http-error transport-error; do
+  status=0
+  TRACE_FIXTURE_HEALTH="$health" bash "$test_root/entrypoint.sh" > "$test_root/health-output" 2>&1 || status=$?
+  [[ $status == 1 && ! -e "$sentinel" && ! -e "$TRACE_FIXTURE_CREATE_LOG" && ! -e "$TRACE_FIXTURE_RUN_LOG" ]]
+  grep -q 'VPN health check failed' "$test_root/health-output"
+  health_count=$((health_count + 1))
+  [[ $(wc -l < "$TRACE_FIXTURE_HEALTH_LOG") == "$health_count" ]]
+  assert_no_owned_temp
+done
 expect_create_failure() {
   local status=0
   TRACE_FIXTURE_CREATE_EXIT=19 bash "$test_root/entrypoint.sh" > "$test_root/output" 2>&1 || status=$?
@@ -117,4 +142,32 @@ bash "$test_root/entrypoint.sh" > "$test_root/resumed-output" 2>&1
 [[ $(wc -l < "$TRACE_FIXTURE_CREATE_LOG") == 4 ]]
 [[ $(wc -l < "$TRACE_FIXTURE_RUN_LOG") == 4 ]]
 assert_no_owned_temp
-printf 'entrypoint mode preflight, sentinel recovery and lifecycle ownership: PASS\n'
+# Exercise the unpacked launcher with stale caller settings and a competing
+# host curl; the fixture starts no real runtime, browser or model.
+launcher="$test_root/unpacked"
+mkdir -p "$launcher/docker" "$launcher/bin" "$launcher/runtime/bin"
+cp -- "$source_root/run-linux.sh" "$launcher/docker/run-linux.sh"
+cp -- "$test_root/bin/curl" "$launcher/runtime/bin/curl"
+cat > "$launcher/bin/trace" <<'SH'
+#!/bin/bash
+set -euo pipefail
+root=$(cd -- "$(dirname -- "$0")/.." && pwd)
+[[ "$PATH" == "$root/runtime/bin:$root/runtime/python/bin:$root/runtime/node/bin:"* ]]
+[[ "$(command -v curl)" == "$root/runtime/bin/curl" ]]
+[[ "$LIGHTPANDA_BINARY_PATH" == "$root/runtime/lightpanda/lightpanda" ]]
+[[ "$CLOAKBROWSER_BINARY_PATH" == "$root/runtime/cloakbrowser/binary/chrome" ]]
+[[ "$CLOAKBROWSER_AUTO_UPDATE" == false ]]
+[[ "$TRACE_PI_RUNTIME" == "$root/runtime/pi" ]]
+[[ "$PWD" == "$root/workspace" ]]
+if [[ $# == 3 && "$1" == serve && "$2" == --addr && "$3" == 127.0.0.1:8765 ]]; then
+  printf 'default\n'
+elif [[ $# == 2 && "$1" == inspect && "$2" == 'argument with spaces' ]]; then
+  printf 'forwarded\n'
+else
+  exit 93
+fi
+SH
+chmod +x "$launcher/bin/trace"
+[[ $(env -i PATH="$test_root/bin:/usr/bin:/bin" LIGHTPANDA_BINARY_PATH=/stale/lightpanda bash "$launcher/docker/run-linux.sh") == default ]]
+[[ $(env -i PATH="$test_root/bin:/usr/bin:/bin" bash "$launcher/docker/run-linux.sh" inspect 'argument with spaces') == forwarded ]]
+printf 'entrypoint health/argv, preflight, lifecycle and unpacked runtime paths: PASS\n'

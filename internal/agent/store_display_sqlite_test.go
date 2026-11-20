@@ -40,7 +40,7 @@ func TestSQLiteDisplayChunkReaderByteOffsetsAndEOF(t *testing.T) {
 			defer tx.Rollback()
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			r := newSQLiteStateReader(ctx, tx, created.Run.ID, 0)
+			r := newSQLiteStateReader(ctx, tx, created.Run.ID)
 			defer r.Close()
 			hash := sha256.New()
 			n, err := io.Copy(hash, r)
@@ -132,7 +132,7 @@ func TestSQLiteDisplayTransactionGenerationAndConcurrentWrite(t *testing.T) {
 	if err = tx.QueryRow("PRAGMA data_version").Scan(&stillVersion); err != nil || stillVersion != version {
 		t.Fatal("generation escaped the established read snapshot", err)
 	}
-	source := newSQLiteStateReader(context.Background(), tx, created.Run.ID, size)
+	source := newSQLiteStateReader(context.Background(), tx, created.Run.ID)
 	data, err := io.ReadAll(source)
 	if err != nil {
 		t.Fatal(err)
@@ -182,7 +182,7 @@ func TestSQLiteDisplayCancelledAndReplacedConnectionRecovers(t *testing.T) {
 		if err = tx.QueryRowContext(ctx, "SELECT length(state) FROM runs WHERE id=?", created.Run.ID).Scan(&size); err != nil {
 			t.Fatal(err)
 		}
-		source := newSQLiteStateReader(ctx, tx, created.Run.ID, size)
+		source := newSQLiteStateReader(ctx, tx, created.Run.ID)
 		defer source.Close()
 		if _, err = source.Read(make([]byte, 1)); err != nil {
 			t.Fatal(err)

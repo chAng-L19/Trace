@@ -84,7 +84,6 @@ printf '+memory +pids\n' > "$root/exec/cgroup.subtree_control" || fail 'delegate
 has_controllers "$root/exec/cgroup.subtree_control"
 export TRACE_EXEC_CGROUP_ROOT="$root/exec"
 export TRACE_TEST_CGROUP_ROOT="$root/exec"
-export TRACE_TEST_CONTROLLER_CGROUP_ROOT="$root/controller"
 # Managed HTTP command takes precedence over the host's native curl.
 release_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 [ -f "$release_root/runtime/bin/curl" ] && [ -x "$release_root/runtime/bin/curl" ] || fail 'managed curl-cffi entry missing; install frozen HTTP runtime'

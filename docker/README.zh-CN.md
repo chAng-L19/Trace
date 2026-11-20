@@ -76,7 +76,7 @@ binary 不是只复制一个 chrome 文件；官方包原生共享库和资源�
 
 ```sh
 mkdir -p bin
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -trimpath -o bin/trace ./cmd/trace
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -trimpath -ldflags="-s -w" -o bin/trace ./cmd/trace
 base=$(docker image inspect --format '{{.Id}}' trace:frontend-docker-20261029)
 context=$(mktemp -d /tmp/trace-docker-context.XXXXXX)
 mkdir -p "$context/bin" "$context/prompts" "$context/examples" "$context/docker" \
@@ -153,7 +153,7 @@ Node/Python、Chromium、Playwright CLI、DrissionPage、REA web/JavaScript/Elec
 ```sh
 cd /tmp/trace-p2-20261029/round3-source
 mkdir -p bin
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -trimpath -o bin/trace ./cmd/trace
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -trimpath -ldflags="-s -w" -o bin/trace ./cmd/trace
 docker build --pull=false -f docker/Dockerfile.p2 \
   --build-arg BASE_IMAGE=trace:p1-20261029 -t trace:p2-20261029 .
 ```

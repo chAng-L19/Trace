@@ -78,10 +78,10 @@ function toolBody(call,snap,prefix,links){
 export function toolDisclosureBody(element,snap){
   if(element.dataset.toolRun!==snap.run?.id)return null;
   const call=inspectionCalls(snap).find(call=>callKey(call)===element.dataset.toolKey);
-  return call?toolBody(liveAction(call,snap),snap,element.dataset.toolPrefix):null;
+  return call?toolBody(streamedAction(snap,call),snap,element.dataset.toolPrefix):null;
 }
 export function toolCard(call,snap,prefix='chat',links,lazy=false){
-  call=liveAction(call,snap);
+  call=streamedAction(snap,call);
   const meta=toolAction(call),progress=callProgress(call),id=prefix+'-call-'+callKey(call),open=!lazy||typeof document!=='undefined'&&document.getElementById?.(id)?.open;
   return `<details id="${esc(id)}" class="tool-disclosure"${lazy?` data-lazy-tool="true" data-tool-key="${esc(callKey(call))}" data-tool-run="${esc(snap.run?.id)}" data-tool-prefix="${prefix}"`:''}><summary>${toolIcon(meta.kind)}<span class="tool-title">${esc(meta.title)}</span><span class="tool-description">${esc(meta.detail||(!call.result&&call.arguments?'接收参数 · '+call.arguments.length+' 字符':''))}</span>${progress?`<span class="tool-progress">${esc(progress)}</span>`:''}${visibleStatus(call)}</summary><div class="tool-body" data-scroll="tool-${esc(callKey(call))}">${open?toolBody(call,snap,prefix,links):'<p class="note">展开后读取本条调用的输入、输出和来源。</p>'}</div></details>`;
 }
@@ -97,15 +97,12 @@ function toolGroup(calls,snap,lazy){
   return `<details id="chat-call-${esc(callKey(calls[0]))}" class="tool-disclosure tool-group"><summary>${toolGroupSummary(calls,snap)}</summary><div class="tool-group-body">${calls.map(call=>toolCard(call,snap,'chat-item',undefined,lazy)).join('')}</div></details>`;
 }
 function toolGroupSummary(calls,snap,settled=new Map()){
-  const live=calls.map(call=>liveAction(call,snap)),titles=[...new Set(live.map(call=>(settled.get(call)||toolAction(call)).title))],active=live.find(call=>['started','running','waiting_tool'].includes(callStatus(call))),attention=live.find(call=>['failed','uncertain','interrupted','cancelled'].includes(callStatus(call))),progress=active&&callProgress(active);
+  const live=calls.map(call=>streamedAction(snap,call)),titles=[...new Set(live.map(call=>(settled.get(call)||toolAction(call)).title))],active=live.find(call=>['started','running','waiting_tool'].includes(callStatus(call))),attention=live.find(call=>['failed','uncertain','interrupted','cancelled'].includes(callStatus(call))),progress=active&&callProgress(active);
   return `${toolIcon(toolAction(live[0]).kind)}<span class="tool-title">${esc(titles.join(' · '))}</span><span class="tool-count">${calls.length}</span>${progress?`<span class="tool-progress">${esc(progress)}</span>`:''}${attention?visibleStatus(attention):active?visibleStatus(active):''}`;
 }
 // Muteki Thinking.working and Harness ReasoningRow.running separate active
 // reasoning from settled history. Keep this native disclosure manually reopenable.
 export const reasoning=(text,id,active=false,title='思考')=>`<details id="${esc(id)}" class="reasoning-disclosure" data-reasoning-phase="${active?'active':'done'}"${active?' open':''}><summary>${esc(title)}</summary><div class="reasoning-content" data-scroll="${esc(id)}">${markdown(text)}</div></details>`;
-function liveAction(action,snap){
-  return streamedAction(snap,action);
-}
 // Only the mounted snapshot owns a preview plan. Semantic refreshes rebuild the
 // transcript; SSE frames render its active calls and request, never old Markdown.
 // Muteki ConversationStreamBindings.tsx isolates stream subscribers; Harness

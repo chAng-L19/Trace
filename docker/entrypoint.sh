@@ -87,8 +87,9 @@ fi
 : "${TRACE_PROVIDER_KEY:?请通过运行环境注入模型 API key}"
 : "${TRACE_PROVIDER_URL:?请通过运行环境注入模型网关地址}"
 : "${TRACE_MODEL:?请通过运行环境注入模型名称}"
+# CLI supports one 10-second overall timeout, not a separate connect timeout.
 require_exec_resources
-if ! vpn_status=$(curl -fsS --connect-timeout 5 --max-time 10 http://10.0.100.58 | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", ""))'); then
+if ! vpn_status=$(curl get http://10.0.100.58 --body --timeout 10 --no-follow | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", ""))'); then
   printf 'TSecBench VPN health check failed; check the arena network.\n' >&2
   exit 1
 fi

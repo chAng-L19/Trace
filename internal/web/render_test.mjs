@@ -18,6 +18,26 @@ for(const page of Object.keys(pageInfo)){
   assert.ok(!html.includes('<img src=x'),`unescaped goal in ${page}`);
   assert.ok(!html.includes('<script>bad()'),`unescaped evidence in ${page}`);
 }
+
+// Task tab totals must bypass action rows, including zero and partial totals.
+const tabReports=[{kind:'final',subject_id:'root'},{kind:'final',subject_id:'root'},{kind:'task',subject_id:'child'}];
+const tabActions=[{result:{artifacts:[{kind:'stdout'},{kind:'file'},{kind:'stderr'},{kind:'file'}]}},{}];
+for(const [totals,count,reads] of [
+  [undefined,4,1],[null,4,1],[{},4,1],[{archives:99},4,1],
+  [{reports:5},7,1],[{artifacts:null,reports:0},2,1],
+  [{artifacts:0},2,0],[{artifacts:7},9,0],
+  [{archives:0,artifacts:0,reports:0},0,0],
+  [{archives:99,artifacts:3,reports:5},8,0],
+]){
+  let actionReads=0;
+  const html=renderPage({...state,page:'history',taskTab:'result',snap:{...snap,reports:tabReports,totals,get actions(){
+    assert.ok(reads,'task tabs must not read actions when artifacts total is present');
+    actionReads++;return tabActions;
+  }}});
+  assert.equal(html.match(/id="task-tab-artifacts"[^>]*>报告与文件 · (\d+)<\/button>/)?.[1],String(count),JSON.stringify(totals));
+  assert.equal(actionReads,reads);
+}
+
 const history=renderPage({...state,page:'history'});
 assert.match(history,/data-message="m1"/);
 assert.match(history,/id="message-kind"/);

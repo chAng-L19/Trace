@@ -4,7 +4,8 @@
 
 | 状态 | 版本或构建 | SHA-256（binary） | 证据 |
 | --- | --- | --- | --- |
-| 正式，2026-11-20T12:21:19.105592+08:00（上海）发布 | maintenance-20261120 | `239f98481d088e8543833e3782534026ef8e5b695ac11e7db7358651f1abce5d4` | 私有 trace-maintenance-20261120/release-receipt.json；必要构建与服务启动命令成功，未跑动态验收 |
+| 正式，2026-11-20 发布 | full-audit-20261120 | `5ce09b1a132a865ae927db70de2ab2f750df88d3495303b761cfffba27f0d00b` | 私有 trace-full-audit-20261120/release-receipt.json；相关回归、strip主程序冒烟、实际进程与嵌入资源身份 |
+| 历史正式，2026-11-20T12:21:19.105592+08:00（上海）发布 | maintenance-20261120 | `239f98481d088e8543833e3782534026ef8e5b695ac11e7db7358651f1abce5d4` | 私有 trace-maintenance-20261120/release-receipt.json；必要构建与服务启动命令成功，未跑动态验收 |
 | 历史正式，2026-11-20T11:01:43.490440+08:00（上海）发布 | mcp-name-20261120 | `9d3a68993d58fd558242c11ad0ee9eb145074ba0ab996ff9e834af3494109fd3` | 私有 trace-mcp-name-20261120/release-receipt.json、cleanup-receipt.json；名称统一，旧版及旧版备份已删除 |
 | 历史正式，2026-11-20T10:17:20.303266+08:00（上海）发布 | mcp-catalog-20261119 | `cfd339039bf165bbfacce5aee44cb5460058e7c00f3c2208bd51210ded77a838` | 私有 trace-mcp-catalog-20261119/release-receipt.json；正式进程环境 HTTP 及历史业务核对通过 |
 | 历史正式，2026-11-19T13:57:18.073145+08:00（上海）发布 | runtime-audit-20261119 | `e309b486fd3f2fd3379526c71aa7d6885ffcbce9674db8f6910e4528a2a83e0d` | 私有 trace-runtime-audit-20261119/release-receipt.json；备份与线上身份校验通过 |
@@ -18,7 +19,14 @@
 
 11-17 旧 UI 隔离验收输入清单：1188 项，SHA-256 `d3d0901f4950488c74d371df7554a10f3f0c71d52c013487addcf01bd0d9d4f2`；正式部署源码清单 SHA-256 `f8386dacf59e2909d6f99fd4443ae00786e2e00acf422de69674ad67f591dada`。文档压缩仅本地，未同步正式服务器源码或冻结清单。
 
-## 2026-11-20 维护审计发布
+## 2026-11-20 全库审计与体积优化发布
+
+- 正式 `full-audit-20261120`。生产13文件净少17行/560字节；测试6文件净增189行/8627字节。59项研判，12项落实；依赖与功能构建范围保留，主程序15692039字节（15.69MB/14.97MiB），较上一正式小30.458%。发布采用 `-buildvcs=false -trimpath -ldflags="-s -w"`，同源码debug构建22515849字节，单纯strip减少30.307%。
+- 指定服务器通过：35组相关race、5组Web、45份Node、64文件1297项TS及9项集成、entrypoint Shell、冻结curl_cffi真实CLI六场景、vet、Linux构建和Windows/Darwin交叉构建，最终strip程序临时Store create→native pi MockProvider run→show通过。未跑真实外部模型、新Docker或视觉验收。
+- 全套Go有11项失败、1项Web超时，相同基线最小对照均复现；CLI旧pending预期、process-group不可读/proc归属限制、缺业务结果夹具和缺报告循环仍为待办。宽race因测试controller 1GiB OOM中断，后续35组聚焦race通过，不宣称全仓通过。原始记录及完整报告在仓库外 trace-full-audit-20261120。
+- 切换后核对service、实际进程SHA和嵌入前端资源；只留当前release，删除旧maintenance版本、本轮隔离源码/测试二进制/debug对照和超时测试tmp。正式配置/Store/暂停任务不手工改写，历史源码保留在Git。
+
+## 前批2026-11-20维护审计发布
 
 - 正式版本 maintenance-20261120；表中无调用代码与测试清理、UTF-8/429/路径重写去重已纳入。服务器必要 Go 构建通过，主程序 22,564,696 B；service stop → current 切换 → service start 命令成功。按用户要求未跑 Go/前端测试、race、跨平台编译、浏览器或模型验收，不将构建成功视为动态行为证明。
 - 旧 mcp-name-20261120 release 已删除，仅当前版本保留；未创建旧版备份。配置、正式 state/workspace 与浏览器/模型运行时未在本批改写；未做业务数据前后对比。暂存源码与构建材料在结束时清理，精简发布回执置于项目外 records。

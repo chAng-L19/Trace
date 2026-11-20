@@ -125,7 +125,7 @@ func (s *Store) rebuildSQLiteDisplayIndex(ctx context.Context, id string) error 
 }
 
 func sqliteBuildLegacyDisplayIndex(ctx context.Context, tx *sql.Tx, id string) error {
-	source := newSQLiteStateReader(ctx, tx, id, 0)
+	source := newSQLiteStateReader(ctx, tx, id)
 	defer source.Close()
 	if err := sqliteWriteDisplayIndex(ctx, tx, id, source); err != nil {
 		return err

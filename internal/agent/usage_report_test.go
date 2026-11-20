@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -249,4 +250,68 @@ func (s *Store) persistSnapshotLocked(id string, parts ...[]byte) (os.FileInfo, 
 	s.eventViewMu.Lock()
 	defer s.eventViewMu.Unlock()
 	return s.publishSnapshotLocked(id, staged)
+}
+
+func TestUsageReportRatesDeduplicateAndKeepCanonicalOrder(t *testing.T) {
+	for _, backend := range []string{"json", "sqlite"} {
+		t.Run(backend, func(t *testing.T) {
+			var store *Store
+			if backend == "sqlite" {
+				store = sqliteTestStore(t)
+			} else {
+				var err error
+				store, err = NewStore(t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			a, err := New(store, nil, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			snap, err := a.Create("quote order")
+			if err != nil {
+				t.Fatal(err)
+			}
+			empty, err := store.UsageReport(snap.Run.ID, CostConfig{Currency: "USD"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := json.Marshal(empty.Rates)
+			if err != nil || string(raw) != "[]" {
+				t.Fatalf("empty rates: %s, %v", raw, err)
+			}
+			prices := []ModelPrice{
+				{Model: "fixture", InputPerMillion: "0.1", OutputPerMillion: "0.2", Currency: "USD", Source: "first", EffectiveAt: "2026-10-23"},
+				{Model: "fixture", InputPerMillion: "0.3", OutputPerMillion: "0.4", Currency: "USD", Source: "second", EffectiveAt: "2026-10-24"},
+			}
+			sort.Slice(prices, func(i, j int) bool { return valueHash(prices[i]) < valueHash(prices[j]) })
+			_, err = store.Update(snap.Run.ID, func(s *Snapshot) error {
+				for i, price := range []ModelPrice{prices[1], prices[0], prices[1]} {
+					id := []string{"one", "two", "duplicate"}[i]
+					s.Requests = append(s.Requests, ModelRequest{ID: id, ProviderModel: "fixture", Price: &price})
+					s.Responses = append(s.Responses, ResponseRecord{RequestID: id, Response: ModelResponse{Usage: &TokenUsage{InputTokens: int64Pointer(1), OutputTokens: int64Pointer(2), TotalTokens: int64Pointer(3)}}})
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			report, err := store.UsageReport(snap.Run.ID, CostConfig{Currency: "USD"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := json.Marshal(report.Rates)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, err := json.Marshal(prices)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != string(want) || report.Cost.PricedResponses != 3 {
+				t.Fatalf("rates lost ordering, deduplication or responses: got %s, want %s; priced=%d", got, want, report.Cost.PricedResponses)
+			}
+		})
+	}
 }

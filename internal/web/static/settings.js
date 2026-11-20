@@ -1,3 +1,4 @@
+import {esc,json} from './ui.js';
 import {mcpForm,toolIndex} from './workforms.js';
 import {settingsFields} from './settings-loader.js';
 import {localToolsCatalog,integrationCatalogSearch,catalogTools} from './local-tools.js';
@@ -6,8 +7,6 @@ import {sourceLinks,integrationActions,integrationImport,integrationFeedback} fr
 import {reconSettings,readReconSettings} from './recon-settings.js';
 import {modelSettings,readModelSettings,namedProviderEditors,providerCapabilitySettings,providerRows} from './model-settings.js';
 import {providerProfiles,providerEditorSelection,activeProvider} from './provider-profiles.js';
-const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const json=v=>esc(JSON.stringify(v,null,2));
 const field=(id,label,value,type='text')=>`<label>${label}<input id="${id}" type="${type}" value="${esc(value)}" data-config-base="${esc(value)}" autocomplete="off" ${['url','password'].includes(type)?'spellcheck="false" autocapitalize="none"':''}></label>`;
 export function settings(s){
   const resources=settingsFields(s.settingTab).map(field=>s.settingsResources?.[field]),error=s.settingsResources?resources.map(item=>item?.error).filter(Boolean).join('；'):s.settingsError,loading=resources.some(item=>item?.loading);
