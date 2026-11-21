@@ -1,14 +1,7 @@
 # Trace CLI
 
-Trace 是以持久 Run 为核心的研究 Agent，CLI 与 WebUI 共用 Go Agent、Store、执行账本和工具目录；pi-agent-core/pi-ai 1.4.0 是唯一模型—工具循环。Go宿主要求Go1.22+，Node>=22.19；Python、浏览器与分析工具按需安装。根 `agent.md` 是维护者约定，`prompts/agent.md` 才嵌入运行时模型。
+Trace 是以持久 Run 为核心的研究 Agent，CLI 与 WebUI 共用 Go Agent、Store、执行账本和工具目录；pi-agent-core/pi-ai 1.4.0 是唯一模型—工具循环。Go宿主要求Go1.22+，Node>=22.19；Python、浏览器与分析工具按需安装。运行时模型提示词位于 `prompts/agent.md`。
 
-## 当前入口
-
-- 源码位于 `E:/cli/trace`；当前正式版本为 `article-dedupe-20261120`。全库冗余审计累计落实15项小范围修改；主程序约15.69MB。完整发行身份、验证边界与清理记录见 [DEPLOYMENT.md](DEPLOYMENT.md)。当前无可交付TSB镜像，另批构建与平台验收仍开放。
-- [HANDOVER.md](HANDOVER.md) 是短交接，[开发计划.md](开发计划.md) 是唯一当前待办/待吸收清单，[FEATURE_COMPARISON_CURRENT.md](FEATURE_COMPARISON_CURRENT.md) 保留参考来源与采用理由。
-- 浏览器优先 Lightpanda，CloakBrowser0.6.4固定binary/headed/Xvfb作为备用；浏览器优先级已随正式版发布，身份按部署记录。11月6日P0/cache/T3/D1/UI/Skill与最后浏览器能力合同修补均已正式部署。显式set_document可用，原生set_content和console/pageerror仍为固定binary限制，空事件不证明无日志/无页面错误。
-- TSecBench 历史复盘见维护文档，本批未操作比赛或实例。T2原B9三页面500ms门槛仍FAIL，缓存实际命中率/TTFT/成本及模型策略收益待实测；合成链和部署通过不代替平台成绩。
-- Muteki 当前固定参考源码为 `a73535a19fd2c1cddd97dfbeea65f62f4ce136ee`（`E:/cli/_refs/muteki`）；其他固定参考见对照文档。pi实际依赖不是换成pi CLI。除pi core外，不迁入参考仓库作为第二运行引擎或CTF控制体系。
 ## 阅读导航
 
 模型检测：编辑区检测按钮下方显示当前配置的短请求结果、耗时和检测时间，保存回执也在编辑区；右上角仅补充显示当前默认连接状态。当前标签页内切页及同值配置重读保留。未保存表单的检测明确标“草稿、未保存”，检测后保存同一配置会保留结果；保存不同未检测模型会回到未检测。结果仅存内存，刷新页面后需主动检测，不自动发请求或存储凭据。
@@ -20,11 +13,8 @@ MCP 管理：左侧“MCP 管理”统一显示 MCP 协议服务及 Lightpanda�
 - [本地工具 manifest](#本地工具-manifest) · [MCP 与 Worker](#mcp-与-worker) · [GitHub 接入与更新](#github-mcp--skill-接入与更新)。
 - [Provider](#provider-前提) · [上下文与 Skills](#上下文会话与-skills) · [按需工具 schema](#按需工具-schema)。
 - [文件与 CAS](#文件与-cas) · [WebUI](#本地-webui) · [预算](#预算与用量) · [结果与证据](#结果与证据) · [已知边界](#已知边界)。
-- 维护资料：[维护约定](agent.md)、[交接摘要](HANDOVER.md)、[开发计划/当前状态](开发计划.md)、[部署说明/验收历史](DEPLOYMENT.md)、[参考项目对照](FEATURE_COMPARISON_CURRENT.md)。
 
 ## 系统架构
-
-以下描述本地源码；线上发行版与验收记录见 [DEPLOYMENT.md](DEPLOYMENT.md)，待发布改动见 [开发计划.md](开发计划.md)。
 
 CLI 与 `serve` 共用 Go Agent、Store、ToolRegistry 和执行账本；`serve` 在同进程提供 HTTP API、SSE、嵌入式静态页面。不同 CLI/服务进程使用同一数据目录时以 OS 文件锁协调。模型提出调用和结论，Runtime 管理生命周期、预算、执行与持久化，Store 是权威来源。
 
@@ -82,7 +72,7 @@ TRACE_DATA_DIR/                 # 默认 state；服务 --config 可另选配置
 
 默认JSON后端在锁内写临时文件、同步并rename替换；事件追加复用已提交历史字节。显式迁移后的SQLite后端见下节；两种模式均不是独立JSONL事件库，也不承诺任意断电下的CAS/数据库跨介质原子事务。证据按 `ModelRequest → Response/tool_calls → Action(request/call、参数、适配器/执行身份) → ToolResult/tool消息 → Evidence/CAS` 交叉核验。证据链固定源 Run/链ID/hash，`derived_from` 保留多来源方法血缘；原版本保留，引用/组合不执行命令，不证明新任务成功，也不是自动重放/通用自学习。
 
-模型输入为运行提示词、历史或有效摘要、Skill目录、计划/验收、Worker来源和选中schema。只有 `prompts/agent.md` 被 embed；根 `agent.md` 不进入请求，外部文件/工具/MCP prompt/resource/经验链仍是数据。默认同 Provider 语义摘要，也可选择确定性 projection；原消息、完整工具配对、Evidence/CAS、摘要请求/usage/失败均保留。估算是保守 wire bytes，不是 tokenizer；固定部分/完整工具批次超限时暂停，不截断配对。
+模型输入为运行提示词、历史或有效摘要、Skill目录、计划/验收、Worker来源和选中schema。只有 `prompts/agent.md` 被 embed；外部文件/工具/MCP prompt/resource/经验链仍是数据。默认同 Provider 语义摘要，也可选择确定性 projection；原消息、完整工具配对、Evidence/CAS、摘要请求/usage/失败均保留。估算是保守 wire bytes，不是 tokenizer；固定部分/完整工具批次超限时暂停，不截断配对。
 
 | 类型 | 接入与边界 |
 | --- | --- |
@@ -110,7 +100,7 @@ TRACE_DATA_DIR=/absolute/path/to/stopped-state trace store-export /absolute/path
 - `store-export` 仅向**不存在的新目录**导出当前JSON快照，不切换后端，不覆盖已有目录；中途失败可能留下不完整目录，必须核对后另选新目录重试。**它不是完整备份**：不复制 `artifacts/`、`inputs/`、服务配置/密钥、集成checkout或外部workspace；JSON中的CAS/附件引用原样保留，单独导出目录的引用可能不可用，缺失或变更的来源仍会被Judge撤销验证状态。
 - 若需退出SQLite模式，保持全部owner停写：导出到新目录，另行复制并核对同一停写时刻的CAS/inputs及实际所需配置/工作文件，检查原字节SHA-256、来源校验、Run/receipt/event数量和预算状态；再由维护者明确切换数据目录并验证。不复制旧执行锁持有状态，不自动恢复运行，不把迁移时备份覆盖当前DB；正式服务配置切换/重启与回滚均需独立操作指令。保留原SQLite目录用于核对，打开的WAL数据库不以单独复制 `store.sqlite` 充当一致备份。
 
-该后端的功能回归与B9性能结论分别记录于 `DEPLOYMENT.md`。SQLite启用不等于原五Worker、3×50k事件、三页面source→DOM p95≤500ms目标已经达标；不改变验收门槛。Windows目录同步/实际迁移未据Linux回执宣称已验收。
+SQLite启用不等于原五Worker、3×50k事件、三页面source→DOM p95≤500ms目标已经达标；不改变验收门槛。Windows目录同步/实际迁移未据Linux回执宣称已验收。
 
 ### 实时界面
 
@@ -191,7 +181,7 @@ HTTP非2xx是观测，exit0不代表目标成功。HTTP/page默认验证TLS；�
 
 固定浏览器限制：console/pageerror 事件不透传，空捕获不是无错误证明；原生 `page.set_content` 可能在 DOM 已写后超时。明确原位替换用 `set_document(args['html'], ready_selector='#ready', timeout=10000)`，单次执行、失败不重放；说明与边界见浏览器 Skill/示例。场景采集选择受限事件时标 incomplete，不假装完整。
 
-任务内切换运行对话、探索图、证据、报告与协作；调用详情按需查看参数、结果和原文。消息窗口位于“运行对话”同栏顶部，右侧显示 Worker、预算及上下文。探索图在对话下方，支持拖拽扩大、平移和按具体关系高亮链路。固定 report_id 与语言读取已有 CAS 报告；无归档显示状态。上述为候选源码行为，隔离验收和正式发布状态以开发计划、部署说明为准。
+任务内切换运行对话、探索图、证据、报告与协作；调用详情按需查看参数、结果和原文。消息窗口位于“运行对话”同栏顶部，右侧显示 Worker、预算及上下文。探索图在对话下方，支持拖拽扩大、平移和按具体关系高亮链路。固定 report_id 与语言读取已有 CAS 报告；无归档显示状态。
 
 证据页默认完整操作链：选真实操作、排序、逐步说明，一链一记录、步骤独立展开；跨Run/结论引用保留用途/固定hash，原账本可查。`evidence_chain_search/read/create/reference` 检索/读取/引用；新观察用 `method_id/variant/applicability/lesson/derived_from` 吸收多个来源形成新方法，旧版本/多方法保留，来源失效沿血缘传播。引用/组合不执行命令，不替代新Run验收。
 
@@ -406,7 +396,7 @@ P2 builtin写/改按解析后的真实路径互斥，保留expected_hash与原�
 
 MCP先看服务简介/连接/启停，再进入工具目录及独立运行选择；支持 `description/disabled`，默认启用，禁用保留配置且不启动/注册。目录发现不证明依赖引擎可用。配置更新先建候选Agent，失败保留旧配置，主Run/Worker活动时不替换。
 
-配置放 `service` 或Run目录外；B1普通根JSON误识别已修复，损坏Run仍报错。CLI/Web使用相同 `TRACE_DATA_DIR` 与配置文件即可共用完整配置；相对路径仍按cwd解释，跨入口建议绝对路径。创建时预算/成功条件原子保存，首次执行后成功合同锁定。名称/归档仅改元数据；正文检索和消息/调用/事件定位保留真实身份。消息operation_id支持丢ACK核对/重试与待投递队列编辑，浏览器只保存操作ID。图回放只读，缺失历史正文不从当前状态补造；关联CAS可预览图片/音视频/PDF，不支持的格式仍可下载。资产覆盖仅以显式included资产为分母，observed/verified/negative/uncertain与completed分开。Go端单用户，公网Basic由部署层提供；范围见 [开发计划.md](开发计划.md)，验收见 [DEPLOYMENT.md](DEPLOYMENT.md)。
+配置放 `service` 或Run目录外；B1普通根JSON误识别已修复，损坏Run仍报错。CLI/Web使用相同 `TRACE_DATA_DIR` 与配置文件即可共用完整配置；相对路径仍按cwd解释，跨入口建议绝对路径。创建时预算/成功条件原子保存，首次执行后成功合同锁定。名称/归档仅改元数据；正文检索和消息/调用/事件定位保留真实身份。消息operation_id支持丢ACK核对/重试与待投递队列编辑，浏览器只保存操作ID。图回放只读，缺失历史正文不从当前状态补造；关联CAS可预览图片/音视频/PDF，不支持的格式仍可下载。资产覆盖仅以显式included资产为分母，observed/verified/negative/uncertain与completed分开。Go端单用户，公网Basic由部署层提供。
 
 ## 预算与用量
 
@@ -451,8 +441,8 @@ P2第18项以动作/证据/计划/用户输入的语义指纹去重completion au
 
 ## 已知边界
 
-当前已有本地 JSON/OS 锁、CAS、Skills、语义摘要、Provider/工具流式事件、持久 Planner/child worker 和本地 WebUI。SQLite为显式离线迁移候选后端，默认JSON保持；尚无远程 worker 集群/容器隔离、模型 tokenizer、费用/token 金额上限、完整 extension/session tree。CAS原生输入附件已接通，模型配置显式开启 image_input 才发送图像块；真实外部视觉模型尚未验收。Windows 历史已运行进程级、独立二进制与独立 Frida 验证；本轮全部产品构建/运行验收只在Ubuntu服务器，历史已通过真实DeepSeek长任务/独立证据审阅与新执行复测、REA单元/集成及Chromium/Electron活体；30分钟soak使用受控Provider，不是30分钟真实DeepSeek。各批结果不替代未发布改动验收。服务器访问与运维见 [DEPLOYMENT.md](DEPLOYMENT.md)。
+当前已有本地 JSON/OS 锁、CAS、Skills、语义摘要、Provider/工具流式事件、持久 Planner/child worker 和本地 WebUI。SQLite为显式离线迁移候选后端，默认JSON保持；尚无远程 worker 集群/容器隔离、模型 tokenizer、费用/token 金额上限、完整 extension/session tree。CAS原生输入附件已接通，模型配置显式开启 image_input 才发送图像块；真实外部视觉模型尚未验收。Windows 历史已运行进程级、独立二进制与独立 Frida 验证；本轮全部产品构建/运行验收只在Ubuntu服务器，历史已通过真实DeepSeek长任务/独立证据审阅与新执行复测、REA单元/集成及Chromium/Electron活体；30分钟soak使用受控Provider，不是30分钟真实DeepSeek。各批结果不替代未发布改动验收。
 
-常用回归入口为 `go test ./...`、`go vet ./...` 与前端 Node 用例；每批实际运行范围、退出码和证据以 DEPLOYMENT.md 为准，不把常用命令当本轮全仓通过。临时测试、源码包与日志保留在项目外独立目录，正式用户 state 不承载验收夹具。
+常用回归入口为 `go test ./...`、`go vet ./...` 与前端 Node 用例；实际检查范围和结果应以对应运行记录为准。临时测试、源码包与日志保留在项目外独立目录，正式用户 state 不承载验收夹具。
 
 受管服务器的 `curl` 已委托官方 `curl-cffi` CLI，使用 `curl get URL` / `curl-cffi get URL --impersonate chrome`，旧 curl flags 会由官方解析器拒绝。离线安装：`PATH=/path/to/venv/bin:$PATH sh scripts/install-http.sh RELEASE_ROOT FROZEN_WHEELS`；轮子版本与 SHA256 见 `scripts/http-requirements.txt`（CPython 3.12/Linux amd64）。`scripts/exec-cgroup-isolated.sh` 把 `RELEASE_ROOT/runtime/bin` 放 PATH 首位；PYTHONPATH 需沿部署配置包含 runtime/site-packages。这是受管命令入口与 Agent 使用约定，不宣称限制任意绝对路径程序。历史 Run 提示保持原样，新运行读取新提示。旧 Docker 镜像尚未重建，本轮发布对象为正式服务器服务。
