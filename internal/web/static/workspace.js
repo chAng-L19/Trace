@@ -15,7 +15,7 @@ export function childReportSummary(snap){
 }
 
 export function workspaceDialogueHead({run,messages_page}={}){
-  return `<div class="workspace-dialogue-head"><div id="workspace-notice"></div><header class="workspace-heading"><span>运行对话</span>${btn('latest','最新 ↓','data-scroll-target="conversation" aria-label="回到对话最新内容"'+(run?'':' disabled'))}</header>${conversationPagination(messages_page)}</div>`;
+  return `<div class="workspace-dialogue-head"><div id="workspace-notice"></div><header class="workspace-heading"><span>运行对话</span>${run?'<span class="workspace-resize-hint">拖动右下角调整高度</span>':''}${btn('latest','最新 ↓','data-scroll-target="conversation" aria-label="回到对话最新内容"'+(run?'':' disabled'))}</header>${conversationPagination(messages_page)}</div>`;
 }
 
 export function runWorkspace(s){

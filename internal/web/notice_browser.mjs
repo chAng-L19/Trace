@@ -29,6 +29,15 @@ try{
  assert.ok(Math.abs(position.notice.top-position.head.top)<=2&&position.notice.right<=position.editor.left);
  assert.ok(position.notice.height>0&&position.notice.height<=40,'single-line notice must be compact');
  await page.evaluate(async id=>{const r=await fetch('/_p0/report?id='+id,{method:'POST'});if(!r.ok)throw Error('fixture update failed')},ids[0]);
+ const flow=await page.evaluate(()=>{
+  const owner=document.getElementById('workspace'),notice=document.getElementById('notice');
+  const top=owner.scrollTop,y=notice.getBoundingClientRect().top;
+  owner.scrollTop=top+80;
+  const scroll=owner.scrollTop-top,move=y-notice.getBoundingClientRect().top;
+  owner.scrollTop=top;
+  return {scroll,move};
+ });
+ assert.ok(flow.scroll>=40&&Math.abs(flow.move-flow.scroll)<=2,'the inline notice must scroll with the reader');
  await page.waitForFunction(()=>document.querySelector('.workspace-secondary')?.textContent.includes('task-second-report'));
  assert.equal(await page.evaluate(()=>document.querySelectorAll('#notice').length===1&&document.getElementById('notice')===window.__notice&&document.getElementById('notice').parentElement.id==='workspace-notice'),true);
  await page.locator('[data-action="archive-back"]').click();
@@ -42,6 +51,6 @@ try{
  const hidden=await page.locator('#workspace-notice').evaluate(el=>({host:el.offsetHeight,notice:el.firstElementChild.offsetHeight}));
  assert.deepEqual(hidden,{host:0,notice:0},'a hidden notice reserves no space');
  await page.screenshot({path:path.join(output,'notice-desktop.png')});
- fs.writeFileSync(path.join(output,'notice-browser.json'),JSON.stringify({passed:true,sqlite,position,hidden,sse_repaint:true,navigation_identity:true,unique_live_region:true},null,2));
+ fs.writeFileSync(path.join(output,'notice-browser.json'),JSON.stringify({passed:true,sqlite,position,flow,hidden,sse_repaint:true,navigation_identity:true,unique_live_region:true},null,2));
  console.log('Notice: desktop position, SSE repaint, navigation and live-region identity passed.');
 }finally{await browser.close()}

@@ -117,7 +117,7 @@ function processBody(message,final){
   return `<details id="process-message-${esc(message.id)}" class="process-message"><summary>${esc(summary.slice(0,140).join(''))}${summary.length>140?'…':''}</summary>${messageBody(message)}</details>`;
 }
 export function conversationPagination(page){
-  return page?`<nav class="conversation-pages" aria-label="对话历史分页">${page.has_more_before?btn('messages-page','更早一页',`data-before="${esc(page.oldest)}"`):''}<span class="note">${page.total?page.start+1:0}–${page.end} / ${page.total} 条 · 固定消息窗口</span>${page.has_more_after?btn('messages-page','更新一页',`data-after="${esc(page.newest)}"`)+btn('messages-latest','返回实时尾部'):''}</nav>`:'';
+  return page?`<nav class="conversation-pages" aria-label="对话历史分页">${page.has_more_before?btn('messages-page','更早一页',`data-before="${esc(page.oldest)}"`):''}<span class="note">${page.total?page.start+1:0}–${page.end} / ${page.total} 条 · 已加载消息</span>${page.has_more_after?btn('messages-page','更新一页',`data-after="${esc(page.newest)}"`)+btn('messages-latest','返回实时尾部'):''}</nav>`:'';
 }
 export function conversation(snap,{lazy=false}={}){
   const messages=snap.messages||[],page=snap.messages_page,pageRequests=new Set(messages.map(m=>m.request_id).filter(Boolean)),actions=(snap.actions||[]).filter(a=>!page||pageRequests.has(a.request_id)||!snap.historyWindow&&!a.result),represented=new Set(),replies=new Set();

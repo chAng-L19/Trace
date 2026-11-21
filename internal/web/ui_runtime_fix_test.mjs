@@ -58,6 +58,9 @@ assert.match(transcript,/&lt;script&gt;NO_EXEC&lt;\/script&gt;/,'folded content 
 const finalTranscript=conversation({...snap,run:{...run,status:'completed'},messages:[longMessage]});
 assert.doesNotMatch(finalTranscript,/id="process-message-process-long"/,'final conclusion stays visible');
 const css=fs.readFileSync(new URL('./static/style-unified.css',import.meta.url),'utf8');
+assert.match(html,/class="workspace-resize-hint"/);
+assert.match(css,/\.task-workbench \.conversation\{[^}]*56dvh[^}]*resize:vertical/);
+assert.doesNotMatch(css,/\.workspace-dialogue-head\{[^}]*position:sticky/);
 assert.match(css,/\[data-worker-title\]\{[^}]*text-overflow:ellipsis/);
 assert.match(pendingTools(snap),/<details class="pending-tools" open>/);
 assert.doesNotMatch(html,/需要核对的调用|class="pending-tools"/,'workspace suppresses the duplicate panel without deleting the ledger');

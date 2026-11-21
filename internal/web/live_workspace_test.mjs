@@ -54,7 +54,7 @@ assert.match(inspector,/<section class="workspace-composer"[^>]*><form id="messa
 assert.match(inspector,/<\/details><\/section><div class="workspace-secondary" data-scroll="inspector">/);
 assert.doesNotMatch(html,/需要核对的调用|class="pending-tools"/,'only the redundant workspace warning is hidden');
 const paged=renderPage({...state,snap:{...state.snap,messages_page:{start:40,end:80,total:160,oldest:'m41',newest:'m80',has_more_before:true,has_more_after:true}}});
-assert.match(paged,/<div class="workspace-dialogue-head"><div id="workspace-notice"><\/div><header class="workspace-heading">[^]*?运行对话[^]*?<\/header><nav class="conversation-pages"[^]*?data-before="m41"[^]*?固定消息窗口[^]*?data-after="m80"[^]*?data-action="messages-latest"[^]*?<\/nav><\/div><div class="conversation"/);
+assert.match(paged,/<div class="workspace-dialogue-head"><div id="workspace-notice"><\/div><header class="workspace-heading">[^]*?运行对话[^]*?<\/header><nav class="conversation-pages"[^]*?data-before="m41"[^]*?已加载消息[^]*?data-after="m80"[^]*?data-action="messages-latest"[^]*?<\/nav><\/div><div class="conversation"/);
 const loading=renderPage({...state,runLoading:true,snap:null});
 assert.match(loading,/<div class="workspace-column"><section class="panel workspace-panel"><div class="workspace-dialogue-head"><div id="workspace-notice"><\/div>/);
 assert.match(loading,/data-action="latest"[^>]* disabled>/);

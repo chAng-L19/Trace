@@ -65,9 +65,10 @@ export function captureScroll(el){
  // for a reader who has left the live edge.
  const edge=!follow&&el.dataset?.scroll==='conversation'?el.getBoundingClientRect?.().top:undefined;
  const node=el.dataset?.scroll==='conversation'&&edge!==undefined?[...el.querySelectorAll('[data-message-id]')].find(n=>n.getBoundingClientRect().bottom>=edge):null;
- return {top:el.scrollTop,left:el.scrollLeft,follow,id:node?.dataset.messageId,offset:node?node.getBoundingClientRect().top-edge:0};
+ return {top:el.scrollTop,left:el.scrollLeft,follow,id:node?.dataset.messageId,offset:node?node.getBoundingClientRect().top-edge:0,height:el.dataset?.scroll==='conversation'?el.style?.height:undefined};
 }
 export function restoreScroll(el,saved,{follow=saved.follow}={}){
+ if(el.dataset?.scroll==='conversation'&&saved.height)el.style.height=saved.height;
  const node=saved.id?[...el.querySelectorAll('[data-message-id]')].find(n=>n.dataset.messageId===saved.id):null;
  el.scrollTop=follow?el.scrollHeight:node?el.scrollTop+node.getBoundingClientRect().top-el.getBoundingClientRect().top-saved.offset:saved.top;
  el.scrollLeft=saved.left||0;
