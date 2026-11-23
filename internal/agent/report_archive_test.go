@@ -232,7 +232,7 @@ func TestU7ReportArchiveVersionsAndCAS(t *testing.T) {
 				t.Fatal("body language was relabelled")
 			}
 			for _, body := range []string{zh, en} {
-				for _, exact := range []string{r.SourceDigest, "printf u7-marker", `"business_status": "failed"`, `"cleanup_status": "unknown"`} {
+				for _, exact := range []string{r.SourceDigest, "printf u7-marker", "`failed`", "`unknown`"} {
 					if !strings.Contains(body, exact) {
 						t.Fatalf("immutable value missing: %s", exact)
 					}

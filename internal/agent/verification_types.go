@@ -24,6 +24,8 @@ type VerificationRequirement struct {
 type EvidenceReference struct {
 	ID   string `json:"id"`
 	Hash string `json:"hash"`
+	// Pins the registered task/Worker binding and original source record.
+	SourceHash string `json:"source_hash,omitempty"`
 }
 
 type EvidenceReview struct {

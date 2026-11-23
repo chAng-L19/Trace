@@ -564,6 +564,30 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 func (s *Server) exportRun(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	format := r.URL.Query().Get("format")
+	if format == "report_bundle" {
+		language := r.URL.Query().Get("language")
+		if language != "" && language != "zh-CN" && language != "en" {
+			writeError(w, 400, errors.New("language must be zh-CN or en"))
+			return
+		}
+		if r.URL.Query().Get("source_hash") != "" {
+			writeError(w, 400, errors.New("source_hash selects a legacy fixed report; use report_id for bundles"))
+			return
+		}
+		filename, file, err := s.store.ReportBundle(id, r.URL.Query().Get("report_id"), language)
+		if err != nil {
+			respond(w, nil, err)
+			return
+		}
+		defer func() {
+			file.Close()
+			os.Remove(file.Name())
+		}()
+		w.Header().Set("Content-Type", "application/zip")
+		w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+		http.ServeContent(w, r, filename, time.Time{}, file)
+		return
+	}
 	if format == "report" {
 		if language := r.URL.Query().Get("language"); language != "" && language != "zh-CN" && language != "en" {
 			writeError(w, 400, errors.New("language must be zh-CN or en"))
@@ -593,7 +617,7 @@ func (s *Server) exportRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if format != "" && format != "json" && format != "evidence" {
-		writeError(w, 400, errors.New("format must be report, json or evidence"))
+		writeError(w, 400, errors.New("format must be report, report_bundle, json or evidence"))
 		return
 	}
 	snap, err := s.store.Load(id)

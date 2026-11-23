@@ -67,6 +67,7 @@ func (store *Store) refreshDerivedLocked(s *Snapshot, visiting map[string]bool) 
 }
 
 func (store *Store) verifyDerivedLocked(s *Snapshot, visiting map[string]bool, mode sourceReadMode) bool {
+	s.delegatedAcceptance = nil
 	previousFrontier := s.Plan.Frontier
 	previousVerification := valueHash(struct {
 		Checks   []VerificationCheck
@@ -193,6 +194,11 @@ func (store *Store) verifyDerivedLocked(s *Snapshot, visiting map[string]bool, m
 	for i := range s.Evidence {
 		statuses[i] = s.Evidence[i].Verification
 	}
+	s.delegatedDescendantsRetired = false
+	if s.Run.Responsibility == ResponsibilityCoordinator || s.Run.Responsibility == ResponsibilityWorker {
+		s.delegatedDescendantsRetired = delegatedDescendantsRetired(s, sourceFor)
+	}
+	s.delegatedAcceptance = collectDelegatedAcceptance(s, sourceFor)
 	refreshResult(s)
 	for i, e := range s.Evidence {
 		if statuses[i] == e.Verification {

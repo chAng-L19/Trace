@@ -1,0 +1,10 @@
+import assert from 'node:assert/strict';
+import {resultPanel} from './static/workforms.js';
+const hash='b'.repeat(64),url='/api/artifacts/'+hash+'/download?preview=1';
+const run={id:'report-view',status:'completed'},report={zh_cn:'# 正式报告\n\n![页面截图]('+url+')',en:'ENGLISH_DUPLICATE'};
+const html=resultPanel({run,result:{status:'failed',cleanup_status:'unknown',summary:'SHORT_SUMMARY',report}});
+assert.ok(html.includes('正式报告'));
+assert.ok(html.includes('class="artifact-media" src="'+url+'" alt="页面截图"'));
+assert.doesNotMatch(html.split('<details')[0],/SHORT_SUMMARY|ENGLISH_DUPLICATE/);
+assert.ok(resultPanel({run,result:{status:'failed',report:{en:'# English report body'}}}).includes('English report body'));
+console.log('Report result panel: PASS');

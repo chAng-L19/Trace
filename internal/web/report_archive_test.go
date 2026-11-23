@@ -72,7 +72,7 @@ func TestU7ArchivedReportHTTPVersionsAndErrors(t *testing.T) {
 	if !strings.Contains(en.Header().Get("Content-Disposition"), ".en.md") || !strings.Contains(zh.Header().Get("Content-Disposition"), ".zh-CN.md") || !strings.Contains(en.Body.String(), claim.Report.En) || !strings.Contains(zh.Body.String(), claim.Report.ZhCN) {
 		t.Fatal("language/file content mismatch")
 	}
-	if strings.Contains(en.Body.String(), claim.Report.ZhCN) || !strings.Contains(en.Body.String(), `"business_status": "failed"`) {
+	if strings.Contains(en.Body.String(), claim.Report.ZhCN) || !strings.Contains(en.Body.String(), "business status `failed`") {
 		t.Fatal("English export changed business or copied Chinese")
 	}
 	_, err = server.store.Update(s.Run.ID, func(s *agent.Snapshot) error { s.Run.Goal += " changed"; return nil })

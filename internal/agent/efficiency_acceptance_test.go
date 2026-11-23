@@ -32,7 +32,8 @@ func TestToolSchemaCostComparisonActualRequests(t *testing.T) {
 				d.Function.Parameters = map[string]any{"type": "object"}
 				a.registry.tools[d.Function.Name] = RegisteredTool{Definition: d, Adapter: "local"}
 			}
-			config := RunConfiguration{ToolSchema: ToolSchemaConfig{Mode: mode}}
+			// This fixture measures execution schema cost, not root orchestration.
+			config := RunConfiguration{role: "worker", ToolSchema: ToolSchemaConfig{Mode: mode}}
 			if mode == "narrow" {
 				config.ToolSchema.IDs = []string{toolID}
 			}

@@ -27,7 +27,8 @@ func TestVerificationReviewBlocksReconfigureAndCloseCancels(t *testing.T) {
 		body, _ := json.Marshal(map[string]any{"trace_report": agent.ReportText{ZhCN: "执行已经返回观察标记；本记录只描述此项检查，影响与清理状态仍需独立核对。", En: "The execution returned the observed marker. This record describes only that check; impact and cleanup remain subject to independent verification."}})
 		return agent.ModelResponse{Content: "observed\n\n```json\n" + string(body) + "\n```", StopReason: "stop"}, nil
 	}))
-	run, err := a.Create("observe fixture")
+	// This pre-role review lifecycle fixture produces its own execution evidence.
+	run, err := a.Store().Create("observe fixture", agent.DefaultPrompt, a.PromptHash())
 	if err != nil {
 		t.Fatal(err)
 	}

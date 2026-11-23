@@ -234,9 +234,6 @@ func legacyActionBatch(s *Snapshot, action Action) (int, bool) {
 }
 
 func (a *Agent) ExecuteTool(parent context.Context, id, callID string, command []string) (final Snapshot, executeErr error) {
-	if len(command) == 0 {
-		return Snapshot{}, fmt.Errorf("command is required")
-	}
 	release, err := a.store.AcquireRunLock(id)
 	if err != nil {
 		return Snapshot{}, err
@@ -246,8 +243,19 @@ func (a *Agent) ExecuteTool(parent context.Context, id, callID string, command [
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if _, ok := pendingToolCalls(&snapshot)[callID]; snapshot.Run.Status != StatusWaitingTool || !ok {
+	call, ok := pendingToolCalls(&snapshot)[callID]
+	if snapshot.Run.Status != StatusWaitingTool || !ok {
 		return snapshot, fmt.Errorf("unknown pending tool call: %s", callID)
+	}
+	// Allowed historical calls must pass through their original manual
+	// continuation and child admission before consuming the observation.
+	if !a.registry.permitsRunTool(snapshot.Run, call.Name, "exec") {
+		if observed, handled, admissionErr := a.observePendingToolAdmission(snapshot, call, "exec"); handled || admissionErr != nil {
+			return observed, admissionErr
+		}
+	}
+	if len(command) == 0 && !hasHistoricalToolIntent(&snapshot, call) {
+		return snapshot, fmt.Errorf("command is required")
 	}
 	operation := func(agent *Agent, ctx context.Context, id string) (Snapshot, error) {
 		return agent.executeToolLocked(ctx, id, callID, command)
@@ -296,22 +304,12 @@ func (a *Agent) executePendingTool(ctx context.Context, id string, call ToolCall
 	if err != nil || isStopped(snap.Run.Status) {
 		return snap, err
 	}
-	// Check durable intents before argument validation or adapter discovery can
-	// replace an unknown historical outcome with a new validation error.
-	for _, action := range snap.Actions {
-		if action.CallID == call.ID && actionRequestMayMatchCurrent(&snap, action) {
-			return a.store.Update(id, func(s *Snapshot) error {
-				if isStopped(s.Run.Status) {
-					return nil
-				}
-				pending, ok := pendingToolCalls(s)[call.ID]
-				if !ok || pending.Name != call.Name || pending.Arguments != call.Arguments {
-					return fmt.Errorf("unknown pending tool call: %s", call.ID)
-				}
-				_, err := appendHistoricalToolObservation(s, pending, "")
-				return err
-			})
-		}
+	adapter := ""
+	if tool, ok := a.registry.Lookup(call.Name); ok {
+		adapter = tool.Adapter
+	}
+	if observed, handled, admissionErr := a.observePendingToolAdmission(snap, call, adapter); handled || admissionErr != nil {
+		return observed, admissionErr
 	}
 	if tool, ok := a.registry.Lookup(call.Name); ok && tool.Adapter == "builtin" {
 		snap, err = a.executeBuiltin(ctx, id, call)
@@ -381,6 +379,9 @@ func (a *Agent) executeProcess(ctx context.Context, id, callID string, command [
 	call, ok := pendingToolCalls(&snapshot)[callID]
 	if !ok {
 		return Snapshot{}, fmt.Errorf("unknown pending tool call: %s", callID)
+	}
+	if observed, handled, admissionErr := a.observePendingToolAdmission(snapshot, call, "exec"); handled || admissionErr != nil {
+		return observed, admissionErr
 	}
 	if snapshot.Run.Status == StatusWaitingTool && currentRequestID(&snapshot) == "" {
 		// Pre-message-ID snapshots need the existing Store migration committed
@@ -611,19 +612,19 @@ func (a *Agent) executeActionWithResourceIdentity(ctx context.Context, id, callI
 		if s.Run.Status != StatusWaitingTool {
 			return fmt.Errorf("run is not waiting for a tool")
 		}
-		if reason := budgetReason(s, "action"); reason != "" {
-			pauseBudget(s, reason)
-			return nil
-		}
 		call, ok := pendingToolCalls(s)[callID]
 		if !ok {
 			return fmt.Errorf("unknown pending tool call: %s", callID)
 		}
 		requestID := currentRequestID(s)
 		var observationErr error
-		uncertain, observationErr = appendHistoricalToolObservation(s, call, "")
+		uncertain, observationErr = a.toolAdmissionObservation(s, call, adapter)
 		if uncertain || observationErr != nil {
 			return observationErr
+		}
+		if reason := budgetReason(s, "action"); reason != "" {
+			pauseBudget(s, reason)
+			return nil
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()

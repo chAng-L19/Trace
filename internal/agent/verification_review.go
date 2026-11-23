@@ -236,11 +236,7 @@ func (a *Agent) CheckEvidence(ctx context.Context, id, requirementID string, ids
 		return Snapshot{}, err
 	}
 	c := VerificationCheck{RequirementID: r.ID, RequirementHash: valueHash(r), EvidenceIDs: ids, References: refs, CreatedAt: time.Now().UTC()}
-	after := 0
-	if r.Category == "cleanup" {
-		after = cleanupFreshnessFloor(&s)
-	}
-	c.Status, c.Reason = checkPredicate(&s, r.Predicate, ids, r.ToolID, r.ArgumentsHash, after)
+	c.Status, c.Reason = checkRequirement(&s, *r, ids)
 	if c.Status == "pass" && r.RequireReview {
 		c.Review, err = a.assessEvidence(ctx, id, *r, ids)
 		if err != nil {

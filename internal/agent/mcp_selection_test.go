@@ -43,7 +43,8 @@ func TestMCPDisabledSelectionSaveResumeAndReenable(t *testing.T) {
 			if _, err := a.AddMCP(ctx, cfg); err != nil {
 				t.Fatal(err)
 			}
-			s, err := a.CreateConfigured("projection", RunConfiguration{ToolSchema: ToolSchemaConfig{Mode: "narrow", IDs: ids[:1]}})
+			// Projection/re-enable is an execution-role fixture.
+			s, err := a.CreateConfigured("projection", RunConfiguration{role: "worker", ToolSchema: ToolSchemaConfig{Mode: "narrow", IDs: ids[:1]}})
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -22,7 +22,8 @@ func TestToolSchemaModesPersistAndMeasure(t *testing.T) {
 			if mode == "narrow" {
 				cfg.IDs = []string{d.Function.Name}
 			}
-			s, err := a.CreateConfigured("mode", RunConfiguration{ToolSchema: cfg, Exec: &ExecConfig{TimeoutSeconds: 7}})
+			// Schema delivery is measured for the execution role.
+			s, err := a.CreateConfigured("mode", RunConfiguration{role: "worker", ToolSchema: cfg, Exec: &ExecConfig{TimeoutSeconds: 7}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -69,7 +70,8 @@ func TestExplicitDeferredDiscoveryActualRequestsAndRestart(t *testing.T) {
 	}}
 	a, store := newTestAgent(t, p)
 	addIntegrationMCP(t, a, mcp.Config{Name: "fixture", URL: server.URL})
-	s, err := a.CreateConfigured("explicit discovery", RunConfiguration{ToolSchema: ToolSchemaConfig{Mode: "deferred"}})
+	// Discovery must eventually invoke the selected tool in a Worker.
+	s, err := a.CreateConfigured("explicit discovery", RunConfiguration{role: "worker", ToolSchema: ToolSchemaConfig{Mode: "deferred"}})
 	if err != nil {
 		t.Fatal(err)
 	}

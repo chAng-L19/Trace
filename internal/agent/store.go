@@ -16,6 +16,10 @@ import (
 )
 
 type Snapshot struct {
+	// Rebuilt under the Store lock through provenance sourceFor; never serialized.
+	delegatedAcceptance         map[string]delegatedObservation
+	delegatedDescendantsRetired bool
+
 	Reports              []ReportArchive              `json:"reports,omitempty"`
 	ReportDelivery       *ReportDeliveryState         `json:"report_delivery,omitempty"`
 	Recon                *ReconContext                `json:"recon,omitempty"`

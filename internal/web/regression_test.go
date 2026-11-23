@@ -259,7 +259,14 @@ func TestCASLossConsistentDetailAndExports(t *testing.T) {
 		if err := json.Unmarshal([]byte(last.Content), &result); err != nil {
 			return agent.ModelResponse{}, err
 		}
-		body, _ := json.Marshal(map[string]any{"trace_result": map[string]any{"status": "success", "evidence_ids": []string{result.EvidenceID}}})
+		body, _ := json.Marshal(map[string]any{
+			"trace_result": map[string]any{"status": "success", "evidence_ids": []string{result.EvidenceID}},
+			// Complete report delivery without another probe or a new evidence ID.
+			"trace_report": agent.ReportText{
+				ZhCN: "固定本地工具已返回包含 web-proof 的原始输出，完整大输出保存在 CAS 中。本夹具随后删除对应内容文件，核对运行详情与各类导出是否撤销失去来源支持的成功和 verified 标记；结论仅涵盖来源完整性，清理状态仍待独立核对。",
+				En:   "The fixed local tool returned raw output containing web-proof, with the complete large output retained in CAS. This fixture then removes that content file and checks that run details and exports revoke success and verified markers when their source is lost. The conclusion concerns source integrity only; cleanup remains independently unverified.",
+			},
+		})
 		return agent.ModelResponse{Content: string(body)}, nil
 	})
 	a, err := agent.New(store, p, "")
@@ -274,7 +281,8 @@ func TestCASLossConsistentDetailAndExports(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	run, err := a.Create("large proof")
+	// Keep this pre-role CAS loss fixture as the direct execution owner.
+	run, err := store.Create("large proof", agent.DefaultPrompt, a.PromptHash())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +316,7 @@ func TestCASLossConsistentDetailAndExports(t *testing.T) {
 		t.Fatal("stale evidence export")
 	}
 	w = request(t, s.Handler(), "GET", "/api/runs/"+run.Run.ID+"/export?format=report", nil, 200)
-	if !strings.Contains(w.Body.String(), `"business_status": "incomplete"`) || strings.Contains(w.Body.String(), `"verification": "verified"`) || !strings.Contains(w.Body.String(), "translation_missing") {
+	if !strings.Contains(w.Body.String(), "业务状态 `incomplete`") || strings.Contains(w.Body.String(), " · verified\n") || !strings.Contains(w.Body.String(), "translation_missing") {
 		t.Fatal("report disagrees with revalidated snapshot")
 	}
 }

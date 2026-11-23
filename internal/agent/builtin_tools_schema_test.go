@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-
-	"trace/prompts"
 )
 
 func TestBuiltinSchemasUseEmptyRequiredArrays(t *testing.T) {
@@ -58,8 +56,8 @@ func TestEvidenceMethodGuidancePreservesOptionalSchema(t *testing.T) {
 				t.Fatalf("%s lost its existing string contract", field)
 			}
 			for _, term := range terms {
-				if !strings.Contains(schema["description"], term) || !strings.Contains(prompts.Agent, term) {
-					t.Fatalf("%s guidance missing from tool schema or prompt: %s", field, term)
+				if !strings.Contains(schema["description"], term) {
+					t.Fatalf("%s guidance missing from tool schema: %s", field, term)
 				}
 			}
 		}

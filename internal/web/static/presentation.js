@@ -2,8 +2,13 @@ import {esc,json,label,evidenceLinks} from './ui.js';
 
 // Markdown is rendered as escaped text; raw HTML and executable URL schemes stay text.
 function inline(text){
-  return String(text).split(/(`[^`]+`|\[[^\]]+\]\([^\s)]+\))/g).map(part=>{
+  return String(text).split(/(`[^`]+`|!?\[[^\]]*\]\([^\s)]+\))/g).map(part=>{
     if(part.startsWith('`')&&part.endsWith('`'))return `<code>${esc(part.slice(1,-1))}</code>`;
+    const image=part.match(/^!\[([^\]]*)\]\(([^\s)]+)\)$/);
+    if(image){
+      if(/^\/api\/artifacts\/[a-fA-F0-9]{64}\/download\?preview=1$/.test(image[2]))return `<img class="artifact-media" src="${esc(image[2])}" alt="${esc(image[1])}">`;
+      return /^(https?:\/\/|mailto:|\/[^/\\])/.test(image[2])?`<a href="${esc(image[2])}" target="_blank" rel="noopener noreferrer">${esc(image[1]||image[2])}</a>`:esc(part);
+    }
     const link=part.match(/^\[([^\]]+)\]\(([^\s)]+)\)$/);
     if(link&&/^(https?:\/\/|mailto:|\/[^/\\])/.test(link[2]))return `<a href="${esc(link[2])}" target="_blank" rel="noopener noreferrer">${esc(link[1])}</a>`;
     return esc(part).replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>').replace(/\*([^*\n]+)\*/g,'<em>$1</em>').replace(/~~([^~]+)~~/g,'<del>$1</del>');
@@ -58,9 +63,31 @@ function answerBody(answer){
   if(!answer||typeof answer!=='object'||Array.isArray(answer)||!Array.isArray(answer.evidence_ids)||!answer.evidence_ids.every(id=>typeof id==='string'))return structured(answer);
   return structured(answer.value??'')+evidenceLinks(answer.evidence_ids);
 }
-// Only result envelopes are interpreted; ordinary fenced code stays Markdown.
-function resultFences(content,id,streaming=false){
-  const lines=String(content).replace(/\r\n/g,'\n').split('\n'),parts=[];let plain=[],found=false,index=0;
+const reportText=report=>typeof report?.zh_cn==='string'&&report.zh_cn.trim()?report.zh_cn:typeof report?.en==='string'?report.en:'';
+const hasReport=value=>value!==null&&typeof value==='object'&&!Array.isArray(value)&&(Object.hasOwn(value,'trace_report')||Boolean(reportText((value.trace_result||value.final_result)?.report).trim()));
+function reportPrefix(text){
+  // Recognize a top-level key in incomplete JSON without matching nested examples
+  // or report-like text inside a string. Field order need not put the report first.
+  let depth=0;
+  for(const token of text.matchAll(/"(?:\\.|[^"\\])*(?:"|$)|[{}\[\]]/g)){
+    if(token[0].startsWith('"')){if(depth===1&&token[0]==='"trace_report"'&&/^\s*:/.test(text.slice(token.index+token[0].length)))return true}
+    else depth+=token[0]==='{'||token[0]==='['?1:-1;
+  }
+  return false;
+}
+function reportBody(value,id){
+  // ARTEX report-tab / markdown.tsx (e6ec569): present the report as Markdown.
+  // Keep Trace's escaped renderer and expose the original envelope only on demand.
+  const result=value.trace_result||value.final_result;
+  const body=reportText(value.trace_report).trim()?reportText(value.trace_report):reportText(result?.report);
+  const documents=value.trace_report?.documents;
+  const bodies=[body].concat(Array.isArray(documents)?documents.map(reportText):[]);
+  const rendered=bodies.filter(text=>text.trim()).map(markdown).join('<hr>');
+  return `<div class="message-summary">${rendered||'<p class="note">报告正文为空；可查看原始消息。</p>'}</div>${result&&typeof result==='object'?`<details id="result-fields-${esc(id)}" class="request-details"><summary>结果详情</summary>${structured(Object.fromEntries(Object.entries(result).filter(([key])=>key!=='report')))}</details>`:''}`;
+}
+// Only top-level report/result envelopes are interpreted; other code stays Markdown.
+function resultFences(content,id,streaming=false,allowReport=true){
+  const lines=String(content).replace(/\r\n/g,'\n').split('\n'),parts=[];let plain=[],found=false,reportFound=false,index=0;
   for(let i=0;i<lines.length;){
     const opening=lines[i].match(/^\s*(`{3,}|~{3,})([^`]*)$/);
     if(!opening){plain.push(lines[i++]);continue}
@@ -68,23 +95,32 @@ function resultFences(content,id,streaming=false){
     while(i<lines.length&&!(lines[i].trim().startsWith(opening[1])&&/^(`+|~+)\s*$/.test(lines[i].trim())))body.push(lines[i++]);
     const closed=i<lines.length;if(closed)i++;
     const payload=body.join('\n'),parsed=parseContent(payload),envelope=parsed?.trace_result||parsed?.final_result;
-    const named=/^\s*\{\s*"(?:trace_result|final_result)"\s*:/.test(payload);
-    const prefix=payload.trim().match(/^\{\s*(?:"([a-z_]*)?)?$/),possible=prefix&&(!prefix[1]||['trace_result','final_result'].some(key=>key.startsWith(prefix[1])));
+    const report=allowReport&&(hasReport(parsed)||(parsed===undefined&&reportPrefix(payload)));
+    const named=/^\s*\{\s*"(?:trace_result|final_result)"\s*:/.test(payload)||report;
+    const keys=allowReport?['trace_result','final_result','trace_report']:['trace_result','final_result'];
+    const prefix=payload.trim().match(/^\{\s*(?:"([a-z_]*)?)?$/),possible=prefix&&(!prefix[1]||keys.some(key=>key.startsWith(prefix[1])));
     if(opening[2].trim().toLowerCase()!=='json'||(!envelope&&!named&&!(streaming&&!closed&&possible))){plain.push(...lines.slice(start,i));continue}
     found=true;const lead=plain.join('\n');if(lead.trim())parts.push(markdown(lead));plain=[];const key=id+'-fence-'+index++;
-    if(envelope&&typeof envelope==='object'){
+    if(report){
+      reportFound=true;
+      parts.push(closed&&hasReport(parsed)?reportBody(parsed,key):'<p class="note">'+(streaming?'正在整理结构化报告…':'结构化报告未完整解析；可查看原文。')+'</p>');
+    }else if(envelope&&typeof envelope==='object'){
       const rendered=messageBody({id:key,content:payload});
       parts.push(parts.length?`<details id="result-envelope-${esc(key)}" class="request-details"><summary>结构化结果详情</summary>${rendered}</details>`:rendered);
     }else parts.push('<p class="note">'+(streaming?'正在整理结构化结果…':'结构化结果未完整解析；可查看原文。')+'</p>'+rawDetails('stream-raw-'+key,lines.slice(start,i).join('\n'),'查看结果原文'));
   }
   if(!found)return undefined;
   if(plain.join('\n').trim())parts.push(markdown(plain.join('\n')));
-  return parts.join('');
+  return parts.join('')+(reportFound?rawDetails('message-raw-'+id,content,'原始模型消息'):'');
 }
 export function messageBody(message){
   const content=message.content||'',value=parseContent(content),result=value?.trace_result||value?.final_result;
-  if(message.role==='user'||(value!==undefined&&!result&&/^\s*(?:```|~~~)/.test(content)))return markdown(content);
-  if(value===undefined&&message.role!=='user'){const mixed=resultFences(content,message.id);if(mixed!==undefined)return mixed}
+  if(message.role==='user')return markdown(content);
+  const allowReport=!message.role||message.role==='assistant'||message.role==='report';
+  const fenced=/^\s*(?:```|~~~)/.test(content);
+  if(allowReport&&hasReport(value)&&!fenced)return reportBody(value,message.id)+rawDetails('message-raw-'+message.id,content,'原始模型消息');
+  if(value===undefined||(allowReport&&hasReport(value)&&fenced)){const mixed=resultFences(content,message.id,false,allowReport);if(mixed!==undefined)return mixed}
+  if(value!==undefined&&!result&&fenced)return markdown(content);
   if(result&&typeof result==='object')return `<div class="message-summary">${result.summary?markdown(result.summary):'<p>模型提交了结构化结果。</p>'}</div><p class="note">模型摘要；验证情况以运行结论和证据状态为准。</p>${Array.isArray(result.answers)?result.answers.map(a=>`<div class="message-answer">${answerBody(a)}</div>`).join(''):''}${Array.isArray(result.reproduction_steps)&&result.reproduction_steps.length?`<h4>复现步骤</h4>${structured(result.reproduction_steps)}`:''}<details id="result-fields-${esc(message.id)}" class="request-details"><summary>结果详情</summary>${structured(Object.fromEntries(Object.entries(result).filter(([key])=>!['summary','answers','reproduction_steps'].includes(key))))}</details>${rawDetails('message-raw-'+message.id,content,'原始模型消息')}`;
   return value!==undefined?`${structured(value)}${rawDetails('message-raw-'+message.id,content,'原始消息')}`:markdown(content);
 }

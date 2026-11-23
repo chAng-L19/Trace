@@ -22,9 +22,13 @@ export function reportDownloads(snap,finalOnly=false){
     const text=reportState(snap,finalOnly);
     return text.endsWith('未归档')?'<span class="note">'+text+'</span>':'<a href="#history/'+encodeURIComponent(snap.run.id)+'?tab=artifacts">'+text+' · 查看报告与文件</a>';
   }
-  const attrs='data-format="report" data-run="'+esc(snap.run.id)+'" data-report-id="'+esc(r.id)+'"';
-  return '<span class="note">'+reportKinds[r.kind]+' v'+esc(r.version)+(r.translation_status==='translation_missing'?' · 待补译':'')+'</span>'+
-    [['zh-CN','中文'],['en','English']].map(([lang,name])=>hasLanguage(r,lang)?btn('export',name+' ↓',attrs+' data-language="'+lang+'"'):'<span class="note">'+name+' 文件未归档</span>').join('');
+  const attrs='data-run="'+esc(snap.run.id)+'" data-report-id="'+esc(r.id)+'"';
+  return '<span class="note">'+reportKinds[r.kind]+' v'+esc(r.version)+(r.translation_status==='translation_missing'?' · 待补译':'')+(r.missing_attachments?.length?' · 截图附件缺失 '+r.missing_attachments.length+' 项':'')+'</span>'+
+    [['zh-CN','中文'],['en','English']].map(([lang,name])=>{
+      if(!hasLanguage(r,lang))return '<span class="note">'+name+' 文件未归档</span>';
+      const binding=attrs+' data-language="'+lang+'"';
+      return btn('export',name+' ↓','data-format="report" '+binding)+btn('export',name+' 含附件 ZIP ↓','data-format="report_bundle" '+binding);
+    }).join('');
 }
 
 // Muteki 144df766, lib/clipboard.ts / components/ai-native/code-block.tsx
@@ -67,7 +71,7 @@ export function createDelivery({state,showDetail,notice,isCurrent,token,captureN
     if(action==='export'){
       const run=state.selected,{format}=el.dataset,params=new URLSearchParams({format});
       let language,stillCurrent;
-      if(format==='report'){
+      if(format==='report'||format==='report_bundle'){
         const {reportId,run:buttonRun}=el.dataset,nav=token().nav;
         language=el.dataset.language;
         const matches=()=>!!run&&buttonRun===run&&state.selected===run&&state.snap?.run.id===run&&token().nav===nav;
@@ -79,7 +83,7 @@ export function createDelivery({state,showDetail,notice,isCurrent,token,captureN
       const response=await fetch('/api/runs/'+encodeURIComponent(run)+'/export?'+params);
       if(!response.ok){let detail;try{detail=await response.json()}catch{}throw new Error(detail?.error||'导出失败（HTTP '+response.status+'）')}
       const blob=await response.blob();if(stillCurrent&&!stillCurrent()){notice('运行已切换，已取消下载');return true}
-      const href=URL.createObjectURL(blob),link=document.createElement('a');link.href=href;link.download=response.headers.get('Content-Disposition')?.match(/filename="([^"]+)"/)?.[1]||`trace-${run}-${format}.${format==='report'?language+'.md':'json'}`;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(href),1000);notice('文件已读取，浏览器已开始下载');return true;
+      const href=URL.createObjectURL(blob),link=document.createElement('a');link.href=href;link.download=response.headers.get('Content-Disposition')?.match(/filename="([^"]+)"/)?.[1]||`trace-${run}-${format}.${format==='report_bundle'?language+'.zip':format==='report'?language+'.md':'json'}`;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(href),1000);notice('文件已读取，浏览器已开始下载');return true;
     }
     return false;
   }

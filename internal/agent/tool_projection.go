@@ -128,12 +128,13 @@ func (a *Agent) modelTools(s *Snapshot, catalog string, runtime ...string) ([]To
 		return nil, "", err
 	}
 	if s.Run.ToolSelection == nil {
-		all := a.registry.Definitions()
+		all := a.runToolDefinitions(s.Run, a.registry.Definitions())
 		fixed := appendContextHistory(s, contextPrefix(s, contextSystem(s, catalog)), []Message{{Role: "user", Content: s.Run.Goal}}, runtime)
 		if EstimateContextTokens(fixed, all) <= contextInputLimit(c) {
 			return all, "", nil
 		}
 		core, _ := a.selectedDefinitions(&ToolSelection{})
+		core = a.runToolDefinitions(s.Run, core)
 		if len(core) == len(all) {
 			return all, "", nil
 		}
@@ -143,7 +144,7 @@ func (a *Agent) modelTools(s *Snapshot, catalog string, runtime ...string) ([]To
 		addEvent(s, "tool_directory_deferred", "外部工具 schema 按需加载，完整目录保留", map[string]int{"registered": len(all)})
 	}
 	definitions, err := a.selectedDefinitions(s.Run.ToolSelection)
-	return definitions, deferredToolHint, err
+	return a.runToolDefinitions(s.Run, definitions), deferredToolHint, err
 }
 
 func (a *Agent) SelectTools(id string, ids []string, replace bool) (Snapshot, error) {
@@ -193,7 +194,7 @@ func (a *Agent) SelectTools(id string, ids []string, replace bool) (Snapshot, er
 		planner, _ := plannerContextFrom(s)
 		runtime := planner + verificationContext(s) + contextLedgerContext(s, inherited) + a.stageModelContext() + a.reconContext(s)
 		fixed := appendContextHistory(s, contextPrefix(s, contextSystem(s, a.skillCatalog()+deferredToolHint)), []Message{{Role: "user", Content: s.Run.Goal}}, []string{runtime})
-		if EstimateContextTokens(fixed, definitions) > contextInputLimit(c) {
+		if EstimateContextTokens(fixed, a.runToolDefinitions(s.Run, definitions)) > contextInputLimit(c) {
 			return fmt.Errorf("selected schemas exceed context budget; select fewer tools")
 		}
 		s.Run.ToolSelection = next

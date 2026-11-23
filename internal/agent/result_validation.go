@@ -10,6 +10,17 @@ import (
 // accidentally grant eligibility that the evidence Judge would reject.
 func diagnoseResultEvidence(s *Snapshot, id string, artifactOnly bool) (string, *ResultValidationIssue) {
 	issue := &ResultValidationIssue{EvidenceID: id, Blocking: true}
+	if observation, ok := delegatedObservationFor(s, id); ok {
+		if observation.ArtifactOnly && !artifactOnly {
+			issue.Code, issue.Repair = "evidence_not_observation", "Keep this registered Worker artifact in artifact_evidence_ids; cite original successful observations for outcome evidence and answers."
+			return "", issue
+		}
+		if artifactOnly && !observation.HasArtifacts {
+			issue.Code, issue.Repair = "artifact_reference_missing", "Cite an original registered Worker observation containing an integrity-checked CAS artifact."
+			return "", issue
+		}
+		return observation.Output, nil
+	}
 	for i := range s.Evidence {
 		e := &s.Evidence[i]
 		if e.ID != id {
@@ -173,8 +184,8 @@ func resultFormatRepairOnly(s *Snapshot) bool {
 	}
 	if s.Run.SuccessContains != "" {
 		matched := false
-		for _, e := range s.Evidence {
-			if output, ok := verifiedOutput(s, e.ID); ok && strings.Contains(output, s.Run.SuccessContains) {
+		for _, id := range acceptanceEvidenceIDs(s) {
+			if output, ok := verifiedOutput(s, id); ok && strings.Contains(output, s.Run.SuccessContains) {
 				matched = true
 				break
 			}

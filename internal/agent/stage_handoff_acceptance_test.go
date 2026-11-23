@@ -91,8 +91,13 @@ func TestStageHandoffDifferentModelEndToEndAcceptance(t *testing.T) {
 		return VerificationRequirement{ID: id, Description: "exact source observation", Category: "goal", ToolID: "read", Predicate: EvidencePredicate{Kind: "json_equals", Pointer: "/content", Expected: content}}
 	}
 	rootRequirement := requirement("root-proof")
+	// This pre-role stage/route regression intentionally retains its root-local
+	// evidence contract and final direct read; new coordinator tests are separate.
 	root, err := a.CreateConfigured("Deliver verified report after a route handoff", RunConfiguration{Requirements: []VerificationRequirement{rootRequirement}, RootContract: &RootContract{Version: 1, RequirementIDs: []string{"root-proof"}}})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Update(root.Run.ID, func(s *Snapshot) error { s.Run.Responsibility = ""; return nil }); err != nil {
 		t.Fatal(err)
 	}
 	old := PlanTask{ID: "old-stage", Goal: "verify report input", Stage: true, EvidenceScope: &EvidenceScope{ObjectID: "report-source", Version: "version-one"}, Requirements: []VerificationRequirement{requirement("stage-proof")}, ModelSelection: &ModelSelection{Provider: "default", Model: "old"}}

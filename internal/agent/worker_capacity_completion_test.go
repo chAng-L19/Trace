@@ -48,6 +48,14 @@ func TestTreeWorkerCapacityDisposedUncertainRootCompletion(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				// Preserve this pre-role fixture: the root executes its own probe
+				// to test disposition, cleanup freshness, and local proof acceptance.
+				if _, err = store.Update(root.Run.ID, func(s *Snapshot) error {
+					s.Run.Responsibility = ""
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
 				old := PlanTask{ID: "old", Goal: "inspect source", Stage: true, Requirements: []VerificationRequirement{goal}}
 				tasks := []PlanTask{old}
 				if disposition == "superseded" {

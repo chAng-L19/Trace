@@ -43,13 +43,20 @@ func TestMediaMultiSourceStoreReopenHTTP(t *testing.T) {
 			args, _ := json.Marshal(agent.ArtifactRegistration{Path: file, Name: name, Purpose: "media persistence verification"})
 			return agent.ModelResponse{ToolCalls: []agent.ToolCall{{ID: "shared-call", Name: "artifact_register", Arguments: string(args)}}}, nil
 		}
-		return agent.ModelResponse{Content: "captured media"}, nil
+		// Supply this fixture's report in its existing final turn so report
+		// delivery finishes before the Store-reopen and HTTP assertions.
+		body, _ := json.Marshal(map[string]any{"trace_report": agent.ReportText{
+			ZhCN: "同一 PNG 文件的原始字节已分别注册为 first.png 和 second.png，两次请求各自保留来源，内容摘要指向相同 CAS 数据。本夹具核对重开后的媒体类型、来源调用和 HTTP 下载字节；文件注册本身不证明目标验证成功，清理状态仍待独立核对。",
+			En:   "The same PNG bytes were registered as first.png and second.png in separate requests, retaining distinct sources for shared CAS content. This fixture checks MIME metadata, producing calls and HTTP download bytes after reopening the Store. Registration alone does not prove target success, and cleanup remains independently unverified.",
+		}})
+		return agent.ModelResponse{Content: "captured media\n\n```json\n" + string(body) + "\n```"}, nil
 	})
 	a, err := agent.New(store, provider, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	initial, err := a.Create("register the same bytes in two requests")
+	// This pre-role media fixture executes registration in its own source ledger.
+	initial, err := store.Create("register the same bytes in two requests", agent.DefaultPrompt, a.PromptHash())
 	if err != nil {
 		t.Fatal(err)
 	}

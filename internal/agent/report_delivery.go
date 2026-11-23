@@ -158,10 +158,11 @@ func continueForReport(s *Snapshot, preparing ...bool) bool {
 	archiveConclusionChains(s)
 	applyReportTranslations(s)
 	var missing []map[string]any
-	for _, c := range reportCandidates(s) {
-		_, languages := c.bodies()
-		if len(languages) > 0 {
-			missing = append(missing, map[string]any{"kind": c.source.Kind, "subject_id": c.source.SubjectID, "source_digest": c.digest(), "missing_languages": languages, "source": c.source})
+	for _, c := range deliveryReportCandidates(s) {
+		body, languages := c.bodies()
+		attachments := c.missingImages(body)
+		if len(languages) > 0 || len(attachments) > 0 {
+			missing = append(missing, map[string]any{"kind": c.source.Kind, "subject_id": c.source.SubjectID, "source_digest": c.digest(), "missing_languages": languages, "missing_attachments": attachments, "source": c.source})
 		}
 	}
 	if len(missing) == 0 {
@@ -174,7 +175,7 @@ func continueForReport(s *Snapshot, preparing ...bool) bool {
 		return false
 	}
 	raw, _ := json.Marshal(missing)
-	text := "Complete report delivery in this same pi conversation. Existing business checks and execution results are retained. Do not repeat tools, probes or finding submissions just to translate. Return one closed json fence containing trace_report with source_digest, zh_cn and en for the final report; include documents:[{kind,subject_id,source_digest,zh_cn,en}] for the listed finding/stage reports. Both languages need substantive factual prose covering summary, root cause/conditions where applicable, reproduction explanation, impact, remediation and unresolved items. Preserve commands, values, hashes, source IDs, business and cleanup states exactly. Do not copy Chinese into en or translate headings only. Translation is not new execution proof. Pending source-bound documents: " + string(raw)
+	text := "Complete report delivery in this same pi conversation. Existing business checks and execution results are retained. Do not repeat tools, probes or finding submissions just to translate. Return one closed json fence containing trace_report with source_digest, zh_cn and en for the final report; include documents:[{kind,subject_id,source_digest,zh_cn,en}] for the listed finding/stage reports. Both languages need substantive factual prose covering summary, root cause/conditions where applicable, reproduction explanation, impact, remediation and unresolved items. Preserve commands, values, hashes, source IDs, business and cleanup states exactly. Do not copy Chinese into en or translate headings only. For missing image references, use only the registered source attachments listed here. If no actual capture exists, replace the broken image with an explicit delivery gap; never fabricate a link or execute target tools during this report-only turn. Translation is not new execution proof. Pending source-bound documents: " + string(raw)
 	if reportDeliveryPending(s) {
 		preparation := len(preparing) > 0 && preparing[0]
 		if !preparation || s.ReportDelivery.DocumentsDigest != valueHash(missing) {
@@ -198,5 +199,5 @@ func continueForReport(s *Snapshot, preparing ...bool) bool {
 }
 
 func reportTextSchema() map[string]any {
-	return map[string]any{"type": "object", "properties": map[string]any{"zh_cn": map[string]string{"type": "string"}, "en": map[string]string{"type": "string"}}, "required": []string{"zh_cn", "en"}, "description": "Substantive Chinese and English report prose. Preserve command/value/hash/source/acceptance/cleanup fields; translation is not execution proof."}
+	return map[string]any{"type": "object", "properties": map[string]any{"zh_cn": map[string]string{"type": "string"}, "en": map[string]string{"type": "string"}}, "required": []string{"zh_cn", "en"}, "description": "Substantive Chinese and English Markdown report prose: conclusions, reproduction, impact, remediation and open items. Cite exact commands and evidence without dumping protocol JSON or duplicating source manifests. Include actual registered screenshots with Markdown image links; state missing captures explicitly. Translation is not execution proof."}
 }

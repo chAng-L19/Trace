@@ -179,8 +179,8 @@ func reportDeliveryIncomplete(s *Snapshot) bool {
 		return true
 	}
 	if needsReportDelivery(s) {
-		for _, c := range reportCandidates(s) {
-			if _, missing := c.bodies(); len(missing) > 0 {
+		for _, c := range deliveryReportCandidates(s) {
+			if body, missing := c.bodies(); len(missing) > 0 || len(c.missingImages(body)) > 0 {
 				return true
 			}
 		}
@@ -219,14 +219,14 @@ func (a *Agent) reportFilesComplete(s *Snapshot) bool {
 	if !needsReportDelivery(s) {
 		return true
 	}
-	for _, c := range reportCandidates(s) {
+	for _, c := range deliveryReportCandidates(s) {
 		body, missing := c.bodies()
-		if len(missing) > 0 {
+		if len(missing) > 0 || len(c.missingImages(body)) > 0 {
 			return false
 		}
 		found := false
 		for _, report := range s.Reports {
-			if report.Kind != c.source.Kind || report.SubjectID != c.source.SubjectID || report.SourceDigest != c.digest() || report.DocumentDigest != valueHash(body) || report.TranslationStatus != "complete" {
+			if report.FormatVersion != c.format || report.Kind != c.source.Kind || report.SubjectID != c.source.SubjectID || report.SourceDigest != c.digest() || report.DocumentDigest != valueHash(body) || report.TranslationStatus != "complete" {
 				continue
 			}
 			languages := map[string]bool{}

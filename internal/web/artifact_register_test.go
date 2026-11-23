@@ -37,7 +37,8 @@ func TestRegisteredFileDownloadMatchesRecordedSource(t *testing.T) {
 		return agent.ModelResponse{Content: "file captured\n\n```json\n" + string(body) + "\n```"}, nil
 	})
 	s, a := fixture(t, p)
-	created, err := a.Create("deliver report")
+	// This pre-role download fixture registers a file directly; keep legacy execution.
+	created, err := a.Store().Create("deliver report", agent.DefaultPrompt, a.PromptHash())
 	if err != nil {
 		t.Fatal(err)
 	}

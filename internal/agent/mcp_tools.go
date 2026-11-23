@@ -48,10 +48,17 @@ func (a *Agent) ExecuteRegistered(parent context.Context, id, callID, toolID str
 	if snapshot.Run.Status != StatusWaitingTool || !ok || call.Name != toolID {
 		return snapshot, fmt.Errorf("pending call does not match tool ID: %s", toolID)
 	}
-	if tool.Local != nil {
-		_, _, err = tool.Local.Invocation(json.RawMessage(call.Arguments))
-	} else {
-		err = validateMCPArguments(call.Arguments)
+	if !a.registry.permitsRunTool(snapshot.Run, call.Name, tool.Adapter) {
+		if observed, handled, admissionErr := a.observePendingToolAdmission(snapshot, call, tool.Adapter); handled || admissionErr != nil {
+			return observed, admissionErr
+		}
+	}
+	if !hasHistoricalToolIntent(&snapshot, call) {
+		if tool.Local != nil {
+			_, _, err = tool.Local.Invocation(json.RawMessage(call.Arguments))
+		} else {
+			err = validateMCPArguments(call.Arguments)
+		}
 	}
 	if err != nil {
 		return snapshot, err
@@ -77,6 +84,12 @@ func (a *Agent) executeRegisteredLocked(parent context.Context, id, callID, tool
 	call, ok := pendingToolCalls(&snap)[callID]
 	if snap.Run.Status != StatusWaitingTool || !ok || call.Name != toolID {
 		return Snapshot{}, fmt.Errorf("pending call does not match tool ID: %s", toolID)
+	}
+	if observed, handled, admissionErr := a.observePendingToolAdmission(snap, call, tool.Adapter); handled || admissionErr != nil {
+		if admissionErr != nil || !a.registry.permitsRunTool(snap.Run, call.Name, tool.Adapter) {
+			return observed, admissionErr
+		}
+		return a.executeManualToolCycle(parent, id, func(context.Context) (Snapshot, error) { return observed, nil })
 	}
 	var command []string
 	if tool.Local != nil {

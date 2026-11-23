@@ -78,13 +78,16 @@ func TestPlannerSetPlanKeepsUnseenFactBatch(t *testing.T) {
 	}
 }
 
-// The role must reach the actual pi request without removing tools from simple
-// conversations or turning a delegated worker into the root coordinator.
+// New roots coordinate before dispatch; delegated Workers retain execution.
 func TestPlannerRequestRoleFollowsDelegation(t *testing.T) {
 	for _, backend := range []string{"json", "sqlite"} {
 		t.Run(backend, func(t *testing.T) {
 			a, store := treeCapacityAgent(t, backend, MockProvider{})
-			id := createTestRun(t, a)
+			root, err := a.Create("coordinate collection")
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := root.Run.ID
 			if _, err := a.SetPlan(id, []PlanTask{{ID: "collect", Goal: "collect a local fixture", ResourceKeys: []string{"fixture:one"}}}); err != nil {
 				t.Fatal(err)
 			}
@@ -96,8 +99,8 @@ func TestPlannerRequestRoleFollowsDelegation(t *testing.T) {
 				}
 				return requestRuntimeObservations(run, req)
 			}
-			if text := request(a, id); !strings.Contains(text, "execute simple work directly") || strings.Contains(text, "Coordinate delegated work") {
-				t.Fatal("a plan alone changed the undelegated root role")
+			if text := request(a, id); strings.Contains(text, "execute simple work directly") || !strings.Contains(text, "from the first turn") {
+				t.Fatal("new root lacks coordinator role before dispatch")
 			}
 			local, worker := capacityFixtureChild(t, a, id, "collect")
 			text := request(a, id)

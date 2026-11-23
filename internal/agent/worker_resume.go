@@ -190,6 +190,8 @@ func (a *Agent) prepareWorkerResume(ctx context.Context, child Snapshot) (contex
 			reportOnly := taskDone(*task) && reportDeliveryPending(&latestChild) && reportBusinessSettled(parent.Run.ID, *current, &latestChild)
 			current.Status, current.CleanupStatus, current.Error = "running", "pending", ""
 			current.Visit++
+			sourceFloor := latestChild.Run.EventSeq
+			current.SourceEventFloor = &sourceFloor
 			current.FinishedAt = time.Time{}
 			if !reportOnly {
 				task.Status, task.Error = "running", ""

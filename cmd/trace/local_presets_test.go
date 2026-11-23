@@ -141,6 +141,22 @@ func TestStandaloneAutomaticPresetAgent(t *testing.T) {
 	if err := json.Unmarshal(call("create", "audit fixture source"), &run); err != nil {
 		t.Fatal(err)
 	}
+	// This pre-role preset fixture owns direct execution. Check the CLI's
+	// production default before explicitly restoring its legacy identity.
+	if run.Responsibility != agent.ResponsibilityCoordinator {
+		t.Fatalf("CLI create did not default to Coordinator: %+v", run)
+	}
+	store, err := agent.NewStore(filepath.Join(deploy, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.Update(run.ID, func(s *agent.Snapshot) error {
+		s.Run.Responsibility = ""
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	var snap agent.Snapshot
 	if err := json.Unmarshal(call("run", run.ID), &snap); err != nil {
 		t.Fatal(err)

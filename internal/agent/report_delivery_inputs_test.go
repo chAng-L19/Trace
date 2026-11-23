@@ -158,7 +158,9 @@ func TestU7ReportDeliveryDefersBusinessInputs(t *testing.T) {
 						t.Fatal(err)
 					}
 					a.SetSuccessContains("u7-original-marker")
-					run, err := a.Create("Read the original file, then deliver its bilingual report.")
+					// The receiver executes reads; routing/report-only assertions
+					// remain independent of root orchestration policy.
+					run, err := a.CreateConfigured("Read the original file, then deliver its bilingual report.", RunConfiguration{role: "worker"})
 					if err != nil {
 						t.Fatal(err)
 					}

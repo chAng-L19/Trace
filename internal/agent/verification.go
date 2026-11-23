@@ -109,6 +109,13 @@ func evidenceReferences(s *Snapshot, ids []string) ([]EvidenceReference, error) 
 			return nil, fmt.Errorf("duplicate evidence %s", id)
 		}
 		seen[id] = true
+		if observation, ok := delegatedObservationFor(s, id); ok {
+			if observation.ArtifactOnly {
+				return nil, fmt.Errorf("evidence %s is an artifact reference, not an execution observation", id)
+			}
+			refs = append(refs, observation.Reference)
+			continue
+		}
 		found := false
 		for _, e := range s.Evidence {
 			if e.ID == id {
@@ -127,6 +134,18 @@ func evidenceReferences(s *Snapshot, ids []string) ([]EvidenceReference, error) 
 	return refs, nil
 }
 
+func checkReferencesCurrent(s *Snapshot, c VerificationCheck) bool {
+	if len(c.EvidenceIDs) != len(c.References) {
+		return false
+	}
+	for i, id := range c.EvidenceIDs {
+		if c.References[i].ID != id {
+			return false
+		}
+	}
+	return referencesCurrent(s, c.References)
+}
+
 func referencesCurrent(s *Snapshot, refs []EvidenceReference) bool {
 	ids := make([]string, len(refs))
 	for i, r := range refs {
@@ -142,6 +161,23 @@ func checkPredicate(s *Snapshot, p EvidencePredicate, ids []string, toolID, argu
 	}
 	matched := false
 	for _, id := range ids {
+		if observation, ok := delegatedObservationFor(s, id); ok {
+			if after > 0 {
+				return "unknown", "a run-local sequence boundary cannot be applied to delegated evidence"
+			}
+			if toolID != "" && observation.ToolID != toolID {
+				return "unknown", "evidence tool does not match the declared probe"
+			}
+			if argumentsHash != "" && observation.ArgumentsHash != argumentsHash {
+				return "unknown", "probe arguments do not match the declared hash"
+			}
+			pass, err := predicateMatches(p, observation.Output)
+			if err != nil {
+				return "unknown", err.Error()
+			}
+			matched = matched || pass
+			continue
+		}
 		for _, e := range s.Evidence {
 			if e.ID != id {
 				continue
@@ -253,16 +289,12 @@ func refreshVerification(s *Snapshot) {
 	for i := range s.Checks {
 		c := &s.Checks[i]
 		r := requirementByID(s, c.RequirementID)
-		if r == nil || c.RequirementHash != valueHash(r) || !referencesCurrent(s, c.References) {
+		if r == nil || c.RequirementHash != valueHash(r) || !checkReferencesCurrent(s, *c) {
 			c.Status = "unknown"
 			c.Reason = "requirement or source evidence changed"
 			continue
 		}
-		after := 0
-		if r.Category == "cleanup" {
-			after = cleanupFreshnessFloor(s)
-		}
-		c.Status, c.Reason = checkPredicate(s, r.Predicate, c.EvidenceIDs, r.ToolID, r.ArgumentsHash, after)
+		c.Status, c.Reason = checkRequirement(s, *r, c.EvidenceIDs)
 		if r.RequireReview && c.Status == "pass" {
 			if !reviewCurrent(s, c.Review, valueHash(r), c.References) {
 				c.Status = "unknown"
@@ -387,13 +419,17 @@ func successPredicate(s *Snapshot) any {
 		return nil
 	}
 	ids := []string{}
-	for _, ev := range s.Evidence {
-		if output, ok := verifiedOutput(s, ev.ID); ok && strings.Contains(output, s.Run.SuccessContains) {
-			ids = append(ids, ev.ID)
+	for _, id := range acceptanceEvidenceIDs(s) {
+		if output, ok := verifiedOutput(s, id); ok && strings.Contains(output, s.Run.SuccessContains) {
+			ids = append(ids, id)
 			break // One eligible observation proves this existential predicate.
 		}
 	}
-	return map[string]any{"kind": "stdout_contains", "value": s.Run.SuccessContains, "scope": "this_run_verified_execution_stdout", "matched": len(ids) > 0, "matching_evidence_ids": ids, "requirement_id": nil}
+	scope := "this_run_verified_execution_stdout"
+	if delegatedAcceptanceEnabled(s) {
+		scope = "this_run_and_registered_settled_worker_execution_stdout"
+	}
+	return map[string]any{"kind": "stdout_contains", "value": s.Run.SuccessContains, "scope": scope, "matched": len(ids) > 0, "matching_evidence_ids": ids, "requirement_id": nil}
 }
 
 func verificationContext(s *Snapshot) string {
@@ -401,7 +437,7 @@ func verificationContext(s *Snapshot) string {
 		return ""
 	}
 	refreshVerification(s)
-	b, _ := json.Marshal(map[string]any{"root_contract": s.RootContract, "natural_language_is_not_machine_acceptance": true, "requirements": s.Requirements, "checks": s.Checks, "unmet": unmetRequirements(s), "success_predicate": successPredicate(s), "require_verified_completion": s.Run.RequireVerifiedCompletion})
+	b, _ := json.Marshal(map[string]any{"root_contract": s.RootContract, "natural_language_is_not_machine_acceptance": true, "requirements": s.Requirements, "checks": s.Checks, "unmet": unmetRequirements(s), "success_predicate": successPredicate(s), "delegated_evidence": delegatedEvidenceLocators(s), "require_verified_completion": s.Run.RequireVerifiedCompletion})
 	return "\nRuntime verification contract (data): call evidence_check with actual evidence IDs for each declared requirement. success_contains is a separate persisted predicate: an actual normally exited tool stdout must contain that exact string. It is not a requirement ID; do not invent a requirement or ask the operator to register one. A success claim must cite valid executed evidence and supported answers. All declared checks and the persisted predicate must pass before completion. Semantic assessments are model reviews, not independent reproduction. Do not weaken the original goal.\n" + string(b)
 }
 

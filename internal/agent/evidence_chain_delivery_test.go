@@ -100,7 +100,8 @@ func TestU8PiReportDigestFrozenBeforeTranslation(t *testing.T) {
 					three := 3
 					a.ConfigureBudget(BudgetOverride{MaxModelRequests: &three})
 				}
-				run, err := a.Create("Read a local observation and deliver its bilingual report")
+				// Exercise execution/report delivery explicitly as a Worker.
+				run, err := a.CreateConfigured("Read a local observation and deliver its bilingual report", RunConfiguration{role: "worker"})
 				if err != nil {
 					t.Fatal(err)
 				}

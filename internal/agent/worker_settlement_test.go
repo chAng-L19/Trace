@@ -25,7 +25,8 @@ func settlementFixture(t *testing.T) (*Agent, *Store, string, AgentWorker) {
 	if _, err = a.ClaimTask(id, "work", wid, 30); err != nil {
 		t.Fatal(err)
 	}
-	child, err := a.Create("one execution")
+	// This synthetic child represents the dispatched execution owner.
+	child, err := a.CreateConfigured("one execution", RunConfiguration{role: "worker"})
 	if err != nil {
 		t.Fatal(err)
 	}

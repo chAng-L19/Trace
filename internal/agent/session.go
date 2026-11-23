@@ -167,6 +167,12 @@ func (a *Agent) Branch(id, messageID string) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	return a.store.updateLocked(branch.Run.ID, func(s *Snapshot) error {
+		// An independent branch is a root. Historical sources retain legacy
+		// semantics; branches of role-aware runs must not shed admission.
+		s.Run.Responsibility = source.Run.Responsibility
+		if s.Run.Responsibility != "" {
+			s.Run.Responsibility = ResponsibilityCoordinator
+		}
 		s.Run.ModelSelection = source.Run.ModelSelection
 		s.Run.ParentRunID = id
 		s.Run.ParentMessageID = messageID

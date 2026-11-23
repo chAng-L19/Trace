@@ -19,7 +19,16 @@ const (
 	StatusFailed      Status = "failed"
 )
 
+// RunResponsibility is pinned at creation; the empty value preserves historical runs.
+type RunResponsibility string
+
+const (
+	ResponsibilityCoordinator RunResponsibility = "coordinator"
+	ResponsibilityWorker      RunResponsibility = "worker"
+)
+
 type Run struct {
+	Responsibility            RunResponsibility `json:"responsibility,omitempty"`
 	Exec                      *ExecConfig       `json:"exec,omitempty"`
 	ToolSchema                ToolSchemaConfig  `json:"tool_schema,omitempty"`
 	ModelSelection            *ModelSelection   `json:"model_selection,omitempty"`

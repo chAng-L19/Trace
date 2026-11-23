@@ -57,7 +57,8 @@ func runGeneralAcceptance(t *testing.T, goal, marker, proof, deliverable string,
 	for _, r := range requirements {
 		ids = append(ids, r.ID)
 	}
-	s, err := a.CreateConfigured(goal, RunConfiguration{Requirements: requirements, RootContract: &RootContract{Version: 1, RequirementIDs: ids}, ToolSchema: ToolSchemaConfig{Mode: "deferred"}})
+	// These cases validate execution and Judge acceptance within a Worker.
+	s, err := a.CreateConfigured(goal, RunConfiguration{role: "worker", Requirements: requirements, RootContract: &RootContract{Version: 1, RequirementIDs: ids}, ToolSchema: ToolSchemaConfig{Mode: "deferred"}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -66,10 +66,19 @@ func newTestAgent(t *testing.T, p Provider) (*Agent, *Store) {
 	}
 	return agent, store
 }
+
+// createTestRun preserves legacy execution semantics for low-level tool fixtures.
+// Coordinator integration tests use Create/CreateConfigured directly.
 func createTestRun(t *testing.T, a *Agent) string {
 	t.Helper()
 	snap, err := a.Create("test objective")
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.store.Update(snap.Run.ID, func(s *Snapshot) error {
+		s.Run.Responsibility = ""
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 	return snap.Run.ID
@@ -212,7 +221,11 @@ func TestRejectedMessagesLeaveTranscriptUnchanged(t *testing.T) {
 
 func TestPreparedPromptResourceAndReceiptLimits(t *testing.T) {
 	a, _ := newTestAgent(t, MockProvider{})
-	req, err := a.preparePiRequest(context.Background(), createTestRun(t, a))
+	root, err := a.Create("coordinate a concrete task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := a.preparePiRequest(context.Background(), root.Run.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,17 +233,21 @@ func TestPreparedPromptResourceAndReceiptLimits(t *testing.T) {
 		t.Fatal("missing system prompt in prepared request")
 	}
 	for _, rule := range []string{
-		"concurrency ceiling, not a dispatch target", "summarizes the supplied resource limits and their scope",
-		"first nonempty root plan, specify `capacity`", "unless capacity was already explicitly set",
-		"external acceptance only when the original goal requires that step", "A local result needs no external receipt",
-		"cleanup proves neither delivery nor acceptance", "when no external quota applies, use the ordinary root ceiling",
-		"report the blocker immediately", "uses `worker_yield` to save its checkpoint",
-		"Do not poll for capacity with shell sleep loops, retry helpers or repeated model turns",
-		"does not write long-running retry helpers or maintain a second queue",
-		"Do not select Astra for simple work", "Do not add independent worker time limits",
+		"From the first turn, the root Run only", "If dispatch is blocked, report the cause; the root never takes over execution",
+		"concurrency ceiling, not a dispatch target", "first nonempty root plan, specify `capacity`",
+		"external acceptance when the original goal requires it", "Local results need no external receipt",
+		"cleanup proves neither delivery nor acceptance", "Do not add independent Worker solving time/token budgets or deadlines",
+		"Uncertain stays unknown", "no Astra for simple work",
+		"every successful stdout it cites", "zero tools", "source_digest",
+		"<child_run_id>/<evidence_id>", "registered, settled Worker sources listed by verification_status",
 	} {
 		if !strings.Contains(req.Messages[0].Content, rule) {
 			t.Errorf("prepared system prompt missing rule: %q", rule)
+		}
+	}
+	for _, obsolete := range []string{"Simple work without delegated tasks can execute directly", "Execute simple tasks directly", "Cross-Run sources are not local acceptance evidence"} {
+		if strings.Contains(req.Messages[0].Content, obsolete) {
+			t.Errorf("prepared prompt retains direct root execution: %q", obsolete)
 		}
 	}
 }

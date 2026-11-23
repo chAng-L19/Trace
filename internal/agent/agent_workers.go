@@ -22,6 +22,8 @@ type AgentWorker struct {
 	FinishedAt    time.Time `json:"finished_at,omitempty"`
 	Visit         uint64    `json:"visit,omitempty"`
 	SettledVisit  *uint64   `json:"settled_visit,omitempty"`
+	// Child event watermark captured by the server before this visit starts.
+	SourceEventFloor *int `json:"source_event_floor,omitempty"`
 }
 type WorkerMessage struct {
 	FromIdentity *MessageParticipant `json:"from_identity,omitempty"`

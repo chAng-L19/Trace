@@ -605,7 +605,7 @@ func (a *Agent) plannerContextAt(id string) (string, int, error) {
 }
 
 func plannerContextFrom(s *Snapshot) (string, int) {
-	if len(s.Plan.Tasks) == 0 && len(s.Assets) == 0 {
+	if len(s.Plan.Tasks) == 0 && len(s.Assets) == 0 && s.Run.Responsibility != ResponsibilityCoordinator {
 		return "", 0
 	}
 	facts := []Event{}
@@ -639,8 +639,11 @@ func plannerContextFrom(s *Snapshot) (string, int) {
 	}
 	data, _ := json.Marshal(map[string]any{"plan": compactPlan(s.Plan), "coverage": Coverage(*s), "new_facts": facts, "scheduling_window": schedulingWindow(s)})
 	role := "execute simple work directly; plan only near-term work."
-	if s.Run.ParentRunID == "" && len(s.Workers) > 0 {
+	if s.Run.Responsibility == "" && s.Run.ParentRunID == "" && len(s.Workers) > 0 {
 		role = "Coordinate delegated work: define task contracts and resource_keys, dispatch or message task owners, review outcomes and cleanup, and produce the final report. Delegate investigation and execution; do not repeat work owned by an active worker or create a separate queue."
+	}
+	if s.Run.Responsibility == ResponsibilityCoordinator {
+		role = "Coordinate delegated work: define task contracts and resource_keys, dispatch or message task owners, review outcomes and cleanup, and produce the final report. Delegate investigation and execution from the first turn, including simple tasks, to at least one Worker. Read existing receipts and ledgers for acceptance and correction. If dispatch fails, report the reason and coordinate recovery; never fall back to coordinator execution or create a separate queue."
 	}
 	return "Planner observations (data): " + role + " This compact view includes active/next tasks and their dependency contracts; use plan({}) for all tasks. Dispatch ready independent work or worker_wait for new outcomes. Failed/cancelled work needs explicit task_dispose (blocked/abandoned/superseded) or a valid retry/resume; disposition is never a successful dependency. Replan pending dependencies explicitly to a replacement with the same goal and preserved acceptance requirements. Predicates and cleanup still require verification.\n" + string(data), observedThrough
 }

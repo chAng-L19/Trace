@@ -270,15 +270,15 @@ func refreshResult(s *Snapshot) {
 		result.TerminalReason = "persisted success predicate has not matched execution evidence"
 	}
 	if s.Run.SuccessContains != "" && predicateAllowed {
-		for _, e := range s.Evidence {
-			output, ok := verifiedOutput(s, e.ID)
+		for _, id := range acceptanceEvidenceIDs(s) {
+			output, ok := verifiedOutput(s, id)
 			if ok && strings.Contains(output, s.Run.SuccessContains) {
 				result.Status = "success"
 				result.TerminalReason = "persisted stdout-contains success predicate matched verified execution evidence"
-				if !hasString(result.EvidenceIDs, e.ID) {
-					result.EvidenceIDs = append(result.EvidenceIDs, e.ID)
+				if !hasString(result.EvidenceIDs, id) {
+					result.EvidenceIDs = append(result.EvidenceIDs, id)
 				}
-				result.Answers = append(result.Answers, Answer{Value: s.Run.SuccessContains, Kind: "answer", EvidenceIDs: []string{e.ID}, Verified: true})
+				result.Answers = append(result.Answers, Answer{Value: s.Run.SuccessContains, Kind: "answer", EvidenceIDs: []string{id}, Verified: true})
 				// The persisted predicate supplies the previously absent outcome ref.
 				validateResultReferences(s, &result)
 				break
@@ -455,13 +455,19 @@ func (s *Store) ReportVersion(id, hash string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return renderReportSnapshot(&snapshot, chains, reports), nil
+	return renderReportSnapshotView(&snapshot, chains, reports, true), nil
 }
 
 // A nil chains map denotes a fixed export: local chain records are detached,
 // external provenance remains explicitly unchecked. Keep this renderer free of
 // Store/artifact I/O and derived-state refreshes.
 func renderReportSnapshot(snapshot *Snapshot, chains map[string]EvidenceChainEntry, reports []ChildReport) string {
+	return renderReportSnapshotView(snapshot, chains, reports, false)
+}
+
+// Legacy fixed source hashes cover the exact historical renderer. Only an
+// unpinned readable view uses the concise usage table.
+func renderReportSnapshotView(snapshot *Snapshot, chains map[string]EvidenceChainEntry, reports []ChildReport, readable bool) string {
 	result := snapshot.Result
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Trace 研究报告\n\n## 研究结论\n\n状态：%s\n\n摘要：%s\n\n判定记录：%s\n\n清理状态：%s\n\n## 研究目标\n\n%s\n\n## 结论条目\n", reportStatus(result.Status), result.Summary, result.TerminalReason, reportStatus(result.CleanupStatus), snapshot.Run.Goal)
@@ -543,7 +549,7 @@ func renderReportSnapshot(snapshot *Snapshot, chains map[string]EvidenceChainEnt
 		}
 	}
 	writeChildReports(&b, reports)
-	usage, _ := json.MarshalIndent(snapshot.Run.Usage, "", "  ")
+	usage := snapshot.Run.Usage
 	if len(snapshot.Requirements) > 0 || len(snapshot.Findings) > 0 {
 		b.WriteString("\n## 验收检查\n")
 		for _, r := range snapshot.Requirements {
@@ -576,6 +582,17 @@ func renderReportSnapshot(snapshot *Snapshot, chains map[string]EvidenceChainEnt
 			}
 		}
 	}
-	fmt.Fprintf(&b, "\n## 用量记录\n\n```json\n%s\n```\n", usage)
+	if !readable {
+		raw, _ := json.MarshalIndent(usage, "", "  ")
+		fmt.Fprintf(&b, "\n## 用量记录\n\n```json\n%s\n```\n", raw)
+		return b.String()
+	}
+	token := func(n *int64) string {
+		if n == nil {
+			return "未记录"
+		}
+		return fmt.Sprint(*n)
+	}
+	fmt.Fprintf(&b, "\n## 用量记录\n\n| 项目 | 记录 |\n| --- | --- |\n| 模型请求 / 响应 | %d / %d |\n| 工具动作 | %d |\n| 已知输入 tokens | %s |\n| 已知输出 tokens | %s |\n| 已知总 tokens | %s |\n| 缺少用量的响应 | %d |\n", usage.ModelRequests, usage.ModelResponses, usage.ToolActions, token(usage.KnownInputTokens), token(usage.KnownOutputTokens), token(usage.KnownTotalTokens), usage.MissingUsageResponses)
 	return b.String()
 }

@@ -243,6 +243,10 @@ func (a *Agent) runPi(ctx context.Context, id string) (Snapshot, error) {
 							}
 							var observationErr error
 							observed, observationErr = appendHistoricalToolObservation(s, call, p.Content)
+							if !observed && observationErr == nil {
+								tool, _ := a.registry.Lookup(call.Name)
+								observed, observationErr = a.toolAdmissionObservation(s, call, tool.Adapter)
+							}
 							return observationErr
 						})
 						if err != nil || observed {

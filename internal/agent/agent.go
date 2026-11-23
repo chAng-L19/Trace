@@ -178,6 +178,10 @@ func (a *Agent) CreateConfigured(goal string, config RunConfiguration, attachmen
 	}
 	return a.store.createInitialized(goal, a.prompt, a.promptID, func(s *Snapshot) error {
 		s.Run.Exec, s.Run.ToolSchema, s.Run.ToolSelection = execConfig, toolSchema, toolSelection
+		s.Run.Responsibility = ResponsibilityCoordinator
+		if config.role == "worker" {
+			s.Run.Responsibility = ResponsibilityWorker
+		}
 		s.Run.ModelSelection = selected
 		s.Run.Context = a.contextConfig
 		if a.treeBudget != nil {

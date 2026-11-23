@@ -2,6 +2,7 @@ package web
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -230,14 +231,29 @@ func (s *Server) artifact(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) downloadArtifact(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	f, e := s.store.OpenArtifact(r.PathValue("hash"))
 	if e != nil {
 		respond(w, nil, e)
 		return
 	}
 	defer f.Close()
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+r.PathValue("hash")+`.bin"`)
+	contentType, disposition := "application/octet-stream", "attachment"
+	if r.URL.Query().Get("preview") == "1" {
+		var header [512]byte
+		n, err := f.ReadAt(header[:], 0)
+		if err != nil && err != io.EOF {
+			respond(w, nil, err)
+			return
+		}
+		mimeType := http.DetectContentType(header[:n])
+		switch mimeType {
+		case "image/png", "image/jpeg", "image/gif", "image/webp":
+			contentType, disposition = mimeType, "inline"
+		}
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", disposition+`; filename="`+r.PathValue("hash")+`.bin"`)
 	http.ServeContent(w, r, r.PathValue("hash"), time.Time{}, f)
 }
 

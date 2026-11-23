@@ -71,7 +71,8 @@ func (a *Agent) recordUnavailableTool(id, callID, name string) (Snapshot, error)
 		if !ok || call.Name != name {
 			return fmt.Errorf("unknown pending tool call: %s", callID)
 		}
-		if observed, err := appendHistoricalToolObservation(s, call, ""); observed || err != nil {
+		tool, _ := a.registry.Lookup(call.Name)
+		if observed, err := a.toolAdmissionObservation(s, call, tool.Adapter); observed || err != nil {
 			return err
 		}
 		raw, err := json.Marshal(ToolResult{ExitCode: -1, WorkerStatus: worker.StatusNotStarted,
