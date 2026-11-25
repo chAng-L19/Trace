@@ -1,6 +1,12 @@
 package agent
 
-import "time"
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"time"
+)
 
 // Predicate is an executable assertion over successful, integrity-checked stdout.
 // Semantic review is recorded separately: model assessment is not reproduction.
@@ -9,6 +15,25 @@ type EvidencePredicate struct {
 	Value    string `json:"value,omitempty"`
 	Pointer  string `json:"pointer,omitempty"`
 	Expected any    `json:"expected,omitempty"`
+}
+
+// UnmarshalJSON rejects unknown predicate fields while preserving Expected numbers.
+func (p *EvidencePredicate) UnmarshalJSON(raw []byte) error {
+	type predicate EvidencePredicate
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode((*predicate)(p)); err != nil {
+		return err
+	}
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("predicate JSON must contain one value")
+	}
+	return nil
 }
 
 type VerificationRequirement struct {

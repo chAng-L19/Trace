@@ -27,7 +27,7 @@ def main(image, report_path, source=None, binary=None):
     calls, failures = [], []
     token = "synthetic-benchmark-token"
     challenge = "hosted_contract_fixture"
-    # Exercise the delivered helper through real pi/exec in both final-image
+    # Exercise the delivered helper through the real Go agent loop/exec in both final-image
     # and readonly-overlay modes; inline HTTP calls would miss packaging gaps.
     code = (
         "import subprocess,sys; helper='/opt/trace/examples/tsecbench_api.py'; "
@@ -125,7 +125,7 @@ def main(image, report_path, source=None, binary=None):
     threading.Thread(target=server.serve_forever, daemon=True).start()
     name = "trace-hosted-smoke-" + uuid.uuid4().hex[:12]
     report = {"status": "running", "image": image, "container": name,
-              "scope": "Real default ENTRYPOINT/CMD, pi/tool/persistence; synthetic provider/API and VPN response. Not official platform/VPN/gateway acceptance."}
+              "scope": "Real default ENTRYPOINT/CMD, agent-loop/tool/persistence; synthetic provider/API and VPN response. Not official platform/VPN/gateway acceptance."}
     try:
         with tempfile.TemporaryDirectory(prefix="trace-hosted-smoke-") as tmp:
             root = Path(tmp)

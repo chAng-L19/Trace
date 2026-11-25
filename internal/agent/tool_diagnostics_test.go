@@ -165,7 +165,7 @@ func TestToolDiagnosticActivityProjectionReadOnly(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			row, err := store.workerActivity(s.Run.ID)
+			row, err := store.workerActivityContext(context.Background(), s.Run.ID)
 			if err != nil || len(row.row.Calls) != 1 || !reflect.DeepEqual(row.row.Calls[0].Diagnostic, d) {
 				t.Fatalf("%+v %v", row, err)
 			}

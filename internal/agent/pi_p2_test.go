@@ -4,9 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
-	"time"
 )
 
 func TestP2PiParallelReadBatchOrderedAndRecoverable(t *testing.T) {
@@ -63,78 +61,6 @@ func TestP2PiParallelReadBatchOrderedAndRecoverable(t *testing.T) {
 	snap, err = b.Run(piMigrationContext(t), bid)
 	if err != nil || snap.Run.Status != StatusCompleted || len(snap.Actions) != 1 || len(snap.Evidence) != 1 || snap.Actions[0].Result.Stdout != "saved-result" {
 		t.Fatalf("recovery repeated/lost action: %+v %v", snap.Run, err)
-	}
-}
-
-func TestP2PiTransportCanonicalDeltaAndReset(t *testing.T) {
-	var cache piContextTransport
-	var messages []Message
-	var tools []ToolDefinition
-	var reconstructed []Message
-	var reconstructedTools []ToolDefinition
-	revision := 0
-	fullBytes, deltaBytes := 0, 0
-	for i := 0; i < 80; i++ {
-		if i == 40 {
-			messages = messages[35:]
-			messages = append([]Message{{ID: "summary", Role: "system", Content: "compacted"}}, messages...)
-		}
-		messages = append(messages, Message{ID: time.Unix(int64(i), 0).String(), Role: "user", Content: string(make([]byte, 4096))})
-		if i == 25 {
-			tools = builtinDefinitions()
-		}
-		if i == 55 {
-			tools = nil
-		}
-		request := ModelRequest{Messages: messages, Tools: tools}
-		if i == 65 {
-			revision = 0
-		}
-		result, err := cache.prepare(request, []string{"read"}, revision)
-		if err != nil {
-			t.Fatal(err)
-		}
-		prefix := result["message_prefix"].(int)
-		if result["base_revision"].(int) == 0 {
-			prefix = 0
-		}
-		raw, _ := json.Marshal(result)
-		deltaBytes += len(raw)
-		full, _ := json.Marshal(map[string]any{"messages": messages, "tools": tools})
-		fullBytes += len(full)
-		var decoded struct {
-			Messages []Message        `json:"messages"`
-			Tools    []ToolDefinition `json:"tools"`
-		}
-		if err = json.Unmarshal(raw, &decoded); err != nil {
-			t.Fatal(err)
-		}
-		// Reconstruct from the actual delta, including replacement/compaction.
-		if prefix > len(reconstructed) {
-			t.Fatal("invalid cache prefix")
-		}
-		reconstructed = append(reconstructed[:prefix], decoded.Messages...)
-		if head, ok := result["message_head"].(json.RawMessage); ok {
-			if err = json.Unmarshal(head, &reconstructed[0]); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if !reflect.DeepEqual(reconstructed, messages) {
-			t.Fatalf("message divergence at %d", i)
-		}
-		if _, exists := result["tools"]; exists {
-			reconstructedTools = decoded.Tools
-		}
-		left, _ := json.Marshal(reconstructedTools)
-		right, _ := json.Marshal(tools)
-		if string(left) != string(right) {
-			t.Fatalf("schema divergence at %d", i)
-		}
-		revision = result["revision"].(int)
-	}
-	t.Logf("canonical RPC bytes full=%d delta=%d ratio=%.3f", fullBytes, deltaBytes, float64(deltaBytes)/float64(fullBytes))
-	if deltaBytes*3 >= fullBytes {
-		t.Fatal("delta transport did not reduce repeated history")
 	}
 }
 

@@ -131,7 +131,7 @@ func TestDisplayRecordIndexColdReopenAndLegacyBackfill(t *testing.T) {
 				if _, err = cold.PlannerWorkspace(context.Background(), created.Run.ID); err != nil {
 					t.Fatal(err)
 				}
-				if _, err = cold.workerActivity(created.Run.ID); err != nil {
+				if _, err = cold.workerActivityContext(context.Background(), created.Run.ID); err != nil {
 					t.Fatal(err)
 				}
 				if backend == "json" {

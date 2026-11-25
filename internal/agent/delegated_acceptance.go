@@ -152,6 +152,10 @@ func collectDelegatedAcceptance(root *Snapshot, sourceFor func(string) *Snapshot
 			if !delegatedSourceBound(root, task, w, source) {
 				continue
 			}
+			visits, visitsOK := delegatedVisitBoundaries(root, w)
+			floorView := Snapshot{Run: source.Run, Actions: source.Actions, Events: source.Events, Evidence: source.Evidence, Requirements: root.Requirements}
+			floor := cleanupFreshnessFloor(&floorView)
+			cleanupOrdered := map[uint64]bool{}
 			ids := task.EvidenceIDs
 			// Ordinary settled tasks have no machine predicate and therefore
 			// no task evidence list. Use only the child's verified outcome refs,
@@ -200,19 +204,24 @@ func collectDelegatedAcceptance(root *Snapshot, sourceFor func(string) *Snapshot
 						}
 						// Parent boundaries order visits; child boundaries locate the
 						// original probe. A report-only resume cannot refresh it.
-						probeVisit, visitProof := delegatedProbeVisit(root, w, source, e, action)
-						if cleanupRequired && !artifactOnly && len(source.Workers) == 0 &&
-							delegatedCleanupOrdered(root, task, w, probeVisit, sourceFor) {
-							for _, requirement := range root.Requirements {
-								if requirement.Category != "cleanup" {
-									continue
+						probeVisit, visitProof := delegatedProbeVisit(visits, visitsOK, source, e, action)
+						if cleanupRequired && !artifactOnly && len(source.Workers) == 0 {
+							ordered, cached := cleanupOrdered[probeVisit]
+							if !cached {
+								ordered = delegatedCleanupOrdered(root, task, w, probeVisit, sourceFor)
+								cleanupOrdered[probeVisit] = ordered
+							}
+							if ordered {
+								for _, requirement := range root.Requirements {
+									if requirement.Category != "cleanup" {
+										continue
+									}
+									// Apply the frozen root probes as the exclusions in the
+									// child's own sequence domain. This also works when an
+									// ordinary task had no child-level requirements.
+									status, _ := checkPredicate(source, requirement.Predicate, []string{id}, requirement.ToolID, requirement.ArgumentsHash, floor)
+									o.CleanupRequirements[valueHash(requirement)] = status != "unknown"
 								}
-								// Apply the frozen root probes as the exclusions in the
-								// child's own sequence domain. This also works when an
-								// ordinary task had no child-level requirements.
-								floorView := Snapshot{Run: source.Run, Actions: source.Actions, Events: source.Events, Evidence: source.Evidence, Requirements: root.Requirements}
-								status, _ := checkPredicate(source, requirement.Predicate, []string{id}, requirement.ToolID, requirement.ArgumentsHash, cleanupFreshnessFloor(&floorView))
-								o.CleanupRequirements[valueHash(requirement)] = status != "unknown"
 							}
 						}
 						o.Reference.SourceHash = valueHash([]any{binding, artifactOnly, visitProof})

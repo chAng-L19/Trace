@@ -328,7 +328,7 @@ func TestMCPBridgeStdioRPCErrorKeepsSessionAndRaw(t *testing.T) {
 }
 
 func TestMCPBridgeBlockedWriteUncertainNeverReplays(t *testing.T) {
-	args, _ := json.Marshal(map[string]string{"uri": "fixture://" + strings.Repeat("x", 2<<20)})
+	args, _ := json.Marshal(map[string]string{"uri": "fixture://" + strings.Repeat("x", 512<<10)})
 	a, store := newTestAgent(t, manualProvider(ToolCall{ID: "blocked", Name: mcp.MethodID("bridge", "resources/read"), Arguments: string(args)}))
 	// Retain the complete large request in the continuation; this test's pipe
 	// backpressure must not be confused with a separate context-window limit.
@@ -372,7 +372,7 @@ func TestMCPBridgeBlockedWriteUncertainNeverReplays(t *testing.T) {
 		}
 	case <-time.After(15 * time.Second):
 		// Transport cancellation is bounded separately by the observed pipe
-		// write test in mcp. This wait includes settling the 8 MiB Run ledger;
+		// write test in mcp. This wait includes settling the large Run ledger;
 		// race instrumentation makes its repeated JSON encoding much slower.
 		pprof.Lookup("goroutine").WriteTo(os.Stdout, 2)
 		t.Fatal("Agent did not finish cancellation and durable settlement")

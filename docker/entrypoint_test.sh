@@ -157,7 +157,6 @@ root=$(cd -- "$(dirname -- "$0")/.." && pwd)
 [[ "$LIGHTPANDA_BINARY_PATH" == "$root/runtime/lightpanda/lightpanda" ]]
 [[ "$CLOAKBROWSER_BINARY_PATH" == "$root/runtime/cloakbrowser/binary/chrome" ]]
 [[ "$CLOAKBROWSER_AUTO_UPDATE" == false ]]
-[[ "$TRACE_PI_RUNTIME" == "$root/runtime/pi" ]]
 [[ "$PWD" == "$root/workspace" ]]
 if [[ $# == 3 && "$1" == serve && "$2" == --addr && "$3" == 127.0.0.1:8765 ]]; then
   printf 'default\n'

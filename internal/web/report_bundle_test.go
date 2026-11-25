@@ -397,7 +397,7 @@ func TestReportBundleHeadedBrowser(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
-	command := exec.CommandContext(ctx, "node", "report_bundle_browser.mjs")
+	command := exec.CommandContext(ctx, testNodeBinary(), "report_bundle_browser.mjs")
 	command.Env = append(os.Environ(), "TRACE_REPORT_FIXTURE="+string(data), "CLOAKBROWSER_AUTO_UPDATE=false")
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("headed report delivery: %v %s", err, output)

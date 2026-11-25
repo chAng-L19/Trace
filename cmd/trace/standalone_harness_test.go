@@ -13,7 +13,7 @@ import (
 // particular a copied binary still needs the externally provisioned exec root.
 func standaloneRuntimeEnv(name string) bool {
 	switch strings.ToUpper(name) {
-	case "TRACE_PI_RUNTIME", "TRACE_PI_NODE", "TRACE_EXEC_CGROUP_ROOT", "TRACE_EXEC_RESOURCE_MODE",
+	case "TRACE_EXEC_CGROUP_ROOT", "TRACE_EXEC_RESOURCE_MODE",
 		"TRACE_EXEC_MEMORY_BYTES", "TRACE_EXEC_PIDS", "TRACE_EXEC_OUTPUT_BYTES":
 		return true
 	}
@@ -52,7 +52,7 @@ func standaloneReport(content string) string {
 }
 
 func TestStandaloneHarnessPreservesRuntimeNotConfiguration(t *testing.T) {
-	keep := []string{"PATH=/fixture/bin", "TRACE_PI_RUNTIME=/fixture/runtime", "TRACE_PI_NODE=/fixture/node",
+	keep := []string{"PATH=/fixture/bin",
 		"TRACE_EXEC_CGROUP_ROOT=/fixture/exec", "TRACE_EXEC_RESOURCE_MODE=process-group", "TRACE_EXEC_MEMORY_BYTES=268435456", "TRACE_EXEC_PIDS=64", "TRACE_EXEC_OUTPUT_BYTES=8388608"}
 	input := append(append([]string(nil), keep...), "TRACE_PROVIDER_KEY=private", "TRACE_CONFIG_FILE=/ambient.json",
 		"TRACE_MAX_ROUNDS=1", "trace_provider_url=http://ambient.invalid", "TRACE_EXEC_UNRECOGNIZED=drop")

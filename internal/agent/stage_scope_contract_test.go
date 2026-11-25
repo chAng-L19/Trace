@@ -27,7 +27,7 @@ func TestLateModelResponsePreservesPauseAndDynamicPlan(t *testing.T) {
 	if s.Run.Status != StatusPaused || len(s.Responses) != 1 || len(s.Messages) != 0 {
 		t.Fatal("late model completion revived pause")
 	}
-	if _, err = a.finishPiTurn(id, request, response); err != nil {
+	if _, err = a.finishPiTurn(context.Background(), id, request, response); err != nil {
 		t.Fatal(err)
 	}
 	s, err = store.Load(id)
@@ -43,7 +43,7 @@ func TestLateModelResponsePreservesPauseAndDynamicPlan(t *testing.T) {
 	if _, err = a.SetPlan(id, []PlanTask{{ID: "new", Goal: "newly required work"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = a.finishPiTurn(id, request, response); err != nil {
+	if _, err = a.finishPiTurn(context.Background(), id, request, response); err != nil {
 		t.Fatal(err)
 	}
 	s, err = store.Load(id)

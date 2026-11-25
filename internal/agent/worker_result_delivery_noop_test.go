@@ -87,9 +87,9 @@ func TestWorkerResultDuplicateSkipsParentCommit(t *testing.T) {
 						}); err != nil {
 							t.Fatal(err)
 						}
-						result, err := publisher.finishPiTurn(worker.RunID, ModelRequest{}, ModelResponse{Content: "English translation remains pending."})
-						if err != nil || result.(map[string]string)["action"] != "continue" {
-							t.Fatalf("translation did not continue: result=%v err=%v", result, err)
+						end, err := publisher.finishPiTurn(context.Background(), worker.RunID, ModelRequest{}, ModelResponse{Content: "English translation remains pending."})
+						if err != nil || end {
+							t.Fatalf("translation did not continue: end=%v err=%v", end, err)
 						}
 					} else if err := publisher.publishWorkerResult(worker.RunID); err != nil {
 						t.Fatal(err)

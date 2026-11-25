@@ -64,8 +64,7 @@ func delegatedVisitBoundaries(root *Snapshot, w AgentWorker) ([]delegatedVisitBo
 	return visits, true
 }
 
-func delegatedProbeVisit(root *Snapshot, w AgentWorker, source *Snapshot, e Evidence, action Action) (uint64, string) {
-	visits, ok := delegatedVisitBoundaries(root, w)
+func delegatedProbeVisit(visits []delegatedVisitBoundary, ok bool, source *Snapshot, e Evidence, action Action) (uint64, string) {
 	start := actionStartSequence(source, action)
 	if !ok || start == 0 || e.SourceEventSequence <= start {
 		return 0, ""

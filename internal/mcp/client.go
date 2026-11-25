@@ -184,7 +184,8 @@ func (c *Client) Tools(ctx context.Context) ([]Tool, error) {
 			if tool.Name == "" || seenTools[tool.Name] {
 				return nil, fmt.Errorf("invalid or duplicate MCP tool name %q", tool.Name)
 			}
-			var schema map[string]any
+			// Shape check only: RawMessage values keep numbers such as 1e400 unparsed.
+			var schema map[string]json.RawMessage
 			if json.Unmarshal(tool.InputSchema, &schema) != nil || schema == nil {
 				return nil, fmt.Errorf("MCP tool %q has no object inputSchema", tool.Name)
 			}

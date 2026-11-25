@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Server-only Docker acceptance, stdlib only; never builds or changes an image.
 python3 docker/p2_runtime_test.py --image trace:p2-test --report /tmp/p2-docker.json
-Uses the image's real ENTRYPOINT tini -> entrypoint.sh -> trace run, real pi,
+Uses the image's real ENTRYPOINT tini -> entrypoint.sh -> trace run, the Go agent loop,
 a loopback scripted provider, and the existing TRACE_MCP_SERVERS stdio contract.
 """
 import argparse
@@ -221,12 +221,12 @@ def run(image, report_path):
                         return json.loads(docker("exec", name, "python3", "/fixture/p2_runtime_test.py", "--fixture", "inspect").stdout)
                     before = wait_for(lambda: (lambda value: value if all(row["pid"] != orphan for row in value["processes"]) else None)(snapshot()))
                     processes = before["processes"]
+                    if any("host.mjs" in row["cmd"] or "/runtime/pi/" in row["cmd"] or ("node" in row["cmd"] and "--input-type=module" in row["cmd"]) for row in processes):
+                        raise AssertionError("legacy Node pi host remains in the Go-loop image")
                     if any(row["state"] == "Z" for row in processes):
                         raise AssertionError("zombie remains in live tini container")
                     if not any(row["pid"] == 1 and "tini" in row["cmd"] for row in processes):
                         raise AssertionError("tini is not PID1")
-                    if not any("node" in row["cmd"] and "--input-type=module" in row["cmd"] for row in processes):
-                        raise AssertionError("real pi host not alive before SIGINT")
                     if not any("--fixture mcp" in row["cmd"] for row in processes):
                         raise AssertionError("real configured MCP process not alive")
                     host_rows = docker("top", name, "-eo", "pid,ppid,stat").stdout.splitlines()[1:]

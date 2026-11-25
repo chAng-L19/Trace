@@ -13,14 +13,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 COPY runtime/ /opt/trace/runtime/
 COPY docker/lightpanda.sha256 /opt/trace/runtime/lightpanda/SHA256SUMS
-RUN cd /opt/trace/runtime/lightpanda && sha256sum -c SHA256SUMS
+RUN cd /opt/trace/runtime/lightpanda && sha256sum -c SHA256SUMS && rm -rf /opt/trace/runtime/pi
 ENV PATH="/opt/trace/runtime/python/bin:/opt/trace/runtime/node/bin:${PATH}" \
     PYTHONPATH="/opt/trace/runtime/cloakbrowser/site-packages:/opt/trace/runtime/site-packages:/opt/trace/runtime/ASC" \
     PYTHONIOENCODING=utf-8 PYTHONUTF8=1 PYTHONDONTWRITEBYTECODE=1 \
     TRACE_DATA_DIR=/state TRACE_PROMPT_FILE=/opt/trace/prompts/agent.md \
     TRACE_SKILL_PATHS=/opt/trace/.trace/skills \
     TRACE_WEB_ANALYSIS_DIR=/opt/trace/tools/web-analysis \
-    TRACE_PI_RUNTIME=/opt/trace/runtime/pi \
     LIGHTPANDA_DISABLE_TELEMETRY=true \
     LIGHTPANDA_BINARY_PATH=/opt/trace/runtime/lightpanda/lightpanda \
     CLOAKBROWSER_BINARY_PATH=/opt/trace/runtime/cloakbrowser/binary/chrome \
@@ -28,9 +27,7 @@ ENV PATH="/opt/trace/runtime/python/bin:/opt/trace/runtime/node/bin:${PATH}" \
     TRACE_BROWSER_NO_SANDBOX=1 \
     REA_BROWSER_NO_SANDBOX=true \
     NO_UPDATE_NOTIFIER=1
-RUN cd /opt/trace/runtime/pi \
-    && node --input-type=module -e 'import {readFileSync} from "node:fs"; for (const name of ["pi-agent-core","pi-ai"]) { const p=JSON.parse(readFileSync("node_modules/@earendil-works/"+name+"/package.json")); if(p.version!=="1.4.0") throw new Error(name+" must be pinned to 1.4.0"); } await import("@earendil-works/pi-agent-core");' \
-    && chmod -R a+rX /opt/trace/runtime/cloakbrowser \
+RUN chmod -R a+rX /opt/trace/runtime/cloakbrowser \
     && test -x "$LIGHTPANDA_BINARY_PATH" \
     && test -x "$CLOAKBROWSER_BINARY_PATH" \
     && test -x /usr/bin/xvfb-run \

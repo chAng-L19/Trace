@@ -228,10 +228,7 @@ func testP2BrowserAcceptance(t *testing.T, mode string) {
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	data, _ := json.Marshal(map[string]any{"base": server.URL, "ids": ids, "parent": parent.Run.ID, "sizes": sizes, "output": output, "mode": mode})
-	node := os.Getenv("TRACE_NODE")
-	if node == "" {
-		node = "node"
-	}
+	node := testNodeBinary()
 	command := exec.CommandContext(ctx, node, "p2_mixed_browser.mjs")
 	command.Env = append(os.Environ(), "TRACE_P2_FIXTURE="+string(data))
 	raw, err := command.CombinedOutput()

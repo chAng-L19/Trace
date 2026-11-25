@@ -68,7 +68,7 @@ func decodeBuiltin(raw string, value any) error {
 	if err := validateMCPArguments(raw); err != nil {
 		return err
 	}
-	return json.Unmarshal([]byte(raw), value)
+	return decodeToolJSON([]byte(raw), value)
 }
 
 func (a *Agent) builtin(ctx context.Context, id string, call ToolCall) (any, error) {

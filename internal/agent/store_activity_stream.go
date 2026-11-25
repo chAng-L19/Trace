@@ -48,14 +48,7 @@ func readActivityFields(source interface {
 	io.Reader
 	io.ReaderAt
 }) (*storedView, *activityRecords, error) {
-	return readActivityFieldsFor(source, "activity")
-}
-
-func readActivityFieldsFor(source interface {
-	io.Reader
-	io.ReaderAt
-}, mode string) (*storedView, *activityRecords, error) {
-	return readActivityFieldsIndexed(source, mode, nil)
+	return readActivityFieldsIndexed(source, "activity", nil)
 }
 
 func readActivityFieldsIndexed(source interface {

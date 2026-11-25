@@ -4,9 +4,8 @@ ARG BASE_IMAGE
 FROM ${BASE_IMAGE} AS updated
 USER root
 # Replace the complete built closure, not just package manifests or dist.
-# pi host, localtool helpers and UI assets are embedded in bin/trace; the
-# unchanged pi 1.4.0 dependency tree is inherited from the accepted base.
-RUN rm -rf /opt/trace/tools/web-analysis \
+# The accepted base may contain the obsolete Node pi runtime.
+RUN rm -rf /opt/trace/runtime/pi /opt/trace/tools/web-analysis \
     /opt/trace/.trace/skills/asc /opt/trace/.trace/skills/cloakbrowser \
     /opt/trace/.trace/skills/frida /opt/trace/.trace/skills/web-analysis
 COPY tools/web-analysis/ /opt/trace/tools/web-analysis/
@@ -50,7 +49,7 @@ ENV PATH="/opt/trace/runtime/python/bin:/opt/trace/runtime/node/bin:/usr/local/s
     CLOAKBROWSER_BINARY_PATH=/opt/trace/runtime/cloakbrowser/binary/chrome \
     CLOAKBROWSER_AUTO_UPDATE=false \
     TRACE_BROWSER_NO_SANDBOX=1 REA_BROWSER_NO_SANDBOX=true \
-    NO_UPDATE_NOTIFIER=1 TRACE_PI_RUNTIME=/opt/trace/runtime/pi
+    NO_UPDATE_NOTIFIER=1 TRACE_PI_RUNTIME=
 USER trace
 WORKDIR /workspace
 STOPSIGNAL SIGINT

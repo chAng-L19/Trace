@@ -1,16 +1,17 @@
 import {esc,json,label,evidenceLinks} from './ui.js';
 
 // Markdown is rendered as escaped text; raw HTML and executable URL schemes stay text.
+const SAFE_HREF=/^(https?:\/\/|mailto:|\/[^/\\])/;
 function inline(text){
   return String(text).split(/(`[^`]+`|!?\[[^\]]*\]\([^\s)]+\))/g).map(part=>{
     if(part.startsWith('`')&&part.endsWith('`'))return `<code>${esc(part.slice(1,-1))}</code>`;
     const image=part.match(/^!\[([^\]]*)\]\(([^\s)]+)\)$/);
     if(image){
       if(/^\/api\/artifacts\/[a-fA-F0-9]{64}\/download\?preview=1$/.test(image[2]))return `<img class="artifact-media" src="${esc(image[2])}" alt="${esc(image[1])}">`;
-      return /^(https?:\/\/|mailto:|\/[^/\\])/.test(image[2])?`<a href="${esc(image[2])}" target="_blank" rel="noopener noreferrer">${esc(image[1]||image[2])}</a>`:esc(part);
+      return SAFE_HREF.test(image[2])?`<a href="${esc(image[2])}" target="_blank" rel="noopener noreferrer">${esc(image[1]||image[2])}</a>`:esc(part);
     }
     const link=part.match(/^\[([^\]]+)\]\(([^\s)]+)\)$/);
-    if(link&&/^(https?:\/\/|mailto:|\/[^/\\])/.test(link[2]))return `<a href="${esc(link[2])}" target="_blank" rel="noopener noreferrer">${esc(link[1])}</a>`;
+    if(link&&SAFE_HREF.test(link[2]))return `<a href="${esc(link[2])}" target="_blank" rel="noopener noreferrer">${esc(link[1])}</a>`;
     return esc(part).replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>').replace(/\*([^*\n]+)\*/g,'<em>$1</em>').replace(/~~([^~]+)~~/g,'<del>$1</del>');
   }).join('');
 }
@@ -63,7 +64,7 @@ function answerBody(answer){
   if(!answer||typeof answer!=='object'||Array.isArray(answer)||!Array.isArray(answer.evidence_ids)||!answer.evidence_ids.every(id=>typeof id==='string'))return structured(answer);
   return structured(answer.value??'')+evidenceLinks(answer.evidence_ids);
 }
-const reportText=report=>typeof report?.zh_cn==='string'&&report.zh_cn.trim()?report.zh_cn:typeof report?.en==='string'?report.en:'';
+export const reportText=report=>typeof report?.zh_cn==='string'&&report.zh_cn.trim()?report.zh_cn:typeof report?.en==='string'?report.en:'';
 const hasReport=value=>value!==null&&typeof value==='object'&&!Array.isArray(value)&&(Object.hasOwn(value,'trace_report')||Boolean(reportText((value.trace_result||value.final_result)?.report).trim()));
 function reportPrefix(text){
   // Recognize a top-level key in incomplete JSON without matching nested examples

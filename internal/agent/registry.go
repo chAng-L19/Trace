@@ -95,7 +95,7 @@ func (r *ToolRegistry) AddMCP(server string, client *mcp.Client, tools []mcp.Too
 			return fmt.Errorf("duplicate registered tool ID: %s", tool.ID)
 		}
 		var params any
-		if err := json.Unmarshal(tool.InputSchema, &params); err != nil {
+		if err := decodeToolJSON(tool.InputSchema, &params); err != nil {
 			return fmt.Errorf("MCP tool %s schema: %w", tool.Name, err)
 		}
 		d := ToolDefinition{Type: "function"}
@@ -154,7 +154,7 @@ func (r *ToolRegistry) AddLocal(manifests []localtool.Manifest) error {
 			d.Function.Description = "Execute local tool " + definition.Name
 		}
 		var params any
-		if err := json.Unmarshal(definition.InputSchema, &params); err != nil {
+		if err := decodeToolJSON(definition.InputSchema, &params); err != nil {
 			return fmt.Errorf("local tool %s schema: %w", manifest.Name, err)
 		}
 		d.Function.Parameters = params

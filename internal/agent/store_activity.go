@@ -179,10 +179,6 @@ func activityArray(fields map[string]json.RawMessage, name string) ([]snapshotJS
 	return rows, err
 }
 
-func buildActivity(fields map[string]json.RawMessage) (ActivityProjection, error) {
-	return buildActivityRecords(fields, nil)
-}
-
 func buildActivityRecords(fields map[string]json.RawMessage, records *activityRecords) (ActivityProjection, error) {
 	return buildActivityPage(fields, records, MessagePageQuery{}, "activity")
 }

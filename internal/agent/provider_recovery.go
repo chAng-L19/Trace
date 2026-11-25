@@ -149,7 +149,7 @@ func providerRecoveryReason(response ModelResponse, err error) string {
 
 // Admit compaction in the same commit as the failed provider attempt. Like pi's
 // AgentSession overflow compaction, this continues the turn, not a failed Run.
-func (a *Agent) prepareProviderRecoveryLocked(s *Snapshot, failed ModelRequest, reason string) {
+func (a *Agent) prepareProviderRecoveryLocked(s *Snapshot, failed ModelRequest, reason string) bool {
 	fail := func(detail string) {
 		s.Run.Status, s.Run.Error = StatusFailed, "context recovery: "+detail
 		addEvent(s, "context_recovery_failed", "上下文恢复已停止，原始响应与历史保留", map[string]string{"request_id": failed.ID, "reason": reason, "error": detail})
@@ -158,17 +158,17 @@ func (a *Agent) prepareProviderRecoveryLocked(s *Snapshot, failed ModelRequest, 
 	for _, event := range s.Events {
 		if event.Type == "context_recovery_started" && recoveryEvent(event).SourceHash == sourceHash {
 			fail("one compact-and-retry attempt already used for this history")
-			return
+			return false
 		}
 	}
 	plan, planErr := providerRecoverySummary(s, failed)
 	if planErr != nil {
 		fail(planErr.Error())
-		return
+		return false
 	}
 	if budget := budgetReason(s, "model"); budget != "" {
 		pauseBudget(s, budget)
-		return
+		return true
 	}
 	now := time.Now().UTC()
 	request := ModelRequest{ID: fmt.Sprintf("%s-%04d", s.Run.ID, s.Run.RequestSeq+1), PromptHash: s.Run.PromptHash, Purpose: "context_summary",
@@ -181,10 +181,10 @@ func (a *Agent) prepareProviderRecoveryLocked(s *Snapshot, failed ModelRequest, 
 		var limit *TreeBudgetError
 		if errors.As(err, &limit) {
 			pauseBudget(s, err.Error())
-			return
+			return true
 		}
 		fail(err.Error())
-		return
+		return false
 	}
 	s.Run.RequestSeq++
 	s.Compactions = append(s.Compactions, plan.record)
@@ -192,6 +192,7 @@ func (a *Agent) prepareProviderRecoveryLocked(s *Snapshot, failed ModelRequest, 
 	s.Run.Status, s.Run.Error = StatusRunning, ""
 	addEvent(s, "context_recovery_started", "上下文或输出截断，尝试一次压缩后重试", map[string]string{"request_id": failed.ID, "summary_request_id": request.ID, "source_hash": sourceHash, "reason": reason})
 	addEvent(s, "model_request", "已提交模型请求", map[string]any{"request_id": request.ID, "prompt_hash": request.PromptHash, "purpose": request.Purpose})
+	return false
 }
 
 // Execute only the summary already admitted for this failed request. In
@@ -231,10 +232,17 @@ func (a *Agent) recoverProviderContext(ctx context.Context, id string, failed Mo
 	// correction remains a new accounted request with the original source.
 	answer, summaryErr := a.complete(ctx, id, request)
 	retries := 0
-	var delay time.Duration
-	snap, delay, err = a.settlePiResponse(ctx, id, request, answer, summaryErr, &retries)
+	var decision piResponseDisposition
+	snap, decision, err = a.settlePiResponse(ctx, id, request, answer, summaryErr, &retries)
+	delay := decision.retryDelay
 	if err != nil || isStopped(snap.Run.Status) || snap.Run.Status == StatusFailed {
-		return snap, false, err
+		if err == nil && isStopped(snap.Run.Status) && decision.budgetPaused {
+			return snap, false, nil
+		}
+		if snap.Run.Status == StatusFailed {
+			err = errors.Join(err, errors.New(snap.Run.Error))
+		}
+		return snap, false, errors.Join(summaryErr, err)
 	}
 	if delay > 0 {
 		timer := time.NewTimer(delay)

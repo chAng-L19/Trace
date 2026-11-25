@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -395,9 +394,9 @@ func TestTaskDispositionFinishTurnIsFailureWithoutContinuation(t *testing.T) {
 	if _, err := store.Update(id, func(s *Snapshot) error { s.Run.Status = StatusRunning; return nil }); err != nil {
 		t.Fatal(err)
 	}
-	response, err := a.finishPiTurn(id, ModelRequest{ID: "final"}, ModelResponse{Content: "finished"})
-	if err != nil || fmt.Sprint(response) != "map[action:end]" {
-		t.Fatalf("finish: %v %v", response, err)
+	end, err := a.finishPiTurn(context.Background(), id, ModelRequest{ID: "final"}, ModelResponse{Content: "finished"})
+	if err != nil || !end {
+		t.Fatalf("finish: end=%v %v", end, err)
 	}
 	s, err := store.Load(id)
 	if err != nil || s.Run.Status != StatusFailed || s.Result.Status != "failed" {
@@ -424,7 +423,7 @@ func TestTaskDispositionTerminalSurvivesAddedPendingTask(t *testing.T) {
 	if _, err := store.Update(id, func(s *Snapshot) error { s.Run.Status = StatusRunning; return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.finishPiTurn(id, ModelRequest{ID: "final"}, ModelResponse{Content: "finished"}); err != nil {
+	if _, err := a.finishPiTurn(context.Background(), id, ModelRequest{ID: "final"}, ModelResponse{Content: "finished"}); err != nil {
 		t.Fatal(err)
 	}
 	before, err := store.Load(id)

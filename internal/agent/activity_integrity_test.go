@@ -70,7 +70,7 @@ func TestActivityHelpWindowKeepsTrueTotal(t *testing.T) {
 	if err := v.retainSnapshot(raw); err != nil {
 		t.Fatal(err)
 	}
-	p, err := buildActivity(v.fields)
+	p, err := buildActivityRecords(v.fields, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

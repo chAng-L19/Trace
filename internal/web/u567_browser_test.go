@@ -100,10 +100,7 @@ func TestU567BrowserAcceptance(t *testing.T) {
 	fixture, _ := json.Marshal(map[string]any{"base": server.URL, "run": s.Run.ID, "output": out})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	node := os.Getenv("TRACE_NODE")
-	if node == "" {
-		node = "node"
-	}
+	node := testNodeBinary()
 	cmd := exec.CommandContext(ctx, node, "u567_browser.mjs")
 	cmd.Env = append(os.Environ(), "TRACE_U567_FIXTURE="+string(fixture))
 	output, err := cmd.CombinedOutput()

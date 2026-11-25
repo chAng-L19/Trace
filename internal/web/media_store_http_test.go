@@ -134,7 +134,7 @@ func TestMediaMultiSourceStoreReopenHTTP(t *testing.T) {
 		fixture, _ := json.Marshal(map[string]any{"base": httpServer.URL, "run": snap.Run.ID, "hash": hash, "requests": []string{snap.Actions[0].RequestID, snap.Actions[1].RequestID}})
 		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, "node", "media_store_browser.mjs")
+		cmd := exec.CommandContext(ctx, testNodeBinary(), "media_store_browser.mjs")
 		cmd.Env = append(os.Environ(), "TRACE_MEDIA_FIXTURE="+string(fixture), "CLOAKBROWSER_AUTO_UPDATE=false")
 		if output, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("Store/CAS headed browser: %v %s", err, output)

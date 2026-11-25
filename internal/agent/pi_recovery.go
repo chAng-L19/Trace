@@ -12,6 +12,7 @@ var errPiRecoveryArchiveMissing = errors.New("pending tool batch has no archived
 type piRecovery struct {
 	Response ModelResponse
 	Tools    []ToolDefinition
+	Settled  map[string]bool
 }
 
 // Missing schemas cannot authorize old execution. Close only the model-facing
@@ -49,7 +50,7 @@ func (a *Agent) observeMissingPiArchive(id string) (Snapshot, error) {
 	})
 }
 
-// Recovery uses pi's public runToolCall, not an unvalidated Go batch loop.
+// Recovery uses agentloop's strict argument validation and ordered settlement.
 // Do not archive a new request before settling the original batch: action and
 // evidence identities must continue to belong to its durable request.
 func (a *Agent) preparePiRecovery(id string) (piRecovery, bool, error) {
@@ -64,7 +65,8 @@ func (a *Agent) preparePiRecovery(id string) (piRecovery, bool, error) {
 	if len(pending) == 0 {
 		return piRecovery{}, false, nil
 	}
-	var recovery piRecovery
+	recovery := piRecovery{Settled: map[string]bool{}}
+	pendingCount := 0
 	requestID := currentRequestID(&s)
 	for i := len(s.Messages) - 1; i >= 0; i-- {
 		m := s.Messages[i]
@@ -75,17 +77,26 @@ func (a *Agent) preparePiRecovery(id string) (piRecovery, bool, error) {
 			requestID = m.RequestID
 		}
 		for _, call := range m.ToolCalls {
+			recovery.Response.ToolCalls = append(recovery.Response.ToolCalls, call)
 			if _, ok := pending[call.ID]; ok {
-				recovery.Response.ToolCalls = append(recovery.Response.ToolCalls, call)
+				pendingCount++
+			} else {
+				recovery.Settled[call.ID] = true
 			}
 		}
 		break
 	}
-	if len(recovery.Response.ToolCalls) != len(pending) {
+	if pendingCount != len(pending) {
 		return piRecovery{}, false, fmt.Errorf("pending calls do not belong to the current assistant batch")
 	}
 	if requestID != currentRequestID(&s) {
 		return piRecovery{}, false, fmt.Errorf("pending batch request differs from current durable request")
+	}
+	for _, response := range s.Responses {
+		if response.RequestID == requestID {
+			recovery.Response.StopReason = response.Response.StopReason
+			break
+		}
 	}
 	for _, request := range s.Requests {
 		if request.ID == requestID {

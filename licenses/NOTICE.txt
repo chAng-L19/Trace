@@ -21,11 +21,12 @@ Source reference: upstream master 0d7d18fa8a7502088294fd6fe49b6b534da53934 (2026
 License: upstream custom non-commercial terms, retained verbatim in DrissionPage-LICENSE.txt; not MIT.
 Reference review: Muteki apps/web/capability_management_api.py:417 capability availability/Skill discovery; no container runtime imported.
 
-pi framework / coding-agent adaptation (2026-10-29)
+pi framework / coding-agent adaptation (2026-10-29; loop port 2026-11-24)
 Source: https://github.com/badlogic/pi-mono
-Commit: e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a
-Runtime packages: @earendil-works/pi-agent-core and pi-ai 1.4.0.
-License: MIT, retained in pi-MIT.txt and frozen npm dependency notices.
+Commit: e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a (agent-core 1.4.0); loop reference 5a14e69c067d40dfbff4f2fff7d3b34c897e2dc9
+Adaptation: internal/agentloop ports the turn, tool-batch and argument-validation semantics of
+packages/agent/src/agent-loop.ts and packages/ai/src/utils/validation.ts to Go. The Go loop does not depend on or copy any pi npm package.
+License: MIT, retained in pi-MIT.txt.
 
 Muteki scheduling/context/UI reference and adaptation (2026-10-29)
 Commit: c60c8feeff69a64aa5abfbda113f3f33bff30af4

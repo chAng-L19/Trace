@@ -107,7 +107,7 @@ def run(base, image):
         assert old["Config"].get(field) == new["Config"].get(field), field
     for field in ("Architecture", "Os"):
         assert old[field] == new[field], field
-    # Only the browser migration may change environment values. Other keys match.
+    # Only browser settings and the removed pi host setting may change.
     before_env = dict(item.split("=", 1) for item in old["Config"]["Env"])
     after_env = dict(item.split("=", 1) for item in new["Config"]["Env"])
     expected_env = dict(before_env)
@@ -119,6 +119,7 @@ def run(base, image):
     expected_env["PYTHONPATH"] = "/opt/trace/runtime/cloakbrowser/site-packages:" + before_env["PYTHONPATH"]
     expected_env["CLOAKBROWSER_BINARY_PATH"] = "/opt/trace/runtime/cloakbrowser/binary/chrome"
     expected_env["CLOAKBROWSER_AUTO_UPDATE"] = "false"
+    expected_env["TRACE_PI_RUNTIME"] = ""
     assert expected_env == after_env, "unexpected Env migration"
     assert new["Config"]["User"] == "trace"
     assert new["Config"]["StopSignal"] == "SIGINT"
@@ -126,10 +127,14 @@ def run(base, image):
     before, after = snapshot(base), snapshot(image)
     changed = sorted(p for p in before["files"].keys() | after["files"].keys()
                      if before["files"].get(p) != after["files"].get(p))
-    unexpected = [p for p in changed if browser_migration_root(p) is None]
+    removed_pi = {p for p in changed
+                  if (p == "/opt/trace/runtime/pi" or p.startswith("/opt/trace/runtime/pi/"))
+                  and p not in after["files"]}
+    unexpected = [p for p in changed
+                  if browser_migration_root(p) is None and p not in removed_pi]
     assert not unexpected, "non-browser frozen inventory changed: " + str(unexpected[:10])
-    migration_counts = Counter(browser_migration_root(p) for p in changed)
-    assert migration_counts, "browser migration inventory unchanged"
+    migration_counts = Counter(browser_migration_root(p) for p in changed if p not in removed_pi)
+    assert migration_counts or removed_pi, "runtime migration inventory unchanged"
     for root in (*BROWSER_ROOTS[:2], *BROWSER_ROOTS[4:6]):
         assert not any(p == root or p.startswith(root + "/") for p in after["files"]), root
     assert not any(p.startswith("/opt/trace/runtime/site-packages/")
@@ -143,11 +148,11 @@ test "$PWD" = /workspace
 test -w /state
 test -w /workspace
 python3 -c 'import capstone, droidasc, frida, cloakbrowser, playwright, importlib.util, sys; assert sys.version_info[:2] == (3, 12); assert cloakbrowser.__version__ == "0.6.4"; assert importlib.util.find_spec("DrissionPage") is None; print("Python 3.12 tools / CloakBrowser 0.6.4: PASS")'
-cd /opt/trace/runtime/pi
-node --input-type=module -e 'import {readFileSync} from "node:fs"; for (const name of ["pi-agent-core","pi-ai"]) { if(JSON.parse(readFileSync("node_modules/@earendil-works/"+name+"/package.json")).version!=="1.4.0") throw new Error(name); } await import("@earendil-works/pi-agent-core"); console.log("pi 1.4.0: PASS");'
 if command -v playwright-cli >/dev/null 2>&1; then echo 'old Playwright CLI remains' >&2; exit 1; fi
 test ! -e /opt/trace/runtime/chromium
 test ! -e /opt/trace/runtime/playwright
+test ! -e /opt/trace/runtime/pi
+test -z "${TRACE_PI_RUNTIME:-}"
 test -x "$CLOAKBROWSER_BINARY_PATH"
 test "$CLOAKBROWSER_AUTO_UPDATE" = false
 test -s /opt/trace/.trace/skills/cloakbrowser/SKILL.md

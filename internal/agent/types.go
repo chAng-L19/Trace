@@ -1,7 +1,10 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"time"
 
 	"trace/internal/worker"
@@ -113,6 +116,29 @@ type ToolDefinition struct {
 		Description string `json:"description"`
 		Parameters  any    `json:"parameters"`
 	} `json:"function"`
+}
+
+// UnmarshalJSON preserves the JSON numbers in archived tool parameters.
+func (d *ToolDefinition) UnmarshalJSON(raw []byte) error {
+	type definition ToolDefinition
+	return decodeToolJSON(raw, (*definition)(d))
+}
+
+// ToolDefinition's only interface field is Function.Parameters.
+func decodeToolJSON(raw []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("tool JSON must contain one value")
+	}
+	return nil
 }
 
 type ModelResponse struct {

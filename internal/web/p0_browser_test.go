@@ -262,10 +262,7 @@ func runP0Browser(t *testing.T, script string, args ...string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	node := os.Getenv("TRACE_NODE")
-	if node == "" {
-		node = "node"
-	}
+	node := testNodeBinary()
 	command := exec.CommandContext(ctx, node, append([]string{script}, args...)...)
 	command.Env = append(os.Environ(), "TRACE_P0_FIXTURE="+string(fixture))
 	raw, runErr := command.CombinedOutput()

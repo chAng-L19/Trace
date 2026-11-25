@@ -14,7 +14,7 @@ import (
 	"trace/internal/localtool"
 )
 
-// Deterministic decisions exercise the real pi/tool/Store/Judge path. They are
+// Deterministic decisions exercise the real agent-loop/tool/Store/Judge path. They are
 // mechanism acceptance, not a measurement of a live model's research quality.
 type generalAcceptanceStep struct {
 	id, tool string

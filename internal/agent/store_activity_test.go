@@ -94,7 +94,7 @@ func TestActivityLegacyIdentityUsesFullBoundary(t *testing.T) {
 	if err = v.retainSnapshot(raw); err != nil {
 		t.Fatal(err)
 	}
-	p, err := buildActivity(v.fields)
+	p, err := buildActivityRecords(v.fields, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestActivitySelectedMetadataPreservesIdentityAndInFlight(t *testing.T) {
 	if err = v.retainSnapshot(raw); err != nil {
 		t.Fatal(err)
 	}
-	p, err := buildActivity(v.fields)
+	p, err := buildActivityRecords(v.fields, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +174,7 @@ func TestActivitySelectedMetadataPreservesIdentityAndInFlight(t *testing.T) {
 		{"run": json.RawMessage(`{"id":"identity"}`), "responses": json.RawMessage(`[{"request_id":42},{"request_id":"latest"}]`)},
 		{"run": json.RawMessage(`{"id":"identity"}`), "requests": json.RawMessage(`[{"id":"latest","context_manifest":42}]`)},
 	} {
-		if _, err := buildActivity(fields); err == nil {
+		if _, err := buildActivityRecords(fields, nil); err == nil {
 			t.Fatal("activity accepted malformed identity or selected request metadata")
 		}
 	}
@@ -184,7 +184,7 @@ func TestActivitySelectedMetadataPreservesIdentityAndInFlight(t *testing.T) {
 			"requests":  json.RawMessage(`[{"id":"old",` + invalid + `},{"id":"latest"}]`),
 			"responses": json.RawMessage(`[{"request_id":"old"},{"request_id":"latest"}]`),
 		}
-		if _, err := buildActivity(fields); err == nil {
+		if _, err := buildActivityRecords(fields, nil); err == nil {
 			t.Fatal("activity accepted malformed unselected request metadata:", invalid)
 		}
 	}
@@ -209,7 +209,7 @@ func BenchmarkActivityProjectionHistoricalRequests(b *testing.B) {
 			b.SetBytes(int64(len(raw)))
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				p, err := buildActivity(v.fields)
+				p, err := buildActivityRecords(v.fields, nil)
 				if err != nil || len(p.Snapshot.Requests) != 5 || len(p.Snapshot.Responses) != 4 || len(p.Snapshot.Messages) != 40 {
 					b.Fatalf("invalid activity window: %v", err)
 				}

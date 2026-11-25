@@ -65,7 +65,7 @@ func TestStageModelSelectionConcurrentHTTPImages(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err = a.WaitWorkers(context.Background(), root.Run.ID, 10); err != nil {
+	if _, err = waitAllTestWorkers(a, context.Background(), root.Run.ID, 10); err != nil {
 		t.Fatal(err)
 	}
 	got := map[string]observed{}

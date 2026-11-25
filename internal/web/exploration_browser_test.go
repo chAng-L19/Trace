@@ -12,10 +12,7 @@ func TestExplorationGraphInteractions(t *testing.T) {
 	if os.Getenv("TRACE_P0_BROWSER") != "1" {
 		t.Skip("server-only: TRACE_P0_BROWSER=1 and fixed headed CloakBrowser required")
 	}
-	node := os.Getenv("TRACE_NODE")
-	if node == "" {
-		node = "node"
-	}
+	node := testNodeBinary()
 	raw, err := exec.Command(node, "exploration_interaction_test.mjs").CombinedOutput()
 	t.Logf("EXPLORATION_LAYOUT %s", raw)
 	if err != nil {

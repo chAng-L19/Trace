@@ -12,8 +12,7 @@ import (
 	"trace/internal/mcp"
 )
 
-// These are real pi-host integration checks; install the pinned runtime before
-// running them on the designated server. They do not replace pi with a Go loop.
+// Integration checks of the Go agent loop against real Store/tool transactions.
 func piMigrationContext(t *testing.T) context.Context {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -22,7 +21,7 @@ func piMigrationContext(t *testing.T) context.Context {
 }
 
 func TestPiMigrationSchemaRejectsInvalidExecWithoutAction(t *testing.T) {
-	for _, args := range []string{`{}`, `{"command":`} {
+	for _, args := range []string{`{}`, `{"command":`, `{"command":42}`, `{"command":true}`} {
 		t.Run(args, func(t *testing.T) {
 			p := manualProvider(ToolCall{ID: "invalid-exec", Name: "exec", Arguments: args})
 			a, _ := newTestAgent(t, p)
@@ -35,6 +34,9 @@ func TestPiMigrationSchemaRejectsInvalidExecWithoutAction(t *testing.T) {
 			}
 			if len(snap.Evidence) != 1 || snap.Evidence[0].Type != "manual_observation" || snap.Evidence[0].Verification == "verified" {
 				t.Fatalf("validation was represented as execution evidence: %+v", snap.Evidence)
+			}
+			if (args == `{"command":42}` || args == `{"command":true}`) && !strings.Contains(snap.Evidence[0].Content, "schema") && !strings.Contains(snap.Evidence[0].Content, "Validation") {
+				t.Fatalf("missing explicit validation result: %s", snap.Evidence[0].Content)
 			}
 			var result ToolResult
 			if err := json.Unmarshal([]byte(snap.Evidence[0].Content), &result); err != nil || result.ExitCode != -1 || result.Error == "" {
@@ -165,23 +167,5 @@ func TestPiMigrationToolSelectionRefreshesNextRequest(t *testing.T) {
 	}
 	if snap.Run.ToolSelection == nil || len(snap.Run.ToolSelection.IDs) != 0 || snap.Actions[1].RemoteName != "echo" {
 		t.Fatalf("selection or remote provenance was lost: selection=%+v action=%+v", snap.Run.ToolSelection, snap.Actions[1])
-	}
-}
-
-func TestPiMigrationMissingRuntimeFailsWithoutFallback(t *testing.T) {
-	t.Setenv("TRACE_PI_RUNTIME", t.TempDir())
-	p := &scriptedProvider{responses: []ModelResponse{{Content: "fallback must not run"}}}
-	a, store := newTestAgent(t, p)
-	id := createTestRun(t, a)
-	snap, err := a.Run(piMigrationContext(t), id)
-	if err == nil || !strings.Contains(err.Error(), "pi runtime") || snap.Run.Status != StatusFailed {
-		t.Fatalf("missing runtime was not explicit: status=%s err=%v", snap.Run.Status, err)
-	}
-	if len(p.requests) != 0 || len(snap.Requests) != 0 || len(snap.Actions) != 0 {
-		t.Fatalf("missing framework fell back to Go execution: calls=%d requests=%d actions=%d", len(p.requests), len(snap.Requests), len(snap.Actions))
-	}
-	saved, err := store.Load(id)
-	if err != nil || saved.Run.Status != StatusFailed || !strings.Contains(saved.Run.Error, "pi runtime") {
-		t.Fatalf("runtime failure not persisted: status=%s error=%s load=%v", saved.Run.Status, saved.Run.Error, err)
 	}
 }

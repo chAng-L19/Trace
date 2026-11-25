@@ -4,9 +4,9 @@
 
 ## 完整镜像构建入口（2026-11-11）
 
-`Dockerfile.hosted` 从已验收干净基底的不可变ID构建，包含完整操作系统与冻结工具/环境，而非只交付程序或补丁层。当前入口完整替换 Web Analysis 的 `dist`、Linux `node_modules`、package/lock、bridge 和许可，先删除再复制 asc/cloakbrowser/frida/web-analysis 四个 Skill 目录，更新根许可证、程序、运行提示、示例和入口；pi host、Python localtool helper 与 UI 资源嵌入新程序。pi依赖锁与基底一致时继承1.4.0完整运行树，Python/Node/浏览器依赖保留。最终镜像的 `hosted_startup_test.py` 不传 `--source` / `--binary`，通过真实 pi/exec 调用镜像内的 `tsecbench_api.py`。
+`Dockerfile.hosted` 从已验收干净基底的不可变ID构建，包含完整操作系统与冻结工具/环境，而非只交付程序或补丁层。当前入口完整替换 Web Analysis 的 `dist`、Linux `node_modules`、package/lock、bridge 和许可，先删除再复制 asc/cloakbrowser/frida/web-analysis 四个 Skill 目录，更新根许可证、程序、运行提示、示例和入口；Go 模型—工具循环与 Python localtool helper 嵌入新程序。构建会从最终活动文件树移除旧 `runtime/pi`，清空旧 `TRACE_PI_RUNTIME`，启动不再依赖 pi npm 运行时；Node 仍供 Web Analysis/CloakBrowser 使用。`Dockerfile.hosted` 保留基底层，因此 `docker save` 归档可能仍含旧层中的 pi 字节；解包运行树和镜像实际文件树应无该目录。最终镜像的 `hosted_startup_test.py` 通过 Go loop/exec 调用镜像内的 `tsecbench_api.py`。
 
-Linux exec 由 `TRACE_EXEC_RESOURCE_MODE` 显式选择执行资源后端。未设置或为 `cgroup` 时保持原严格模式；托管镜像明确设置 `process-group`，以支持平台未委托可写 cgroup 的普通容器。非法值直接报错；委托失败不会自动切换模式。打包验收必须实际走通最终镜像的默认入口、pi→exec 与清理，镜像可导入不代表平台运行已通过。
+Linux exec 由 `TRACE_EXEC_RESOURCE_MODE` 显式选择执行资源后端。未设置或为 `cgroup` 时保持原严格模式；托管镜像明确设置 `process-group`，以支持平台未委托可写 cgroup 的普通容器。非法值直接报错；委托失败不会自动切换模式。打包验收必须实际走通最终镜像的默认入口、Go loop→exec 与清理，镜像可导入不代表平台运行已通过。
 
 入口保留 `USER trace`、`tini -g` 与 SIGINT。兼容模式要求 Linux pidfd syscall 可用、容器使用独立 PID namespace，且同 UID 的 `/proc` 身份和环境可读；读取权限失败时阻断，不忽略不可见进程。每次调用使用独立进程组锚点与继承 owner 标记，保留共享输出预算、持久归属与 uncertain 不重放。执行期间覆盖原组内清空环境的后代，崩溃恢复时该路径依赖存活且身份匹配的锚点；保留标记的 setsid/double-fork 后代也纳入清理。这是有边界的尽力清理：同时失去锚点和标记、清空标记并脱离原组、改变 UID 或隐藏进程超出其范围，不凭数字 PGID 推断归属。没有逐命令内存/PID 硬隔离，平台容器整体限额仍由平台管理。
 
@@ -16,7 +16,7 @@ Linux exec 由 `TRACE_EXEC_RESOURCE_MODE` 显式选择执行资源后端。未�
 
 - 一个空且有限的父域，下面只有 `controller` 和 `exec`；容器 PID 1（tini）与 Trace 全部在 `controller`，`exec` 本身为空。默认参考值为父域至少2816MiB/576 tasks、controller 1GiB/128 tasks、exec 1.5GiB/384 tasks；三者 swap=0，父域至少另留256MiB/64 tasks。不是全主机资源预留。
 - 父域和 exec 开启 `memory pids`，将 exec 子树建组、设置限制、`cgroup.kill` 与必要 `cgroup.procs` 迁移权限委托给实际容器 UID（默认1000；userns/rootless时需按宿主映射UID处理）。只映射所需子树，保持容器中的 `/proc/self/cgroup` 和 `/proc/1/cgroup` 对应 `/sys/fs/cgroup` 下同一真实路径；随意将子树挂到另一目录会被拒绝。host cgroup namespace 加相同路径的受限子树挂载是一种配置方式，不应把整个宿主 cgroup 层级开放写入。
-- 支持 `clone3(CLONE_INTO_CGROUP)` 的内核，以及允许该调用的 seccomp/LSM/委托配置。入口只读校验不证明 syscall 或逐 leaf 权限可用；现有 Go worker 仍会在每次 exec 验证、设置有限上限并原子入组，失败保持 `not_started`，没有裸执行 fallback。平台运行验收必须实际走通一次 pi→exec 与清理。
+- 支持 `clone3(CLONE_INTO_CGROUP)` 的内核，以及允许该调用的 seccomp/LSM/委托配置。入口只读校验不证明 syscall 或逐 leaf 权限可用；现有 Go worker 仍会在每次 exec 验证、设置有限上限并原子入组，失败保持 `not_started`，没有裸执行 fallback。平台运行验收必须实际走通一次 Go agentloop→exec 与清理。
 
 Docker 的 systemd driver 下，`--cgroup-parent` 只选择父 slice，仍会创建 `docker-*.scope`，不会自动产生上述固定兄弟布局。现有 `scripts/exec-cgroup-isolated.sh` 只用于新建的单进程委托 unit，拒绝已有 tini 的普通容器。选择严格模式时需由平台/宿主启动器预置布局；选择托管镜像的显式兼容模式则不要求该委托和 clone3。
 
@@ -37,7 +37,7 @@ Docker 的 systemd driver 下，`--cgroup-parent` 只选择父 slice，仍会创
 
 ## TSecBench 托管上传（2026-11-02 官网核对）
 
-11月3日历史交付使用 `docker/Dockerfile.hosted` 合并单rootfs层；11月6日当前入口采用前节所述完整多层导出，并补齐Web产物/依赖、Skill和许可。二者都只从已验收干净镜像的不可变ID复用冻结依赖，不从正式state/workspace取构建材料、不安装联网依赖。`hosted_startup_test.py` 经过默认CMD、真实pi/exec与持久化检查合成平台API流程，含缺变量/健康失败负控；不是正式平台接入验收。包身份/验收结果见根DEPLOYMENT。
+11月3日历史交付使用 `docker/Dockerfile.hosted` 合并单rootfs层；11月6日当前入口采用前节所述完整多层导出，并补齐Web产物/依赖、Skill和许可。二者都只从已验收干净镜像的不可变ID复用冻结依赖，不从正式state/workspace取构建材料、不安装联网依赖。`hosted_startup_test.py` 经过默认CMD、真实Go agent loop/exec与持久化检查合成平台API流程，含缺变量/健康失败负控；不是正式平台接入验收。包身份/验收结果见根DEPLOYMENT。
 
 用户指定 hosted 准备页要求：先完成平台本地模式接入，再上传启动后自动解题的 Docker 镜像归档（≤3GB）。托管运行由平台负责，不要求用户在本机 docker load/run；下方历史手工命令不能替代托管上传。产品构建/运行仍仅在指定 Ubuntu 服务器执行。
 
@@ -101,9 +101,9 @@ bash docker/entrypoint_test.sh
 
 独立上下文只含上述 COPY 材料，不复制其他 runtime、非浏览器 Skill 或用户数据。P2 只复制 `skills/cloakbrowser`，其余 Skill 的基底内容、mode 和 owner 原样保留；仅删除 `drissionpage` 与 `playwright-cli` 两个旧浏览器 Skill。验收/日志归档后，核对 `$context` 仍是本次创建的绝对目录且无构建使用，再精确清理；失败上下文保留排查，不批量清理 `/tmp`。
 
-`image_test.py` 明确区分迁移与冻结 parity：环境只接受上述精确变化；路径/类型/模式/owner/size/symlink/xattrs 只允许本轮产品/许可覆盖、浏览器替换目录及 `skills/drissionpage`、`skills/playwright-cli`、`skills/cloakbrowser` 变化，并报告各替换根的实际变化数量。其他 Skill、runtime、dpkg、系统锚点与 owner 保持相同，禁止笼统豁免整个 runtime。测试不做内容 hash 等价承诺，也不把更换了浏览器的镜像称为“全依赖冻结完全相同”。
+`image_test.py` 明确区分迁移与冻结 parity：环境只接受上述精确变化；路径/类型/模式/owner/size/symlink/xattrs 只允许本轮产品/许可覆盖、浏览器替换目录、`runtime/pi` 的精确删除及 `skills/drissionpage`、`skills/playwright-cli`、`skills/cloakbrowser` 变化，并报告各替换根的实际变化数量。其他 Skill、runtime、dpkg、系统锚点与 owner 保持相同，禁止笼统豁免整个 runtime。测试不做内容 hash 等价承诺，也不把更换了浏览器的镜像称为“全依赖冻结完全相同”。
 
-离线 smoke 使用 `--network none`，检查非 root 可写、空 state/workspace、pi 1.4.0、其余 Python 工具、Web Analysis 目录；分别以 Python 和 JS SDK 在 Xvfb 中实际打开页面，查 `/proc` 确认固定 CloakBrowser 路径与 **无 `--headless` 参数**。缺失 binary 负对照必须失败且不回退；旧 CLI、DrissionPage 与旧浏览器目录必须不存在。它验证 SDK 与镜像运行契约，不替代实际 Trace localtool/JS 操作链和生命周期回归；`p2_runtime_test.py` 继续覆盖真实 exec/MCP、tini 回收和单次 SIGINT。正式验收/发布结果以项目 DEPLOYMENT 为准，不因新增脚本即宣称通过。
+离线 smoke 使用 `--network none`，检查非 root 可写、空 state/workspace、无旧 pi host 目录与环境依赖、其余 Python 工具、Web Analysis 目录；分别以 Python 和 JS SDK 在 Xvfb 中实际打开页面，查 `/proc` 确认固定 CloakBrowser 路径与 **无 `--headless` 参数**。缺失 binary 负对照必须失败且不回退；旧 CLI、DrissionPage 与旧浏览器目录必须不存在。它验证 SDK 与镜像运行契约，不替代实际 Trace localtool/JS 操作链和生命周期回归；`p2_runtime_test.py` 继续覆盖真实 exec/MCP、tini 回收和单次 SIGINT。正式验收/发布结果以项目 DEPLOYMENT 为准，不因新增脚本即宣称通过。
 
 构建前检查 Docker data-root 可用空间并记录实际基底大小；完整 rootfs、冻结浏览器和临时上下文占用另计。scratch 合并不是增量缓存优化，更新产品仍重新传输整层，旧镜像和缓存仍占盘；不承诺冷启动更快，不批量 prune、删除历史镜像或重写旧包。
 
@@ -126,7 +126,7 @@ bash docker/pack-p2.sh trace:cloakbrowser-20261030 /tmp/trace-cloakbrowser-deliv
 ## 交付边界
 
 - 本批镜像名：`trace:p2-20261029`；冻结依赖基底：`trace:p1-20261029`。仅在服务器 `ubuntu@193.112.174.4` 构建、运行与验收。
-- pi 唯一模型—工具循环使用 `@earendil-works/pi-agent-core`、`@earendil-works/pi-ai` **1.4.0**；不以整个 pi CLI 或其他循环回退替代。Go 保留 Provider、工具执行、持久状态和证据账本。
+- 唯一模型—工具循环是 Go 内置 `internal/agentloop`（移植 pi agent-loop 轮次语义，2026-11-24 起），镜像不再需要 pi npm 包或 Node pi host。Go 同时负责 Provider、工具执行、持久状态和证据账本。
 - 纯净 Linux Agent 包只携带 `bin/trace`、`prompts`、`.trace/skills`、`tools`、`runtime`、`licenses`、必要 Docker/启动材料、环境模板及官方任务提示词；另交付 `docker save` 镜像归档。
 - 不带 Trace 整个源码树、开发计划、部署记录、测试日志、历史会话、答题记忆、用户 `state` / `workspace`、真实 API key、已保存 Provider/MCP 配置或 `.env`。运行库和工具随附的源文件、锁文件及许可属于依赖材料，不等于复制开发工作区。Docker镜像包含系统工具及共享库；Linux tar依赖宿主OS系统库，不是任意Linux自包含包。
 - 根 `licenses`、依赖内许可及 `tools/web-analysis/LICENSE` / `UPSTREAM.json` 原样保留。Muteki 适配代码的 AGPL-3.0 与 pi 的 MIT 不混同；纯运行包不替代另行履行的对应源码交付义务。
@@ -148,7 +148,7 @@ Node/Python、Chromium、Playwright CLI、DrissionPage、REA web/JavaScript/Elec
 
 ### 1. 构建 P2 镜像
 
-`docker/Dockerfile.p2` 从干净 P1 镜像复用冻结依赖，只更新本轮二进制、运行提示词、入口和许可。它核对实际 pi 1.4.0，缺 tini 时仅补这个小包；不重装 Node/Python/浏览器。
+`docker/Dockerfile.p2` 从干净 P1 镜像复用冻结依赖，只更新本轮二进制、运行提示词、入口和许可。它删除旧 `runtime/pi` 目录，缺 tini 时仅补这个小包；不重装 Node/Python/浏览器。
 
 ```sh
 cd /tmp/trace-p2-20261029/round3-source
@@ -158,23 +158,18 @@ docker build --pull=false -f docker/Dockerfile.p2 \
   --build-arg BASE_IMAGE=trace:p1-20261029 -t trace:p2-20261029 .
 ```
 
-基底必须是此前冻结的干净镜像，不含真实 key/config/history；继承镜像会保留其所有旧层，后续删除目录不等于从归档中消除旧数据。若基底未冻结 pi 1.4.0，构建会明确失败，应先补齐既有依赖基底，不在启动脚本动态安装。
+基底必须是此前冻结的干净镜像，不含真实 key/config/history；继承镜像会保留其所有旧层，后续删除目录不等于从归档中消除旧数据。依赖缺失时应先补齐既有依赖基底，不在启动脚本动态安装。
 
 ### 2. 独立验收
 
-Node 上下文 fixture 直接复用 P2 镜像的 Node/pi；仅只读挂载当前 host 与测试脚本。此 fixture 显式使用 Node 入口，真实默认 tini ENTRYPOINT 另由下一条 Docker 生命周期验收覆盖。
-
 ```sh
 cd /tmp/trace-p2-20261029/round3-source
-docker run --rm --entrypoint node --volume "$PWD/internal/picore:/fixture:ro" \
-  trace:p2-20261029 /fixture/host_context_test.mjs --rounds 100 > /tmp/p2-host-context.json
 python3 docker/p2_runtime_test.py --image trace:p2-20261029 \
   --report /tmp/p2-docker-runtime.json
 bash docker/entrypoint_test.sh
 ```
 
-- Node 脚本使用当前 host、真实 pinned pi loop，仅插入只读 context/RSS 探针；覆盖 message_head、schema 增删、压缩、late input、完整重建等价和真实工具调用。100 轮 RSS 是有限观测，不宣称无限运行内存上界。
-- Docker 脚本经真实 ENTRYPOINT 分别执行 exec/MCP fixture，检查活容器 double-fork 回收、真实 pi Node/MCP 进程存在、单次 SIGINT 后原宿主 PID 身份消失、未误报成功及自有容器清理。namespace teardown 也会回收进程，此项不替代 Go 层独立优雅清理排序测试。
+- Docker 脚本经真实 ENTRYPOINT 分别执行 exec/MCP fixture，检查活容器 double-fork 回收、真实 MCP 进程存在、单次 SIGINT 后原宿主 PID 身份消失、未误报成功及自有容器清理。namespace teardown 也会回收进程，此项不替代 Go 层独立优雅清理排序测试。
 - entrypoint 脚本检查创建失败、空哨兵恢复和有效哨兵复用；它是入口逻辑 fixture，不是在线比赛验收。Go/浏览器等完整回归仍由本批主验收流程负责。
 
 ### 3. 从已验收镜像打包

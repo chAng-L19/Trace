@@ -72,7 +72,8 @@ func (m Manifest) Validate() error {
 		return fmt.Errorf("local tool %s cancel_grace_seconds is invalid", m.Name)
 	}
 	if len(m.InputSchema) != 0 {
-		var schema map[string]any
+		// Shape check only: RawMessage values keep numbers such as 1e400 unparsed.
+		var schema map[string]json.RawMessage
 		if json.Unmarshal(m.InputSchema, &schema) != nil || schema == nil {
 			return fmt.Errorf("local tool %s input_schema must be a JSON object", m.Name)
 		}

@@ -5,336 +5,349 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
 	"time"
-	"trace/internal/picore"
+	"trace/internal/agentloop"
 )
 
-var errPiHalt = errors.New("pi loop stopped at durable Trace boundary")
+var errPiHalt = errors.New("agent loop stopped at durable Trace boundary")
 
 func (a *Agent) runPi(ctx context.Context, id string) (Snapshot, error) {
-	var request ModelRequest
-	var lastResponse ModelResponse
-	var modelErr error
-	retries := 0
-	var transport piContextTransport
-	err := picore.Run(ctx, func(method string, params json.RawMessage) (any, error) {
-		switch method {
-		case "prepare":
-			if recovery, pending, err := a.preparePiRecovery(id); err != nil {
-				if !errors.Is(err, errPiRecoveryArchiveMissing) {
-					return nil, err
-				}
-				if _, err := a.observeMissingPiArchive(id); err != nil {
-					return nil, err
-				}
-			} else if pending {
-				lastResponse = recovery.Response
-				// Recovery may mix fresh calls with historical observations. Emit
-				// the original batch in declaration order, without parallel writes.
-				return map[string]any{"recovery": recovery.Response, "tools": recovery.Tools, "parallel_tools": []string{}}, nil
-			}
-			var err error
-			request, err = a.preparePiConversation(ctx, id, &retries)
-			if err != nil {
-				return nil, err
-			}
-			var cached struct {
-				Revision int `json:"revision"`
-			}
-			if err := json.Unmarshal(params, &cached); err != nil {
-				return nil, err
-			}
-			return transport.prepare(request, a.piParallelTools(request.Tools), cached.Revision)
-		case "model":
-			// Retry only a failed provider attempt; pi alone schedules assistant turns.
-			for {
-				response, callErr := a.complete(ctx, id, request)
-				snap, delay, err := a.settlePiResponse(ctx, id, request, response, callErr, &retries)
-				if err != nil {
-					return nil, err
-				}
-				if isStopped(snap.Run.Status) {
-					return nil, errPiHalt
-				}
-				if snap.Run.Status == StatusRunning && request.Purpose == "" && providerRecoveryReason(response, callErr) != "" {
-					var recovered bool
-					snap, recovered, err = a.recoverProviderContext(ctx, id, request, response, callErr)
-					if err != nil {
-						return nil, err
-					}
-					if isStopped(snap.Run.Status) || snap.Run.Status == StatusCompleted {
-						return nil, errPiHalt
-					}
-					if recovered {
-						request, err = a.preparePiConversation(ctx, id, &retries)
-						if err != nil {
-							return nil, err
-						}
-						continue
-					}
-				}
-				if snap.Run.Status == StatusFailed {
-					if callErr != nil && snap.Run.Error == callErr.Error() {
-						modelErr = callErr
-					} else {
-						modelErr = errors.New(snap.Run.Error)
-					}
-					return map[string]string{"error": modelErr.Error()}, nil
-				}
-				if delay == 0 {
-					if (reportDeliveryPending(&snap) || request.Purpose == "outcome_delivery") && len(response.ToolCalls) > 0 {
-						request, err = a.preparePiConversation(ctx, id, &retries)
-						if err != nil {
-							return nil, err
-						}
-						continue
-					}
-					lastResponse = response
-					return transport.modelResponse(request, response, a.piParallelTools(request.Tools))
-				}
-				timer := time.NewTimer(delay)
-				select {
-				case <-timer.C:
-				case <-ctx.Done():
-				}
-				timer.Stop()
-				request, err = a.preparePiConversation(ctx, id, &retries)
-				if err != nil {
-					return nil, err
-				}
-			}
-		case "tool":
-			var p struct {
-				CallID    string `json:"call_id"`
-				Name      string `json:"name"`
-				Arguments string `json:"arguments"`
-				Manual    bool   `json:"manual"`
-				Parallel  bool   `json:"parallel"`
-			}
-			if err := json.Unmarshal(params, &p); err != nil {
-				return nil, err
-			}
-			snap, err := a.store.Load(id)
-			if err != nil {
-				return nil, err
-			}
-			if isStopped(snap.Run.Status) {
-				return nil, errPiHalt
-			}
-			call, ok := pendingToolCalls(&snap)[p.CallID]
-			if !ok || call.Name != p.Name {
-				return nil, fmt.Errorf("pi requested unknown pending tool: %s", p.CallID)
-			}
-			if p.Manual {
-				snap, err = a.recordUnavailableTool(id, call.ID, call.Name)
-				if err != nil {
-					return nil, err
-				}
-				if isStopped(snap.Run.Status) {
-					return nil, errPiHalt
-				}
-				for i := len(snap.Messages) - 1; i >= 0; i-- {
-					if m := snap.Messages[i]; m.Role == "tool" && m.ToolCallID == call.ID {
-						return map[string]any{"content": m.Content}, nil
-					}
-				}
-				return nil, fmt.Errorf("unavailable tool observation was not saved: %s", call.ID)
-			}
-			// Unknown tools may carry opaque manual input; executable tools must
-			// carry exactly the JSON value that pi validated.
-			if tool, known := a.registry.Lookup(call.Name); known || call.Name == "exec" {
-				original, originalErr := strictPiArguments(call.Arguments)
-				validated, validatedErr := strictPiArguments(p.Arguments)
-				if originalErr != nil {
-					return a.observePiToolFailure(id, call, originalErr, p.Parallel)
-				}
-				if validatedErr != nil || !reflect.DeepEqual(original, validated) {
-					return a.observePiToolFailure(id, call, fmt.Errorf("pi validated arguments differ from durable call: %s", call.ID), p.Parallel)
-				}
-				if tool.Adapter == "builtin" || call.Name == "exec" {
-					// Marshal through JSON: schemas may contain typed Go maps.
-					var schema any
-					raw, _ := json.Marshal(tool.Definition.Function.Parameters)
-					if err := json.Unmarshal(raw, &schema); err != nil {
-						return nil, err
-					}
-					if err := checkPiFieldAliases(original, schema); err != nil {
-						return a.observePiToolFailure(id, call, err, p.Parallel)
-					}
-				}
-			}
-			if content, ready, err := readyPiResult(&snap, call.ID); ready || err != nil {
-				if err == nil {
-					err = validateReadyPiAction(&snap, call)
-				}
-				if err != nil {
-					return a.observePiToolFailure(id, call, err, p.Parallel)
-				}
-				return map[string]any{"content": content}, err
-			}
-			toolCtx := ctx
-			if p.Parallel {
-				if !a.piReadOnlyBatch(lastResponse.ToolCalls) {
-					return nil, fmt.Errorf("parallel request is not a read-only batch")
-				}
-				toolCtx = context.WithValue(ctx, piDeferredResultKey{}, true)
-			}
-			snap, err = a.executePendingTool(toolCtx, id, call)
-			if err != nil {
-				return nil, err
-			}
-			if isStopped(snap.Run.Status) {
-				return nil, errPiHalt
-			}
-			if content, ready, err := readyPiResult(&snap, call.ID); ready || err != nil {
-				if err != nil {
-					return a.observePiToolFailure(id, call, err, p.Parallel)
-				}
-				return map[string]any{"content": content}, err
-			}
-			if _, pending := pendingToolCalls(&snap)[call.ID]; pending {
-				return nil, errPiHalt
-			}
-			for i := len(snap.Messages) - 1; i >= 0; i-- {
-				m := snap.Messages[i]
-				if m.Role == "tool" && m.ToolCallID == call.ID {
-					return map[string]any{"content": m.Content}, nil
-				}
-			}
-			return nil, fmt.Errorf("tool completed without a durable result: %s", call.ID)
-		case "tool_result":
-			var p struct {
-				CallID  string `json:"call_id"`
-				Name    string `json:"name"`
-				Content string `json:"content"`
-				IsError bool   `json:"is_error"`
-			}
-			if err := json.Unmarshal(params, &p); err != nil {
-				return nil, err
-			}
-			snap, err := a.store.Load(id)
-			if err != nil {
-				return nil, err
-			}
-			if isStopped(snap.Run.Status) {
-				return nil, errPiHalt
-			}
-			declared := false
-			for _, call := range lastResponse.ToolCalls {
-				if call.ID == p.CallID && call.Name == p.Name {
-					declared = true
-					break
-				}
-			}
-			if !declared {
-				return nil, fmt.Errorf("pi result was not declared in current response: %s", p.CallID)
-			}
-			if p.IsError {
-				// A validation failure cannot erase a historical side effect. Give
-				// the model an explicit runtime observation without replaying it.
-				if call, pending := pendingToolCalls(&snap)[p.CallID]; pending {
-					_, isReady, readyErr := readyPiResult(&snap, p.CallID)
-					if !isReady || readyErr != nil || validateReadyPiAction(&snap, call) != nil {
-						observed := false
-						_, err = a.store.Update(id, func(s *Snapshot) error {
-							if isStopped(s.Run.Status) {
-								return errPiHalt
-							}
-							var observationErr error
-							observed, observationErr = appendHistoricalToolObservation(s, call, p.Content)
-							if !observed && observationErr == nil {
-								tool, _ := a.registry.Lookup(call.Name)
-								observed, observationErr = a.toolAdmissionObservation(s, call, tool.Adapter)
-							}
-							return observationErr
-						})
-						if err != nil || observed {
-							return map[string]bool{"ok": err == nil}, err
-						}
-					}
-				}
-			}
-			if content, ready, readyErr := readyPiResult(&snap, p.CallID); ready || readyErr != nil {
-				if readyErr != nil {
-					return nil, readyErr
-				}
-				if p.Content != content {
-					return nil, fmt.Errorf("pi result differs from executed ready result: %s", p.CallID)
-				}
-				call, ok := pendingToolCalls(&snap)[p.CallID]
-				if !ok {
-					return nil, errPiHalt
-				}
-				if err := validateReadyPiAction(&snap, call); err != nil {
-					return nil, err
-				}
-				_, err := a.store.Update(id, func(s *Snapshot) error {
-					if isStopped(s.Run.Status) {
-						return errPiHalt
-					}
-					content, ready, err := readyPiResult(s, p.CallID)
-					if err != nil {
-						return err
-					}
-					if !ready || content != p.Content {
-						return fmt.Errorf("ready result changed before settlement: %s", p.CallID)
-					}
-					call, ok := pendingToolCalls(s)[p.CallID]
-					if !ok {
-						return errPiHalt
-					}
-					if err := validateReadyPiAction(s, call); err != nil {
-						return err
-					}
-					_, err = settleReadyPiResult(s, p.CallID)
-					return err
-				})
-				return map[string]bool{"ok": err == nil}, err
-			}
-			if _, pending := pendingToolCalls(&snap)[p.CallID]; pending {
-				if !p.IsError {
-					return nil, fmt.Errorf("pi returned an unexecuted tool result: %s", p.CallID)
-				}
-				data, _ := json.Marshal(ToolResult{ExitCode: -1, Error: p.Content})
-				_, err = a.store.Update(id, func(s *Snapshot) error {
-					if isStopped(s.Run.Status) {
-						return errPiHalt
-					}
-					if _, ok := pendingToolCalls(s)[p.CallID]; !ok {
-						return nil
-					}
-					appendToolResult(s, p.CallID, string(data), "pi_validation")
-					return nil
-				})
-			}
-			return map[string]bool{"ok": err == nil}, err
-		case "finish":
-			return a.finishPiTurn(id, request, lastResponse)
-		default:
-			return nil, fmt.Errorf("unknown pi host method: %s", method)
-		}
-	}, errPiHalt)
+	loop := &piTurns{a: a, id: id}
+	err := agentloop.Run(ctx, loop, errPiHalt)
 	if err != nil {
-		return a.settlePiLoopError(ctx, id, err)
+		return a.settlePiLoopError(ctx, id, errors.Join(loop.modelErr, err))
 	}
 	snap, err := a.store.Load(id)
 	if err != nil {
 		return Snapshot{}, err
 	}
 	if !isStopped(snap.Run.Status) && snap.Run.Status != StatusCompleted && snap.Run.Status != StatusFailed && len(pendingToolCalls(&snap)) == 0 {
-		return a.fail(id, errors.New("pi loop exited without a settled Trace completion decision"))
+		return a.fail(id, errors.New("agent loop exited without a settled Trace completion decision"))
 	}
-	if modelErr != nil {
-		return snap, modelErr
+	if loop.modelErr != nil {
+		return snap, loop.modelErr
 	}
 	return snap, nil
 }
 
-func (a *Agent) observePiToolFailure(id string, call ToolCall, cause error, deferred bool) (any, error) {
+// piTurns binds the Go loop (pi turn semantics) to Trace's durable
+// transactions. Request/response/retry state is process-local and never
+// authoritative; the Store remains the only history.
+type piTurns struct {
+	a            *Agent
+	id           string
+	request      ModelRequest
+	lastResponse ModelResponse
+	modelErr     error
+	retries      int
+}
+
+func loopTurn(response ModelResponse, definitions []ToolDefinition, parallel func(string) bool) agentloop.Turn {
+	turn := agentloop.Turn{StopReason: response.StopReason}
+	for _, call := range response.ToolCalls {
+		turn.Calls = append(turn.Calls, agentloop.Call{ID: call.ID, Name: call.Name, Arguments: call.Arguments})
+	}
+	for _, definition := range definitions {
+		name := definition.Function.Name
+		turn.Tools = append(turn.Tools, agentloop.Tool{Name: name, Parameters: definition.Function.Parameters, Parallel: parallel != nil && parallel(name)})
+	}
+	return turn
+}
+
+func (l *piTurns) Recover(context.Context) (*agentloop.Turn, error) {
+	recovery, pending, err := l.a.preparePiRecovery(l.id)
+	if err != nil {
+		if !errors.Is(err, errPiRecoveryArchiveMissing) {
+			return nil, err
+		}
+		_, err = l.a.observeMissingPiArchive(l.id)
+		return nil, err
+	}
+	if !pending {
+		return nil, nil
+	}
+	l.lastResponse = recovery.Response
+	// Recovery may mix fresh calls with historical observations. The loop
+	// emits the original batch in declaration order, without parallel writes.
+	turn := loopTurn(recovery.Response, recovery.Tools, nil)
+	for i := range turn.Calls {
+		turn.Calls[i].Settled = recovery.Settled[turn.Calls[i].ID]
+	}
+	return &turn, nil
+}
+
+func (l *piTurns) Prepare(ctx context.Context) error {
+	var err error
+	l.request, err = l.a.preparePiConversation(ctx, l.id, &l.retries)
+	return err
+}
+
+func (l *piTurns) Model(ctx context.Context) (agentloop.Turn, error) {
+	a, id := l.a, l.id
+	// Retry only a failed provider attempt; the loop alone schedules assistant turns.
+	for {
+		request := l.request
+		response, callErr := a.complete(ctx, id, request)
+		snap, decision, err := a.settlePiResponse(ctx, id, request, response, callErr, &l.retries)
+		delay := decision.retryDelay
+		if err != nil {
+			return agentloop.Turn{}, errors.Join(callErr, err)
+		}
+		if snap.Run.Status == StatusFailed {
+			return l.failedModelTurn(ctx, snap.Run.Error, callErr), nil
+		}
+		if isStopped(snap.Run.Status) && decision.budgetPaused {
+			return agentloop.Turn{}, errPiHalt
+		}
+		if ctx.Err() != nil {
+			return agentloop.Turn{}, errors.Join(context.Cause(ctx), callErr)
+		}
+		if isStopped(snap.Run.Status) {
+			return agentloop.Turn{}, errors.Join(callErr, errPiHalt)
+		}
+		if snap.Run.Status == StatusRunning && request.Purpose == "" && providerRecoveryReason(response, callErr) != "" {
+			var recovered bool
+			snap, recovered, err = a.recoverProviderContext(ctx, id, request, response, callErr)
+			if err != nil {
+				return agentloop.Turn{}, err
+			}
+			if isStopped(snap.Run.Status) || snap.Run.Status == StatusCompleted {
+				return agentloop.Turn{}, errPiHalt
+			}
+			if recovered {
+				if err = l.Prepare(ctx); err != nil {
+					return agentloop.Turn{}, err
+				}
+				continue
+			}
+		}
+		if snap.Run.Status == StatusFailed {
+			return l.failedModelTurn(ctx, snap.Run.Error, callErr), nil
+		}
+		if delay == 0 {
+			if (reportDeliveryPending(&snap) || request.Purpose == "outcome_delivery") && len(response.ToolCalls) > 0 {
+				if err = l.Prepare(ctx); err != nil {
+					return agentloop.Turn{}, err
+				}
+				continue
+			}
+			l.lastResponse = response
+			return loopTurn(response, request.Tools, a.piReadOnlyTool), nil
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+		}
+		timer.Stop()
+		if err = l.Prepare(ctx); err != nil {
+			return agentloop.Turn{}, err
+		}
+	}
+}
+
+// A failed response is already committed. Finish must observe that terminal
+// state even if cancellation arrives between Model and Finish.
+func (l *piTurns) failedModelTurn(ctx context.Context, runError string, providerErr error) agentloop.Turn {
+	if providerErr != nil {
+		l.modelErr = providerErr
+	} else if ctx.Err() != nil && runError == context.Cause(ctx).Error() {
+		l.modelErr = context.Cause(ctx)
+	} else {
+		l.modelErr = errors.New(runError)
+	}
+	if ctx.Err() != nil && !errors.Is(l.modelErr, context.Cause(ctx)) {
+		l.modelErr = errors.Join(l.modelErr, context.Cause(ctx))
+	}
+	return agentloop.Turn{Failed: true}
+}
+
+func (l *piTurns) Execute(ctx context.Context, loopCall agentloop.Call, manual, parallel bool) (agentloop.Outcome, error) {
+	content, isError, err := l.execute(ctx, loopCall, manual, parallel)
+	return agentloop.Outcome{Content: content, IsError: isError}, err
+}
+
+func (l *piTurns) execute(ctx context.Context, loopCall agentloop.Call, manual, parallel bool) (string, bool, error) {
+	a, id := l.a, l.id
+	snap, err := a.store.Load(id)
+	if err != nil {
+		return "", false, err
+	}
+	if isStopped(snap.Run.Status) {
+		return "", false, errPiHalt
+	}
+	call, ok := pendingToolCalls(&snap)[loopCall.ID]
+	if !ok || call.Name != loopCall.Name {
+		return "", false, fmt.Errorf("agent loop requested unknown pending tool: %s", loopCall.ID)
+	}
+	if manual {
+		snap, err = a.recordUnavailableTool(id, call.ID, call.Name)
+		if err != nil {
+			return "", false, err
+		}
+		if isStopped(snap.Run.Status) {
+			return "", false, errPiHalt
+		}
+		for i := len(snap.Messages) - 1; i >= 0; i-- {
+			if m := snap.Messages[i]; m.Role == "tool" && m.ToolCallID == call.ID {
+				return m.Content, false, nil
+			}
+		}
+		return "", false, fmt.Errorf("unavailable tool observation was not saved: %s", call.ID)
+	}
+	// Executable tools run the journaled original arguments. Reject duplicate
+	// fields and builtin case aliases that Go decoding would silently merge.
+	if tool, known := a.registry.Lookup(call.Name); known || call.Name == "exec" {
+		original, originalErr := strictPiArguments(call.Arguments)
+		if originalErr != nil {
+			return a.observePiToolFailure(id, call, originalErr, parallel)
+		}
+		if tool.Adapter == "builtin" || call.Name == "exec" {
+			// Marshal through JSON: schemas may contain typed Go maps.
+			var schema any
+			raw, _ := json.Marshal(tool.Definition.Function.Parameters)
+			if err := json.Unmarshal(raw, &schema); err != nil {
+				return "", false, err
+			}
+			if err := checkPiFieldAliases(original, schema); err != nil {
+				return a.observePiToolFailure(id, call, err, parallel)
+			}
+		}
+	}
+	if content, ready, err := readyPiResult(&snap, call.ID); ready || err != nil {
+		if err == nil {
+			err = validateReadyPiAction(&snap, call)
+		}
+		if err != nil {
+			return a.observePiToolFailure(id, call, err, parallel)
+		}
+		return content, false, nil
+	}
+	toolCtx := ctx
+	if parallel {
+		if !a.piReadOnlyBatch(l.lastResponse.ToolCalls) {
+			return "", false, fmt.Errorf("parallel request is not a read-only batch")
+		}
+		toolCtx = context.WithValue(ctx, piDeferredResultKey{}, true)
+	}
+	snap, err = a.executePendingTool(toolCtx, id, call)
+	if err != nil {
+		return "", false, err
+	}
+	if isStopped(snap.Run.Status) {
+		return "", false, errPiHalt
+	}
+	if content, ready, err := readyPiResult(&snap, call.ID); ready || err != nil {
+		if err != nil {
+			return a.observePiToolFailure(id, call, err, parallel)
+		}
+		return content, false, nil
+	}
+	if _, pending := pendingToolCalls(&snap)[call.ID]; pending {
+		return "", false, errPiHalt
+	}
+	for i := len(snap.Messages) - 1; i >= 0; i-- {
+		m := snap.Messages[i]
+		if m.Role == "tool" && m.ToolCallID == call.ID {
+			return m.Content, false, nil
+		}
+	}
+	return "", false, fmt.Errorf("tool completed without a durable result: %s", call.ID)
+}
+
+func (l *piTurns) Result(_ context.Context, loopCall agentloop.Call, outcome agentloop.Outcome) error {
+	a, id := l.a, l.id
+	snap, err := a.store.Load(id)
+	if err != nil {
+		return err
+	}
+	if isStopped(snap.Run.Status) {
+		return errPiHalt
+	}
+	pending := pendingToolCalls(&snap)
+	if outcome.IsError {
+		// A validation failure cannot erase a historical side effect. Give the
+		// model an explicit runtime observation without replaying it.
+		if call, ok := pending[loopCall.ID]; ok {
+			_, isReady, readyErr := readyPiResult(&snap, loopCall.ID)
+			if !isReady || readyErr != nil || validateReadyPiAction(&snap, call) != nil {
+				observed := false
+				_, err = a.store.Update(id, func(s *Snapshot) error {
+					if isStopped(s.Run.Status) {
+						return errPiHalt
+					}
+					var observationErr error
+					observed, observationErr = appendHistoricalToolObservation(s, call, outcome.Content)
+					if !observed && observationErr == nil {
+						tool, _ := a.registry.Lookup(call.Name)
+						observed, observationErr = a.toolAdmissionObservation(s, call, tool.Adapter)
+					}
+					return observationErr
+				})
+				if err != nil || observed {
+					return err
+				}
+			}
+		}
+	}
+	if content, ready, readyErr := readyPiResult(&snap, loopCall.ID); ready || readyErr != nil {
+		if readyErr != nil {
+			return readyErr
+		}
+		if outcome.ValidationError {
+			// Current admission limits cannot replace an identity-checked historical receipt.
+			outcome.Content = content
+		}
+		_, err := a.store.Update(id, func(s *Snapshot) error {
+			if isStopped(s.Run.Status) {
+				return errPiHalt
+			}
+			content, ready, err := readyPiResult(s, loopCall.ID)
+			if err != nil {
+				return err
+			}
+			if !ready || content != outcome.Content {
+				return fmt.Errorf("ready result changed before settlement: %s", loopCall.ID)
+			}
+			call, ok := pendingToolCalls(s)[loopCall.ID]
+			if !ok {
+				return errPiHalt
+			}
+			if err := validateReadyPiAction(s, call); err != nil {
+				return err
+			}
+			_, err = settleReadyPiResult(s, loopCall.ID)
+			return err
+		})
+		return err
+	}
+	if _, ok := pending[loopCall.ID]; ok {
+		if !outcome.IsError {
+			return fmt.Errorf("loop returned an unexecuted tool result: %s", loopCall.ID)
+		}
+		data, _ := json.Marshal(ToolResult{ExitCode: -1, Error: outcome.Content})
+		_, err = a.store.Update(id, func(s *Snapshot) error {
+			if isStopped(s.Run.Status) {
+				return errPiHalt
+			}
+			if _, ok := pendingToolCalls(s)[loopCall.ID]; !ok {
+				return nil
+			}
+			appendToolResult(s, loopCall.ID, string(data), "pi_validation")
+			return nil
+		})
+	}
+	return err
+}
+
+func (l *piTurns) Finish(ctx context.Context) (bool, error) {
+	return l.a.finishPiTurn(ctx, l.id, l.request, l.lastResponse)
+}
+
+func (a *Agent) observePiToolFailure(id string, call ToolCall, cause error, deferred bool) (string, bool, error) {
 	if deferred {
 		raw, err := json.Marshal(ToolResult{ExitCode: -1, Error: cause.Error()})
-		return map[string]any{"content": string(raw), "is_error": true}, err
+		return string(raw), true, err
 	}
 	snap, err := a.store.Update(id, func(s *Snapshot) error {
 		if isStopped(s.Run.Status) {
@@ -355,21 +368,28 @@ func (a *Agent) observePiToolFailure(id string, call ToolCall, cause error, defe
 		return err
 	})
 	if err != nil {
-		return nil, err
+		return "", false, err
 	}
 	for i := len(snap.Messages) - 1; i >= 0; i-- {
 		if m := snap.Messages[i]; m.Role == "tool" && m.ToolCallID == call.ID {
-			return map[string]any{"content": m.Content}, nil
+			return m.Content, false, nil
 		}
 	}
-	return nil, fmt.Errorf("historical observation was not saved: %s", call.ID)
+	return "", false, fmt.Errorf("historical observation was not saved: %s", call.ID)
 }
 
 // Preserve operator/budget state without turning an independent execution or
 // persistence failure into a successful Load merely because the run stopped.
 func (a *Agent) settlePiLoopError(ctx context.Context, id string, cause error) (Snapshot, error) {
-	if picore.IsHaltOnly(cause, errPiHalt) {
+	if agentloop.IsHaltOnly(cause, errPiHalt) {
 		return a.store.Load(id)
+	}
+	saved, loadErr := a.store.Load(id)
+	if loadErr != nil {
+		return Snapshot{}, errors.Join(cause, loadErr)
+	}
+	if saved.Run.Status == StatusFailed {
+		return saved, errors.Join(errors.New(saved.Run.Error), cause)
 	}
 	controlOnly := ctx.Err() != nil && piCancellationOnly(cause, ctx)
 	if paused, pauseErr := a.pauseIfBudgetTime(id, ctx); paused || pauseErr != nil {
@@ -417,15 +437,19 @@ func (a *Agent) preparePiConversation(ctx context.Context, id string, retries *i
 			return request, nil
 		}
 		response, callErr := a.complete(ctx, id, request)
-		snap, delay, err := a.settlePiResponse(ctx, id, request, response, callErr, retries)
+		snap, decision, err := a.settlePiResponse(ctx, id, request, response, callErr, retries)
+		delay := decision.retryDelay
 		if err != nil {
-			return ModelRequest{}, err
+			return ModelRequest{}, errors.Join(callErr, err)
 		}
 		if isStopped(snap.Run.Status) {
-			return ModelRequest{}, errPiHalt
+			if decision.budgetPaused {
+				return ModelRequest{}, errPiHalt
+			}
+			return ModelRequest{}, errors.Join(callErr, errPiHalt)
 		}
 		if snap.Run.Status == StatusFailed {
-			return ModelRequest{}, errors.New(snap.Run.Error)
+			return ModelRequest{}, errors.Join(callErr, errors.New(snap.Run.Error))
 		}
 		if delay > 0 {
 			timer := time.NewTimer(delay)
@@ -438,7 +462,7 @@ func (a *Agent) preparePiConversation(ctx context.Context, id string, retries *i
 	}
 }
 
-// pi owns turn scheduling; Trace keeps one canonical Store and action journal.
+// Agentloop owns turn scheduling; Trace keeps one canonical Store and action journal.
 func (a *Agent) preparePiRequest(ctx context.Context, id string) (ModelRequest, error) {
 	prepareStarted := time.Now()
 	snap, err := a.store.Load(id)
@@ -472,7 +496,7 @@ func (a *Agent) preparePiRequest(ctx context.Context, id string) (ModelRequest, 
 		return ModelRequest{}, errors.Join(err, failErr)
 	}
 	if len(pendingToolCalls(&snap)) > 0 {
-		return ModelRequest{}, errors.New("pending batch must pass pi recovery before a new model request")
+		return ModelRequest{}, errors.New("pending batch must pass agentloop recovery before a new model request")
 	}
 	if !reportDeliveryPending(&snap) {
 		if err := a.DeliverWorkerMessages(id); err != nil {
@@ -605,13 +629,20 @@ func (a *Agent) preparePiRequest(ctx context.Context, id string) (ModelRequest, 
 	request.archiveMillis = elapsedMillis(archiveStarted)
 	return request, nil
 }
-func (a *Agent) settlePiResponse(ctx context.Context, id string, request ModelRequest, response ModelResponse, callErr error, requestRetries *int) (Snapshot, time.Duration, error) {
+
+type piResponseDisposition struct {
+	retryDelay   time.Duration
+	budgetPaused bool
+}
+
+func (a *Agent) settlePiResponse(ctx context.Context, id string, request ModelRequest, response ModelResponse, callErr error, requestRetries *int) (Snapshot, piResponseDisposition, error) {
 	providerErr := callErr
-	retryDelay := time.Duration(0)
+	decision := piResponseDisposition{}
 	snap, err := a.store.Update(id, func(s *Snapshot) error {
 		// Cancellation may arrive while waiting for the Store lock. Settle it
 		// against this transaction's state, before accepting model progress.
-		if ctx.Err() != nil {
+		cancelled := ctx.Err() != nil
+		if cancelled {
 			cause := context.Cause(ctx)
 			var budgetCause *timeBudgetCause
 			if errors.As(cause, &budgetCause) {
@@ -638,11 +669,14 @@ func (a *Agent) settlePiResponse(ctx context.Context, id string, request ModelRe
 			if summaryErr != nil {
 				s.Responses[len(s.Responses)-1].Error = summaryErr.Error()
 				if !isStopped(s.Run.Status) && providerErr != nil {
-					retryDelay = modelRetryDelay(providerErr, *requestRetries+1)
-					if retryDelay > 0 {
+					if !cancelled {
+						decision.retryDelay = modelRetryDelay(providerErr, *requestRetries+1)
+					}
+					if decision.retryDelay > 0 {
 						(*requestRetries)++
 						if reason := budgetReason(s, "model"); reason != "" {
 							pauseBudget(s, reason)
+							decision.budgetPaused = true
 						}
 					} else {
 						s.Run.Status, s.Run.Error = StatusFailed, summaryErr.Error()
@@ -668,21 +702,22 @@ func (a *Agent) settlePiResponse(ctx context.Context, id string, request ModelRe
 			s.Responses[len(s.Responses)-1].Response.Diagnostics.FailureReason = string(classifyProviderFailure(callErr))
 			addEvent(s, "model_error", "模型请求失败", map[string]string{"request_id": request.ID, "error": callErr.Error()})
 			if ctx.Err() == nil {
-				retryDelay = modelRetryDelay(callErr, *requestRetries+1)
+				decision.retryDelay = modelRetryDelay(callErr, *requestRetries+1)
 			}
-			if retryDelay > 0 {
+			if decision.retryDelay > 0 {
 				if reason := budgetReason(s, "model"); reason != "" {
 					pauseBudget(s, reason)
+					decision.budgetPaused = true
 					return nil
 				}
 				(*requestRetries)++
 				s.Run.Status, s.Run.Error = StatusRunning, ""
-				addEvent(s, "model_retry", "模型服务暂时不可用，等待后重新请求", map[string]any{"request_id": request.ID, "attempt": *requestRetries, "delay_ms": retryDelay.Milliseconds()})
+				addEvent(s, "model_retry", "模型服务暂时不可用，等待后重新请求", map[string]any{"request_id": request.ID, "attempt": *requestRetries, "delay_ms": decision.retryDelay.Milliseconds()})
 				return nil
 			}
 			if ctx.Err() == nil && request.Purpose == "" {
 				if reason := providerRecoveryReason(response, providerErr); reason != "" {
-					a.prepareProviderRecoveryLocked(s, request, reason)
+					decision.budgetPaused = a.prepareProviderRecoveryLocked(s, request, reason)
 					return nil
 				}
 			}
@@ -720,89 +755,5 @@ func (a *Agent) settlePiResponse(ctx context.Context, id string, request ModelRe
 		return nil
 	})
 
-	return snap, retryDelay, err
-}
-func (a *Agent) finishPiTurn(id string, request ModelRequest, response ModelResponse) (any, error) {
-	snap, err := a.store.Update(id, func(s *Snapshot) error {
-		if isStopped(s.Run.Status) || s.Run.Status == StatusFailed || s.Run.Status == StatusCompleted {
-			return nil
-		}
-		if len(pendingToolCalls(s)) > 0 {
-			return nil
-		}
-		if len(response.ToolCalls) > 0 {
-			return nil
-		}
-		requestID := request.ID
-		delivering := reportDeliveryPending(s)
-		if !delivering {
-			steered := consumeMailbox(s, "steer")
-			followed := consumeMailbox(s, "follow_up")
-			if steered || followed {
-				s.Run.Status = StatusRunning
-				return nil
-			}
-			pending, err := a.pendingWorkerInput(s)
-			if err != nil {
-				return err
-			}
-			if pending {
-				s.Run.Status = StatusRunning
-				addEvent(s, "completion_deferred", "Worker 消息待处理，继续运行", nil)
-				return nil
-			}
-		}
-		s.Run.Status = StatusCompleted
-		s.Run.Error = ""
-		if !reportDeliveryPending(s) && continueForEvidence(s) {
-			return nil
-		}
-		if pending, err := a.deferForChildReportDelivery(s); err != nil || pending {
-			return err
-		}
-		if continueForReport(s) {
-			return nil
-		}
-		// Sources may have been revoked while translation was pending. Once
-		// delivery clears, apply the original business audit before terminating.
-		if delivering && continueForEvidence(s) {
-			return nil
-		}
-		// A report-only turn may have just completed delivery. Deliver any
-		// queued business input only after the report gate is gone.
-		if delivering {
-			if a.reportWorkerVisit(s) {
-				addEvent(s, "run_completed", "报告补交已完成；保留排队业务输入供独立恢复处理", map[string]string{"request_id": requestID, "prompt_hash": s.Run.PromptHash})
-				return nil
-			}
-			steered := consumeMailbox(s, "steer")
-			followed := consumeMailbox(s, "follow_up")
-			if steered || followed {
-				s.Run.Status = StatusRunning
-				return nil
-			}
-			pending, err := a.pendingWorkerInput(s)
-			if err != nil {
-				return err
-			}
-			if pending {
-				s.Run.Status = StatusRunning
-				addEvent(s, "completion_deferred", "报告交付完成，继续处理待投递 Worker 消息", nil)
-				return nil
-			}
-		}
-		addEvent(s, "run_completed", "模型回复已保存", map[string]string{"request_id": requestID, "prompt_hash": s.Run.PromptHash})
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	if err := a.publishWorkerResult(id); err != nil {
-		return nil, err
-	}
-	action := "continue"
-	if isStopped(snap.Run.Status) || snap.Run.Status == StatusCompleted || snap.Run.Status == StatusFailed {
-		action = "end"
-	}
-	return map[string]string{"action": action}, nil
+	return snap, decision, err
 }

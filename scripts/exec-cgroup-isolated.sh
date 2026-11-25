@@ -31,7 +31,7 @@ positive controller_memory "$controller_memory"
 positive controller_pids "$controller_pids"
 positive exec_memory "$exec_memory"
 positive exec_pids "$exec_pids"
-# Go's soft GC target leaves controller headroom for pi and JSON encoding;
+# Go's soft GC target leaves controller headroom for the agent loop and JSON encoding;
 # the cgroup hard limit stays unchanged. Preserve every explicit setting.
 if [ "${GOMEMLIMIT+x}" != x ]; then
     GOMEMLIMIT=$((controller_memory / 2))

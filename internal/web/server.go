@@ -385,7 +385,9 @@ func (s *Server) startLocked(id, operation, content string, attachments ...agent
 			fmt.Fprintf(os.Stderr, "web run %s: %v\n", id, runErr)
 		} else if runErr != nil {
 			_, saveErr := s.store.Update(id, func(snap *agent.Snapshot) error {
-				snap.Run.Error = runErr.Error()
+				if snap.Run.Status != agent.StatusFailed {
+					snap.Run.Error = runErr.Error()
+				}
 				snap.Run.EventSeq++
 				snap.Events = append(snap.Events, agent.Event{Sequence: snap.Run.EventSeq, Type: "web_operation_error", Summary: "运行请求执行失败", Data: map[string]string{"operation": operation, "error": runErr.Error()}, CreatedAt: time.Now().UTC()})
 				return nil
@@ -564,12 +566,12 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 func (s *Server) exportRun(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	format := r.URL.Query().Get("format")
+	language := r.URL.Query().Get("language")
+	if (format == "report_bundle" || format == "report") && language != "" && language != "zh-CN" && language != "en" {
+		writeError(w, 400, errors.New("language must be zh-CN or en"))
+		return
+	}
 	if format == "report_bundle" {
-		language := r.URL.Query().Get("language")
-		if language != "" && language != "zh-CN" && language != "en" {
-			writeError(w, 400, errors.New("language must be zh-CN or en"))
-			return
-		}
 		if r.URL.Query().Get("source_hash") != "" {
 			writeError(w, 400, errors.New("source_hash selects a legacy fixed report; use report_id for bundles"))
 			return
@@ -589,10 +591,6 @@ func (s *Server) exportRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if format == "report" {
-		if language := r.URL.Query().Get("language"); language != "" && language != "zh-CN" && language != "en" {
-			writeError(w, 400, errors.New("language must be zh-CN or en"))
-			return
-		}
 		if r.URL.Query().Get("source_hash") != "" && (r.URL.Query().Get("report_id") != "" || r.URL.Query().Get("language") == "en") {
 			writeError(w, 400, errors.New("source_hash selects a legacy fixed report; use report_id for bilingual files"))
 			return

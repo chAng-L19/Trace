@@ -8,7 +8,7 @@ import (
 type piDeferredResultKey struct{}
 
 // Explicitly pure builtin adapters only. A generic MCP/local/exec declaration
-// is not proof of read-only behavior. Mixed batches stay sequential in pi.
+// is not proof of read-only behavior. Mixed batches stay sequential in agentloop.
 func (a *Agent) piReadOnlyTool(name string) bool {
 	tool, ok := a.registry.Lookup(name)
 	if !ok || tool.Adapter != "builtin" {
@@ -19,16 +19,6 @@ func (a *Agent) piReadOnlyTool(name string) bool {
 		return true
 	}
 	return false
-}
-
-func (a *Agent) piParallelTools(definitions []ToolDefinition) []string {
-	names := []string{}
-	for _, d := range definitions {
-		if a.piReadOnlyTool(d.Function.Name) {
-			names = append(names, d.Function.Name)
-		}
-	}
-	return names
 }
 
 func (a *Agent) piReadOnlyBatch(calls []ToolCall) bool {
@@ -82,10 +72,11 @@ func validateReadyPiAction(s *Snapshot, call ToolCall) error {
 	return fmt.Errorf("ready action not found: %s", call.ID)
 }
 
-// Pi emits results in declaration order, including parallel batches. A crash
+// Agentloop emits results in declaration order, including parallel batches. A crash
 // between execution and emission resumes the saved result, never the action.
 func settleReadyPiResult(s *Snapshot, callID string) (bool, error) {
-	if _, pending := pendingToolCalls(s)[callID]; !pending {
+	pending := pendingToolCalls(s)
+	if _, ok := pending[callID]; !ok {
 		return false, nil
 	}
 	for i := range s.Actions {
@@ -100,7 +91,7 @@ func settleReadyPiResult(s *Snapshot, callID string) (bool, error) {
 			if call.ID == callID {
 				break
 			}
-			if _, pending := pendingToolCalls(s)[call.ID]; pending {
+			if _, ok := pending[call.ID]; ok {
 				return false, fmt.Errorf("pi result out of declaration order: %s", callID)
 			}
 		}

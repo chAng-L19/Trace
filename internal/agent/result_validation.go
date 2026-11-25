@@ -76,17 +76,8 @@ func validateResultReferences(s *Snapshot, result *Result) bool {
 	add := func(issue ResultValidationIssue, field string, answerIndex *int, blocking bool) {
 		issue.Field, issue.AnswerIndex, issue.Blocking = field, answerIndex, blocking
 		if issue.EvidenceID != "" && issue.ToolID == "" {
-			for _, e := range s.Evidence {
-				if e.ID != issue.EvidenceID {
-					continue
-				}
-				for _, a := range s.Actions {
-					if a.RequestID == e.RequestID && a.CallID == e.CallID {
-						issue.ToolID, issue.Adapter = a.Name, a.Adapter
-						break
-					}
-				}
-				break
+			if action := evidenceAction(s, issue.EvidenceID); action != nil {
+				issue.ToolID, issue.Adapter = action.Name, action.Adapter
 			}
 		}
 		result.ValidationIssues = append(result.ValidationIssues, issue)

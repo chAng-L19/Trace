@@ -9,11 +9,9 @@ Trace 是一个支持 CLI 和 WebUI 的通用 AI Agent，用于研究分析、�
 
 ## 启动
 
-需要 Go 1.22+、Node.js 22.19+。以下以 PowerShell 为例：
+需要 Go 1.22+；模型—工具循环为内置 Go 实现。Node.js 22.19+ 仅供 web-analysis 静态分析工具使用。以下以 PowerShell 为例：
 
 ```powershell
-npm ci --prefix internal/picore --omit=dev --ignore-scripts
-$env:TRACE_PI_RUNTIME = (Resolve-Path internal/picore).Path
 go build -buildvcs=false -o trace.exe ./cmd/trace
 .\trace.exe serve --addr 127.0.0.1:8765
 ```

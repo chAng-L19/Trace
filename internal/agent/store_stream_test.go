@@ -72,7 +72,7 @@ func TestActivityStreamMatchesProjection(t *testing.T) {
 		if err = full.retainSnapshot(raw); err != nil {
 			t.Fatal(err)
 		}
-		want, err := buildActivity(full.fields)
+		want, err := buildActivityRecords(full.fields, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

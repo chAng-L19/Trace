@@ -74,7 +74,7 @@ func TestAutomaticParallelValidationKeepsResultOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	args, _ := json.Marshal(map[string]string{"path": path})
-	bad := strings.TrimSuffix(string(args), "}") + `,"ticket":9007199254740993}`
+	bad := `{"path":42}`
 	p := manualProvider(ToolCall{ID: "first", Name: "read", Arguments: string(args)}, ToolCall{ID: "second", Name: "read", Arguments: bad})
 	a, _ := newTestAgent(t, p)
 	s, err := a.Run(piMigrationContext(t), createTestRun(t, a))
@@ -85,6 +85,12 @@ func TestAutomaticParallelValidationKeepsResultOrder(t *testing.T) {
 	for _, m := range s.Messages {
 		if m.Role == "tool" {
 			order = append(order, m.ToolCallID)
+			if m.ToolCallID == "second" {
+				var result ToolResult
+				if err := json.Unmarshal([]byte(m.Content), &result); err != nil || result.ExitCode != -1 || !strings.Contains(result.Error, "path: must be string") {
+					t.Fatalf("invalid second call lost validation result: %+v %v", result, err)
+				}
+			}
 		}
 	}
 	if !reflect.DeepEqual(order, []string{"first", "second"}) {

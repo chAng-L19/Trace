@@ -51,6 +51,27 @@ func TestManifestRunsExactArgvAndStdio(t *testing.T) {
 	}
 }
 
+func TestManifestInvocationPreservesNumberTokens(t *testing.T) {
+	for _, tc := range []struct {
+		name, placeholder, arguments string
+		want                         []string
+	}{
+		{"scalar", "{{n}}", `{"n":1e400}`, []string{"fixture", "1e400"}},
+		{"spread", "{{n...}}", `{"n":[1e400,-1.2300E+004,9007199254740993]}`, []string{"fixture", "1e400", "-1.2300E+004", "9007199254740993"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := Manifest{Name: "fixture", Command: "fixture", Args: []string{tc.placeholder}}
+			command, _, err := m.Invocation(json.RawMessage(tc.arguments))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(command, tc.want) {
+				t.Fatalf("argv = %q, want %q", command, tc.want)
+			}
+		})
+	}
+}
+
 func TestManifestInvalidInvocation(t *testing.T) {
 	m := Manifest{Name: "test", Command: "not-started", Args: []string{"{{value}}"}}
 	for _, arguments := range []string{"null", "[]", "bad", `{}`, `{"value":{}}`, `{"value":null}`, `{"value":[]}`} {

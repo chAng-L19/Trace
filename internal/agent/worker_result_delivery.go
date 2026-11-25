@@ -207,7 +207,7 @@ func (a *Agent) pendingChildReportDeliveryLocked(s *Snapshot, visiting map[strin
 			pending = append(pending, "child report source unavailable: "+w.ID)
 			continue
 		}
-		if reportDeliveryIncomplete(&child) || !a.reportFilesComplete(&child) {
+		if reportDeliveryPending(&child) || child.Run.PauseReason == "child_report_delivery_pending" || !a.reportFilesComplete(&child) {
 			pending = append(pending, fmt.Sprintf("worker %s (run %s, visit %d): bilingual file reports pending; use worker_resume for the existing report-only continuation", w.ID, w.RunID, w.Visit))
 		}
 		pending = append(pending, a.pendingChildReportDeliveryLocked(&child, visiting)...)
@@ -230,10 +230,14 @@ func (a *Agent) reportFilesComplete(s *Snapshot) bool {
 				continue
 			}
 			languages := map[string]bool{}
+			localizedReports := []struct{ language, body string }{
+				{"zh-CN", renderArchivedReport(c, report, "zh-CN", body.ZhCN)},
+				{"en", renderArchivedReport(c, report, "en", body.En)},
+			}
 			for _, ref := range report.Files {
 				language := ""
-				for _, localized := range []struct{ language, body string }{{"zh-CN", body.ZhCN}, {"en", body.En}} {
-					expected := renderArchivedReport(c, report, localized.language, localized.body)
+				for _, localized := range localizedReports {
+					expected := localized.body
 					if strings.HasSuffix(ref.Name, "."+localized.language+".md") && ref.Hash == promptHash(expected) && ref.Bytes == int64(len(expected)) {
 						language = localized.language
 					}

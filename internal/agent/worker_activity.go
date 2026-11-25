@@ -125,10 +125,6 @@ type workerActionHeader struct {
 	} `json:"result"`
 }
 
-func (s *Store) workerActivity(id string) (*workerActivityCache, error) {
-	return s.workerActivityContext(context.Background(), id)
-}
-
 func (s *Store) workerActivityContext(ctx context.Context, id string) (*workerActivityCache, error) {
 	// Share the display admission gate with parent reads; expanding a Worker
 	// must not allocate a second large SQL state beside a cold parent scan.

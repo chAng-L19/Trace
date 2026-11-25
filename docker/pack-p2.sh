@@ -46,10 +46,6 @@ cp -- "$source_root/docker/README.zh-CN.md" "$root/README.zh-CN.md"
 python3 - "$root" <<'PY'
 import importlib.metadata, json, os, pathlib, sys
 root = pathlib.Path(sys.argv[1])
-for name in ('pi-agent-core', 'pi-ai'):
-    package = root / 'runtime/pi/node_modules/@earendil-works' / name / 'package.json'
-    if json.loads(package.read_text())['version'] != '1.4.0':
-        raise SystemExit('expected pinned pi 1.4.0: ' + name)
 cloak = root / 'runtime/cloakbrowser'
 versions = {dist.metadata['Name'].lower(): dist.version
             for dist in importlib.metadata.distributions(path=[str(cloak / 'site-packages')])}
@@ -60,10 +56,10 @@ if not os.access(cloak / 'binary/chrome', os.X_OK):
 js_package = root / 'tools/web-analysis/node_modules/cloakbrowser/package.json'
 if json.loads(js_package.read_text())['version'] != '0.6.4':
     raise SystemExit('expected JavaScript CloakBrowser 0.6.4')
-for old in ('runtime/chromium', 'runtime/playwright', 'runtime/site-packages/DrissionPage',
+for old in ('runtime/pi', 'runtime/chromium', 'runtime/playwright', 'runtime/site-packages/DrissionPage',
             '.trace/skills/drissionpage', '.trace/skills/playwright-cli'):
     if (root / old).exists():
-        raise SystemExit('superseded browser runtime remains: ' + old)
+        raise SystemExit('superseded runtime remains: ' + old)
 if not (root / '.trace/skills/cloakbrowser/SKILL.md').is_file():
     raise SystemExit('expected CloakBrowser skill')
 PY

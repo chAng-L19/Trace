@@ -24,3 +24,5 @@
 !docker/lightpanda.sha256
 !scripts/
 !scripts/http-requirements.txt
+runtime/pi
+runtime/pi/**

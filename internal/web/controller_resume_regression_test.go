@@ -27,10 +27,7 @@ func TestControllerRestartPendingBatchKeepsResumeReachable(t *testing.T) {
 }
 
 func testControllerRestartPendingBatch(t *testing.T, sqlite bool) {
-	node := os.Getenv("TRACE_PI_NODE")
-	if node == "" {
-		node = "node"
-	}
+	node := testNodeBinary()
 	if _, err := exec.LookPath(node); err != nil {
 		t.Fatal("Node is required to render the production controls:", err)
 	}
@@ -302,4 +299,12 @@ func TestExecutionOwnershipProjectionIsReadOnlyAndConsistent(t *testing.T) {
 	if err != nil || !bytes.Equal(before, after) {
 		t.Fatal("Web resume bypassed an external execution lock or changed its ledger", err)
 	}
+}
+
+// testNodeBinary is the Node used by browser/render fixtures (TRACE_NODE or PATH).
+func testNodeBinary() string {
+	if node := os.Getenv("TRACE_NODE"); node != "" {
+		return node
+	}
+	return "node"
 }

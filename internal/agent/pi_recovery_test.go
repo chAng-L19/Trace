@@ -82,22 +82,6 @@ func TestPiRetryRefreshesSuccessfulRequestTools(t *testing.T) {
 	}
 }
 
-func TestPiArgumentsCoercionNeverCrossesActionBoundary(t *testing.T) {
-	for _, args := range []string{`{"command":42}`, `{"command":true}`} {
-		t.Run(args, func(t *testing.T) {
-			p := manualProvider(ToolCall{ID: "coerce", Name: "exec", Arguments: args})
-			a, _ := newTestAgent(t, p)
-			s, err := a.Run(piMigrationContext(t), createTestRun(t, a))
-			if err != nil || s.Run.Status != StatusCompleted || len(s.Actions) != 0 || len(s.Evidence) != 1 {
-				t.Fatalf("coercion crossed boundary: status=%s actions=%d evidence=%d err=%v", s.Run.Status, len(s.Actions), len(s.Evidence), err)
-			}
-			if !strings.Contains(s.Evidence[0].Content, "schema") && !strings.Contains(s.Evidence[0].Content, "Validation") {
-				t.Fatalf("missing explicit validation result: %s", s.Evidence[0].Content)
-			}
-		})
-	}
-}
-
 func TestPiStrictArgumentsRejectOptionalNullAndBooleanString(t *testing.T) {
 	for _, call := range []ToolCall{
 		{ID: "number-string", Name: "tool_search", Arguments: `{"offset":"1"}`},
@@ -198,10 +182,121 @@ func TestPiLargeIntegerArgumentsNeverExecuteRoundedValue(t *testing.T) {
 				id = createTestRun(t, a)
 			}
 			s, err := a.Run(piMigrationContext(t), id)
-			if err != nil || s.Run.Status != StatusCompleted || len(s.Actions) != 0 || len(s.Evidence) != 1 || !strings.Contains(s.Evidence[0].Content, "arguments differ") || s.Evidence[0].Verification == "verified" {
+			if err != nil || s.Run.Status != StatusCompleted || len(s.Actions) != 0 || len(s.Evidence) != 1 || !strings.Contains(s.Evidence[0].Content, "must be equal to one of the allowed values") || !strings.Contains(s.Evidence[0].Content, "9007199254740993") || s.Evidence[0].Verification == "verified" {
 				t.Fatalf("rounded integer executed: status=%s actions=%d err=%v", s.Run.Status, len(s.Actions), err)
 			}
 		})
+	}
+}
+
+func TestPiRegisteredLargeIntegerSchemaLiveAndReopenedRecovery(t *testing.T) {
+	for _, adapter := range []string{"mcp", "local"} {
+		for _, mode := range []string{"live", "json-recovery", "sqlite-recovery"} {
+			for _, ticket := range []string{"9007199254740993", "9007199254740992"} {
+				t.Run(adapter+"/"+mode+"/"+ticket, func(t *testing.T) {
+					root := t.TempDir()
+					if mode == "sqlite-recovery" {
+						if err := MigrateStoreToSQLite(root); err != nil {
+							t.Fatal(err)
+						}
+					}
+					store, err := NewStore(root)
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() {
+						if store != nil {
+							if err := store.Close(); err != nil {
+								t.Error(err)
+							}
+						}
+					})
+					p := manualProvider()
+					a, err := New(store, p, "")
+					if err != nil {
+						t.Fatal(err)
+					}
+					toolID, received := registerPiIntegerTool(t, a, adapter, json.RawMessage(piIntegerToolSchema))
+					call := ToolCall{ID: "exact-ticket", Name: toolID, Arguments: `{"ticket":` + ticket + "}"}
+					p.responses[0].ToolCalls = []ToolCall{call}
+					var id string
+					if mode == "live" {
+						id = createTestRun(t, a)
+					} else {
+						id = createTestRun(t, a)
+						waitTestRun(t, a, id)
+						if err := store.Close(); err != nil {
+							t.Fatal(err)
+						}
+						store = nil
+						store, err = NewStore(root)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if store.sqlite != (mode == "sqlite-recovery") {
+							t.Fatal("reopened wrong Store backend")
+						}
+						p.responses = []ModelResponse{{Content: "after archived integer validation"}}
+						a, err = New(store, p, "")
+						if err != nil {
+							t.Fatal(err)
+						}
+						// A changed current registry must not replace the archived schema.
+						currentSchema := strings.ReplaceAll(piIntegerToolSchema, "9007199254740993", "9007199254740992")
+						var currentID string
+						currentID, received = registerPiIntegerTool(t, a, adapter, json.RawMessage(currentSchema))
+						if currentID != toolID {
+							t.Fatal("reopened tool identity changed")
+						}
+					}
+					snap, err := a.Run(piMigrationContext(t), id)
+					if err != nil || snap.Run.Status != StatusCompleted || len(snap.Evidence) != 1 || len(snap.Requests) == 0 {
+						t.Fatalf("integer run: status=%s actions=%d evidence=%d err=%v", snap.Run.Status, len(snap.Actions), len(snap.Evidence), err)
+					}
+					found := false
+					for _, definition := range snap.Requests[0].Tools {
+						if definition.Function.Name == toolID {
+							found = true
+							raw, err := json.Marshal(definition.Function.Parameters)
+							if err != nil || string(raw) != piIntegerToolSchema {
+								t.Fatalf("archived schema changed: %s, err=%v", raw, err)
+							}
+						}
+					}
+					if !found {
+						t.Fatal("archived tool definition missing")
+					}
+					if ticket == "9007199254740993" {
+						if len(snap.Actions) != 1 || snap.Actions[0].Result == nil || snap.Evidence[0].Verification != "verified" {
+							t.Fatalf("valid odd integer rejected: actions=%+v evidence=%+v", snap.Actions, snap.Evidence)
+						}
+						action := snap.Actions[0]
+						if action.Arguments != call.Arguments || action.Result.ExitCode != 0 || action.Result.Error != "" || strings.TrimSuffix(action.Result.Stdout, "\n") != call.Arguments {
+							t.Fatalf("tool did not receive original arguments: %+v", action)
+						}
+					} else if len(snap.Actions) != 0 || snap.Evidence[0].Verification != "unverified" || !strings.Contains(snap.Evidence[0].Content, "must be equal to one of the allowed values") || !strings.Contains(snap.Evidence[0].Content, ticket) {
+						t.Fatalf("adjacent even integer accepted: actions=%+v evidence=%+v", snap.Actions, snap.Evidence)
+					}
+					if received != nil {
+						if ticket == "9007199254740993" {
+							select {
+							case arguments := <-received:
+								if arguments != call.Arguments {
+									t.Fatalf("MCP received %s, want %s", arguments, call.Arguments)
+								}
+							default:
+								t.Fatal("valid integer did not reach MCP")
+							}
+						}
+						select {
+						case arguments := <-received:
+							t.Fatalf("unexpected MCP execution: %s", arguments)
+						default:
+						}
+					}
+				})
+			}
+		}
 	}
 }
 

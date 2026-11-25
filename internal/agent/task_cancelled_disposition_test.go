@@ -91,9 +91,9 @@ func TestCancelledTaskExplicitFailureConvergesAfterRestart(t *testing.T) {
 			if _, err := a.RecoverWorkers(parent); err != nil {
 				t.Fatal(err)
 			}
-			response, err := a.finishPiTurn(parent, ModelRequest{ID: "final"}, ModelResponse{Content: "unfinished goals reported"})
-			if err != nil || fmt.Sprint(response) != "map[action:end]" {
-				t.Fatalf("root continued: %v %v", response, err)
+			end, err := a.finishPiTurn(context.Background(), parent, ModelRequest{ID: "final"}, ModelResponse{Content: "unfinished goals reported"})
+			if err != nil || !end {
+				t.Fatalf("root continued: end=%v %v", end, err)
 			}
 			root, err = store.Load(parent)
 			if err != nil || root.Run.Status != StatusFailed || root.Result.Status != "failed" || root.Run.Budget != (Budget{}) || root.Run.RequireVerifiedCompletion {
@@ -378,9 +378,9 @@ func TestIncidentCancelledTaskExplicitFailure(t *testing.T) {
 	if err := a.DeliverWorkerMessages(parent); err != nil {
 		t.Fatal(err)
 	}
-	response, err := a.finishPiTurn(parent, request, ModelResponse{Content: "incident fixture failure settlement"})
-	if err != nil || fmt.Sprint(response) != "map[action:end]" {
-		t.Fatalf("original finish gate did not converge: %v %v", response, err)
+	end, err := a.finishPiTurn(context.Background(), parent, request, ModelResponse{Content: "incident fixture failure settlement"})
+	if err != nil || !end {
+		t.Fatalf("original finish gate did not converge: end=%v %v", end, err)
 	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
@@ -412,9 +412,9 @@ func TestIncidentCancelledTaskExplicitFailure(t *testing.T) {
 		t.Fatalf("new plan_failed events=%d", failed)
 	}
 	root = Snapshot{}
-	response, err = a.finishPiTurn(parent, request, ModelResponse{})
-	if err != nil || fmt.Sprint(response) != "map[action:end]" || provider.calls.Load() != 0 {
-		t.Fatalf("reopened failure generated work: %v calls=%d %v", response, provider.calls.Load(), err)
+	end, err = a.finishPiTurn(context.Background(), parent, request, ModelResponse{})
+	if err != nil || !end || provider.calls.Load() != 0 {
+		t.Fatalf("reopened failure generated work: end=%v calls=%d %v", end, provider.calls.Load(), err)
 	}
 	for id, before := range facts {
 		after := readRaw(id)

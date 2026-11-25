@@ -3,7 +3,7 @@
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE} AS updated
 USER root
-RUN command -v flock && test -x /usr/bin/tini && test -x /usr/bin/xvfb-run
+RUN command -v flock && test -x /usr/bin/tini && test -x /usr/bin/xvfb-run && rm -rf /opt/trace/runtime/pi
 # Build context supplies the tiny, hash-locked offline bundle; never fetch at startup.
 COPY runtime/capabilities/ /tmp/trace-capabilities/
 COPY docker/install-capabilities.sh docker/capabilities.sha256 scripts/http-requirements.txt /tmp/trace-capability-build/
@@ -43,8 +43,7 @@ ENV PATH="/opt/trace/runtime/python/bin:/opt/trace/runtime/node/bin:/usr/local/s
     CLOAKBROWSER_AUTO_UPDATE=false \
     TRACE_BROWSER_NO_SANDBOX=1 \
     REA_BROWSER_NO_SANDBOX=true \
-    NO_UPDATE_NOTIFIER=1 \
-    TRACE_PI_RUNTIME=/opt/trace/runtime/pi
+    NO_UPDATE_NOTIFIER=1
 USER trace
 WORKDIR /workspace
 STOPSIGNAL SIGINT

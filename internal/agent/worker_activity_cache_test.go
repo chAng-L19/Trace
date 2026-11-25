@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -51,7 +52,7 @@ func TestWorkerActivitiesCacheLargeHistoriesAndConcurrentReads(t *testing.T) {
 			}
 			entries := []*workerActivityCache{}
 			for _, w := range parent.Workers {
-				entry, err := store.workerActivity(w.RunID)
+				entry, err := store.workerActivityContext(context.Background(), w.RunID)
 				if err != nil {
 					t.Error(err)
 					return
@@ -82,7 +83,7 @@ func TestWorkerActivitiesCacheLargeHistoriesAndConcurrentReads(t *testing.T) {
 		if _, retained := store.eventViews.Load(w.RunID); retained || store.eventReaders[w.RunID] != 0 {
 			t.Fatal("activity retained full event view without SSE reader")
 		}
-		entry, err := store.workerActivity(w.RunID)
+		entry, err := store.workerActivityContext(context.Background(), w.RunID)
 		if err != nil || entry != original[i] {
 			t.Fatal("unchanged generation did not reuse compact entry")
 		}
@@ -102,7 +103,7 @@ func TestWorkerActivityCacheInvalidationAndDetachedParentProjection(t *testing.T
 	}
 	parent, _ := a.store.Load(parentID)
 	first := a.store.WorkerActivities(parent)[0]
-	entry, _ := a.store.workerActivity(childID)
+	entry, _ := a.store.workerActivityContext(context.Background(), childID)
 	first.Tools[0] = "caller mutation"
 	parent.Workers[0].CleanupStatus = "pending"
 	parent.WorkerMessages = append(parent.WorkerMessages, WorkerMessage{ID: "help", Kind: "help", From: "parent", To: "worker"})
@@ -130,7 +131,7 @@ func TestWorkerActivityCacheInvalidationAndDetachedParentProjection(t *testing.T
 	if row := a.store.WorkerActivities(parent)[0]; row.Phase != "paused" || len(row.Tools) != 0 {
 		t.Fatalf("external generation not reflected: %+v", row)
 	}
-	current, _ := a.store.workerActivity(childID)
+	current, _ := a.store.workerActivityContext(context.Background(), childID)
 	if current == entry {
 		t.Fatal("external atomic replacement did not invalidate summary")
 	}
@@ -142,7 +143,7 @@ func TestWorkerActivityCacheIsBounded(t *testing.T) {
 	for i := 0; i < workerActivityCacheLimit; i++ {
 		a.store.workerActivities[fmt.Sprint(i)] = &workerActivityCache{}
 	}
-	if _, err := a.store.workerActivity(childID); err != nil {
+	if _, err := a.store.workerActivityContext(context.Background(), childID); err != nil {
 		t.Fatal(err)
 	}
 	if len(a.store.workerActivities) != workerActivityCacheLimit || a.store.workerActivities[childID] == nil {

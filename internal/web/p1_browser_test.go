@@ -162,10 +162,7 @@ func TestP1BrowserAcceptance(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	node := os.Getenv("TRACE_NODE")
-	if node == "" {
-		node = "node"
-	}
+	node := testNodeBinary()
 	cmd := exec.CommandContext(ctx, node, "p1_browser.mjs")
 	cmd.Env = append(os.Environ(), "TRACE_P1_FIXTURE="+string(data))
 	output, err := cmd.CombinedOutput()
