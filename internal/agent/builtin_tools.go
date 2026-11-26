@@ -51,7 +51,7 @@ func builtinDefinitions() []ToolDefinition {
 	add("worker_resume", "Continue an existing failed or paused child with the same worker/run identity and prior history, after cleanup. Never creates a new attempt or replays completed actions; unresolved tool effects still require explicit resolution. Cancelled/completed children stay terminal.", map[string]any{"worker_id": str()}, "worker_id")
 	add("worker_wait", "Wait up to 300 seconds by default; return early on any worker outcome or new durable input. Other workers keep running. Use this instead of shell sleep or polling loops to await children.", map[string]any{"seconds": integer()})
 	add("worker_message", "Send a durable message to a child, parent, or sibling, delivered between tool batches. Optional kind: help (attempts, blocker and needed decision), report, reply, resolved. reply/resolved require reply_to naming the original help ID between the same participants. Delivery, reply and resolution are separate; resolved does not complete a task or resume a paused worker. Reuse operation_id for retries of the same logical send; a changed payload requires a new ID.", map[string]any{"operation_id": str(), "to": str(), "content": str(), "kind": map[string]any{"type": "string", "enum": []string{"help", "report", "reply", "resolved"}}, "reply_to": str()}, "to", "content")
-	add("worker_cancel", "Cancel a child worker; cleanup and unknown outcomes remain recorded.", map[string]any{"worker_id": str()}, "worker_id")
+	add("worker_cancel", "Cancel the observed child visit. Pass expected_visit from worker_status; a stale visit is rejected. Cleanup and unknown outcomes remain recorded.", map[string]any{"worker_id": str(), "expected_visit": map[string]any{"type": "integer", "minimum": 0}}, "worker_id", "expected_visit")
 	add("worker_recover", "Reconcile durable cleanup receipts without replaying work; expired visits without cleanup proof remain uncertain and occupy capacity.", map[string]any{})
 	add("asset_upsert", "Add/update an included/excluded asset and parent hierarchy; coverage is discovered/in_progress/observed/verified/negative/failed/uncertain. Verified and negative need execution evidence and a nonempty predicate copied as a literal substring of at least one cited verified stdout; predicate is not a natural-language explanation. source_run_id explicitly selects a registered child ledger.", map[string]any{"id": str(), "kind": str(), "value": str(), "coverage": str(), "predicate": str(), "parent_id": str(), "scope": str(), "source_task_id": str(), "source_run_id": str(), "evidence_ids": array()}, "id", "kind", "value")
 	add("asset_relate", "Add a relation between existing assets with optional execution evidence.", map[string]any{"from": str(), "to": str(), "kind": str(), "evidence_ids": array()}, "from", "to", "kind")
@@ -355,12 +355,16 @@ func (a *Agent) builtin(ctx context.Context, id string, call ToolCall) (any, err
 		return a.ResumeWorker(context.Background(), id, r.WorkerID)
 	case "worker_cancel":
 		var r struct {
-			WorkerID string `json:"worker_id"`
+			WorkerID      string  `json:"worker_id"`
+			ExpectedVisit *uint64 `json:"expected_visit"`
 		}
 		if err := decodeBuiltin(call.Arguments, &r); err != nil {
 			return nil, err
 		}
-		s, err := a.CancelWorker(id, r.WorkerID)
+		if r.ExpectedVisit == nil {
+			return nil, fmt.Errorf("expected_visit is required; use the visit observed in worker_status")
+		}
+		s, err := a.CancelWorkerVisit(id, r.WorkerID, r.ExpectedVisit)
 		return s.Workers, err
 	case "worker_recover":
 		s, err := a.RecoverWorkers(id)

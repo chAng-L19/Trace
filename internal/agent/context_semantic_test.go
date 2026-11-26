@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -116,27 +117,20 @@ func TestSemanticHTTPFixtureBudgetResumeAndArchive(t *testing.T) {
 }
 
 func TestSemanticFailureAndSourceMutation(t *testing.T) {
-	summaries := 0
 	p := settlementProviderFunc(func(_ context.Context, request ModelRequest) (ModelResponse, error) {
-		if request.Purpose != "context_summary" {
-			return ModelResponse{Content: "original observations retained"}, nil
-		}
-		summaries++
-		if summaries == 1 {
-			return ModelResponse{Content: "partial summary", StopReason: "length"}, nil
-		}
-		if summaries == 2 && !strings.Contains(request.Messages[0].Content, "previous summary was rejected") {
-			t.Error("summary retry omitted correction feedback")
-		}
-		return ModelResponse{Content: "Objective and exact identifiers retained; original tool observations remain in the archive."}, nil
+		return ModelResponse{Content: "partial summary", StopReason: "length"}, nil
 	})
 	a, store := newTestAgent(t, p)
 	id, original := longHistory(t, a, store)
 	s, err := a.Run(context.Background(), id)
-	if err != nil || s.Run.Status != StatusCompleted || summaries < 2 || s.Compactions[0].Status != "failed" || messageHash(s.Messages[:len(original)]) != messageHash(original) || s.Responses[0].Error == "" {
-		t.Fatalf("summary correction stopped or rewrote history: %v %+v", err, s.Run)
+	if err == nil || s.Run.Status != StatusFailed || len(s.Requests) != 1 || s.Compactions[0].Status != "failed" || messageHash(s.Messages) != messageHash(original) || s.Responses[0].Error == "" {
+		t.Fatalf("semantic failure did not close its origin: %v %+v", err, s.Run)
 	}
-	// A saved summary with a stale source hash is not trusted for projection.
+	s.Run.Status, s.Run.Error = StatusRunning, ""
+	if err := providerRecoveryProjectionError(&s); !errors.Is(err, errProviderRecoveryLedger) {
+		t.Fatalf("normal projection bypassed closed origin: %v", err)
+	}
+	// A real source change permits a new plan but never trusts the old summary.
 	s.Compactions[0].Status, s.Compactions[0].Summary = "completed", "stale summary"
 	s.Messages[0].Content = "changed source constraint"
 	_, _, _, projectionErr := projectContext(&s, nil, "")
@@ -168,7 +162,9 @@ func TestSemanticInterruptedRequestKeepsBudgetOnRestart(t *testing.T) {
 		s.Run.RequestSeq = 1
 		plan.record.ID, plan.record.RequestID = "interrupted-compact", id+"-0001"
 		s.Compactions = append(s.Compactions, plan.record)
-		s.Requests = append(s.Requests, ModelRequest{ID: plan.record.RequestID, Messages: plan.messages, CompactionID: plan.record.ID})
+		request := ModelRequest{ID: plan.record.RequestID, Messages: plan.messages, CompactionID: plan.record.ID, Purpose: "context_summary"}
+		s.Requests = append(s.Requests, request)
+		plan.recordRecovery(s, request)
 		return nil
 	})
 	if err != nil {

@@ -17,6 +17,9 @@ import (
 // ai/src/utils/retry.ts and coding-agent/src/core/agent-session.ts; Muteki
 // c60c8fee reason.py overflow/complete-summary checks only, no CTF semantics.
 // The existing Trace loop owns all attempts, persistence and cancellable waits.
+// Recovery consumption also follows pi 5a14e69c067d40dfbff4f2fff7d3b34c897e2dc9
+// (MIT), packages/coding-agent/src/core/agent-session.ts _checkCompaction:
+// Trace persists the source/configuration identity instead of an in-memory flag.
 type providerFailure string
 
 const (
@@ -154,9 +157,8 @@ func (a *Agent) prepareProviderRecoveryLocked(s *Snapshot, failed ModelRequest, 
 		s.Run.Status, s.Run.Error = StatusFailed, "context recovery: "+detail
 		addEvent(s, "context_recovery_failed", "上下文恢复已停止，原始响应与历史保留", map[string]string{"request_id": failed.ID, "reason": reason, "error": detail})
 	}
-	sourceHash := messageHash(s.Messages)
 	for _, event := range s.Events {
-		if event.Type == "context_recovery_started" && recoveryEvent(event).SourceHash == sourceHash {
+		if event.Type == "context_recovery_started" && recoveryEvent(event).RequestID != "" && recoveryOriginMatches(s, recoveryEvent(event)) {
 			fail("one compact-and-retry attempt already used for this history")
 			return false
 		}
@@ -190,7 +192,8 @@ func (a *Agent) prepareProviderRecoveryLocked(s *Snapshot, failed ModelRequest, 
 	s.Compactions = append(s.Compactions, plan.record)
 	s.Requests = append(s.Requests, request)
 	s.Run.Status, s.Run.Error = StatusRunning, ""
-	addEvent(s, "context_recovery_started", "上下文或输出截断，尝试一次压缩后重试", map[string]string{"request_id": failed.ID, "summary_request_id": request.ID, "source_hash": sourceHash, "reason": reason})
+	plan.recovery.RequestID = failed.ID
+	plan.recordRecovery(s, request)
 	addEvent(s, "model_request", "已提交模型请求", map[string]any{"request_id": request.ID, "prompt_hash": request.PromptHash, "purpose": request.Purpose})
 	return false
 }
@@ -228,8 +231,8 @@ func (a *Agent) recoverProviderContext(ctx context.Context, id string, failed Mo
 	if c := snap.Compactions[len(snap.Compactions)-1]; c.RequestID != request.ID || c.ID != request.CompactionID || c.Status != "pending" {
 		return snap, false, fmt.Errorf("%w: summary is not pending for this request", errProviderRecoveryLedger)
 	}
-	// A rejected summary returns to the existing pi preparation path. Every
-	// correction remains a new accounted request with the original source.
+	// Only transient transport failures return to the existing cancellable retry
+	// path. Deterministic failures commit their terminal state before returning.
 	answer, summaryErr := a.complete(ctx, id, request)
 	retries := 0
 	var decision piResponseDisposition
@@ -259,9 +262,33 @@ func (a *Agent) recoverProviderContext(ctx context.Context, id string, failed Mo
 }
 
 type providerRecoveryEvent struct {
-	RequestID        string `json:"request_id"`
-	SummaryRequestID string `json:"summary_request_id"`
-	SourceHash       string `json:"source_hash"`
+	RequestID         string `json:"request_id"`
+	SummaryRequestID  string `json:"summary_request_id"`
+	SourceHash        string `json:"source_hash"`
+	ConfigurationHash string `json:"configuration_hash,omitempty"`
+}
+
+// Only settings that affect the effective request unlock a closed origin.
+// Persisted model selection excludes credentials and request/event counters.
+func recoveryConfigurationHash(s *Snapshot) string {
+	c, err := normalizeContext(s.Run.Context)
+	if err != nil {
+		c = s.Run.Context
+	}
+	var model, provider, effort string
+	if selected := s.Run.ModelSelection; selected != nil {
+		model, provider, effort = selected.Model, selected.ProviderID, selected.ReasoningEffort
+	}
+	return valueHash(struct {
+		Prompt                                string
+		Mode                                  string
+		InputLimit, OutputReserve, KeepRecent int
+		Model, Provider, Effort               string
+	}{s.Prompt, c.CompactionMode, contextInputLimit(c), c.OutputReserve, contextRecentBudget(c), model, provider, effort})
+}
+
+func recoveryOriginMatches(s *Snapshot, origin providerRecoveryEvent) bool {
+	return origin.SourceHash == messageHash(s.Messages) && (origin.ConfigurationHash == "" || origin.ConfigurationHash == recoveryConfigurationHash(s))
 }
 
 // Recovery provenance failures are terminal admission errors, not evidence
@@ -283,7 +310,7 @@ func (plan *summaryNeeded) recordRecovery(s *Snapshot, request ModelRequest) {
 	}
 	origin := *plan.recovery
 	origin.SummaryRequestID = request.ID
-	addEvent(s, "context_recovery_started", "沿原来源重新生成恢复摘要", origin)
+	addEvent(s, "context_recovery_started", "按固定历史与有效配置登记摘要来源", origin)
 }
 
 func providerRecoverySummary(s *Snapshot, failed ModelRequest) (*summaryNeeded, error) {
@@ -307,56 +334,66 @@ func providerRecoverySummary(s *Snapshot, failed ModelRequest) (*summaryNeeded, 
 	return plan, nil
 }
 
-// Known failed summaries can be regenerated through pi; interrupted or legacy
-// unchecked summaries remain ineligible for reuse without a ready receipt.
+// Both admission paths consume the same durable origin. Failed summaries only
+// re-enter for an archived transient provider error, never for rejected content.
 func providerRecoveryProjectionError(s *Snapshot) error {
-	sourceHash := messageHash(s.Messages)
 	for i := len(s.Events) - 1; i >= 0; i-- {
 		event := s.Events[i]
 		if event.Type != "context_recovery_started" {
 			continue
 		}
-		data := recoveryEvent(event)
-		ready, complete, failed := false, false, false
-		for _, c := range s.Compactions {
-			complete = complete || c.RequestID == data.SummaryRequestID && c.Status == "completed"
-			failed = failed || c.RequestID == data.SummaryRequestID && c.Status == "failed"
-		}
-		for _, e := range s.Events[i+1:] {
-			ready = ready || e.Type == "context_recovery_ready" && recoveryEvent(e).SummaryRequestID == data.SummaryRequestID
-		}
-		if complete && !ready {
-			// Legacy crash-window summaries are never reusable, including after
-			// a new user message changes the current full-history hash.
-			for j := range s.Compactions {
-				if s.Compactions[j].RequestID == data.SummaryRequestID {
-					s.Compactions[j].Status = "failed"
-				}
+		origin := recoveryEvent(event)
+		var compaction *Compaction
+		for j := range s.Compactions {
+			if s.Compactions[j].RequestID == origin.SummaryRequestID {
+				compaction = &s.Compactions[j]
+				break
 			}
 		}
-		if data.SourceHash == sourceHash {
-			if ready && complete {
-				return nil // This ready retry supersedes older failed summaries.
-			}
-			observed := false
+		ready := origin.RequestID == ""
+		for _, receipt := range s.Events[i+1:] {
+			ready = ready || receipt.Type == "context_recovery_ready" && recoveryEvent(receipt).SummaryRequestID == origin.SummaryRequestID
+		}
+		if compaction != nil && compaction.Status == "completed" && !ready {
+			// Legacy completed-but-unchecked recovery summaries remain unusable.
+			compaction.Status = "failed"
+		}
+		if !recoveryOriginMatches(s, origin) {
+			continue
+		}
+		if origin.RequestID == "" && compaction != nil && compaction.Status == "interrupted" {
+			return nil // Replan an interrupted proactive summary; its request still consumes budget.
+		}
+		if compaction != nil && compaction.Status == "completed" && ready {
+			return nil
+		}
+		if compaction != nil && compaction.Status == "failed" {
 			for _, response := range s.Responses {
-				observed = observed || response.RequestID == data.SummaryRequestID && response.Error != ""
-			}
-			if failed && observed {
+				if response.RequestID != origin.SummaryRequestID || response.Error == "" || response.Response.Diagnostics == nil || response.Response.Diagnostics.FailureReason != string(providerTransient) {
+					continue
+				}
+				var plan *summaryNeeded
+				var err error
+				if origin.RequestID == "" {
+					// Normal semantic compaction is replanned by its existing projector.
+					return nil
+				}
 				for _, request := range s.Requests {
-					if request.ID != data.RequestID {
-						continue
+					if request.ID == origin.RequestID {
+						plan, err = providerRecoverySummary(s, request)
+						break
 					}
-					plan, err := providerRecoverySummary(s, request)
-					if err != nil {
-						return err
-					}
-					plan.recovery = &data
+				}
+				if err != nil {
+					return err
+				}
+				if plan != nil {
+					plan.recovery = &origin
 					return plan
 				}
 			}
-			return fmt.Errorf("%w: context recovery did not commit a smaller complete summary; original requests and history are retained", errProviderRecoveryLedger)
 		}
+		return fmt.Errorf("%w: context recovery did not commit a smaller complete summary; original requests and history are retained", errProviderRecoveryLedger)
 	}
 	return nil
 }
@@ -381,8 +418,12 @@ func finishProviderRecoveryCompaction(s *Snapshot, summary ModelRequest) error {
 			break
 		}
 	}
+	sourceMatches := recoveryOriginMatches(s, origin)
+	if origin.RequestID == "" && sourceMatches {
+		return nil // The normal projector checks full admission before its next request.
+	}
 	reduced := false
-	sourceMatches := origin.SourceHash == messageHash(s.Messages) && failed != nil && len(failed.Messages) > 0 && failed.Messages[0].Role == "system" && strings.HasPrefix(failed.Messages[0].Content, s.Prompt)
+	sourceMatches = sourceMatches && failed != nil && len(failed.Messages) > 0 && failed.Messages[0].Role == "system" && strings.HasPrefix(failed.Messages[0].Content, s.Prompt)
 	if sourceMatches {
 		catalog := strings.TrimSuffix(strings.TrimPrefix(failed.Messages[0].Content, s.Prompt), runtimeDataHint)
 		for _, message := range failed.Messages {
@@ -395,13 +436,9 @@ func finishProviderRecoveryCompaction(s *Snapshot, summary ModelRequest) error {
 		reduced = err == nil && compactionID == summary.CompactionID && EstimateContextTokens(projected, failed.Tools) < EstimateContextTokens(failedRequired, failed.Tools)
 	}
 	if !reduced {
-		err := errors.New("context recovery: summary did not produce a smaller complete request; reduce input or change context settings")
+		err := errors.New("context recovery: complete summary is not smaller and admissible for the same source/configuration; reduce input or change context settings")
 		if !isStopped(s.Run.Status) {
-			if sourceMatches {
-				s.Run.Status, s.Run.PauseReason, s.Run.Error = StatusRunning, "", ""
-			} else {
-				s.Run.Status, s.Run.Error = StatusFailed, err.Error()
-			}
+			s.Run.Status, s.Run.PauseReason, s.Run.Error = StatusFailed, "", err.Error()
 		}
 		addEvent(s, "context_recovery_failed", "恢复摘要未通过完整上下文与来源校验，保留原始历史", map[string]string{"request_id": origin.RequestID, "summary_request_id": summary.ID, "error": err.Error()})
 		return err

@@ -458,8 +458,32 @@ func outcomeHandoffPending(s *Snapshot) bool {
 		return false
 	}
 	for i := len(s.Events) - 1; i >= 0; i-- {
-		switch s.Events[i].Type {
-		case "message_added", "message_consumed", "worker_message_delivered":
+		event := s.Events[i]
+		if strings.HasPrefix(event.Type, "worker_message:") {
+			var delivery workerDeliveryMarker
+			raw, _ := json.Marshal(event.Data)
+			if json.Unmarshal(raw, &delivery) != nil || delivery.Coalesced || delivery.MessageID == "" || delivery.RepresentativeID != delivery.MessageID || event.Type != "worker_message:"+delivery.MessageID || delivery.InboxRunID == "" || delivery.HistoryMessageID != workerHistoryMessageID(delivery.InboxRunID, delivery.MessageID) {
+				continue
+			}
+			if delivery.Receiver != nil && delivery.Receiver.RunID != s.Run.ID {
+				continue
+			}
+			added := false
+			for _, message := range s.Messages {
+				added = added || message.ID == delivery.HistoryMessageID && message.Role == "user"
+			}
+			for _, previous := range s.Events[:i] {
+				if previous.Type == event.Type {
+					added = false // A retry marker cannot add the same history twice.
+					break
+				}
+			}
+			if added {
+				return false
+			}
+		}
+		switch event.Type {
+		case "message_added", "message_consumed":
 			return false // New business input supersedes a formatting-only turn.
 		case "completion_deferred", "completion_stalled":
 			var audit struct {

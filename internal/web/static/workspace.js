@@ -7,12 +7,14 @@ import {budgetPanel} from './workforms.js';
 import {mailboxPanel,pendingMessages,runLink} from './run-management.js';
 import {usagePanel} from './delivery.js';
 import {explorationPreview} from './graphs.js';
+import {childReportGroups,childReportKey,childReportCounts} from './exploration.js';
 
 export function childReportSummary(snap){
- const reports=(snap.child_reports||[]).slice(-12);
- if(!reports.length)return '';
- return '<details id="workspace-child-reports" class="run-live-status"><summary>子报告 · '+reports.length+'</summary>'+reports.map(r=>'<article class="subsection"><p>'+esc(r.task_id)+' · '+status(r.run_status)+' / '+status(r.result_status)+'</p><p>'+esc(r.summary)+'</p><p class="note">来源 '+esc(r.source_status||'待核对')+(r.current===false?' · 历史版本':'')+' · 清理 '+esc(label(r.cleanup_status))+'；不代表父任务成功。</p>'+btn('select','查看来源子运行 ↗','data-id="'+esc(r.source_run_id)+'"')+'</article>').join('')+btn('task-tab','探索图 / 固定报告版本','data-tab="assets"')+'</details>';
+ const groups=childReportGroups(snap.child_reports).slice(-12),counts=childReportCounts(snap);
+ if(!groups.length&&!(snap.totals?.child_reports>0))return '';
+ return '<details id="workspace-child-reports" class="run-live-status"><summary>子报告 · '+esc(counts)+'</summary>'+groups.map(({report:r,versions})=>'<article class="subsection"><p>'+esc(r.task_id)+' · '+status(r.run_status)+' / '+status(r.result_status)+'</p><p>'+esc(r.summary)+'</p><p class="note">来源 '+esc(r.source_status||'待核对')+(r.current===true?' · 当前 visit':r.current===false?' · 历史 visit':' · visit 未核对')+' · 最近登记回执 · '+versions.length+' 个载入版本 · 清理 '+esc(label(r.cleanup_status))+' · 交付 '+(r.delivery_pending?'待完成':'未标记待完成')+' · 结算 '+(r.settlement_pending?'待完成':'未标记待完成')+'；不代表父任务成功。</p>'+btn('exploration-detail','回执详情 / 历史版本','data-current="true" data-id="'+esc('child-report:'+childReportKey(r,true))+'"')+btn('select','查看当前来源子运行 ↗','data-id="'+esc(r.source_run_id)+'"')+'</article>').join('')+btn('task-tab','探索图 / 固定报告版本','data-tab="assets"')+'</details>';
 }
+
 
 export function workspaceDialogueHead({run,messages_page}={}){
   return `<div class="workspace-dialogue-head"><div id="workspace-notice"></div><header class="workspace-heading"><span>运行对话</span>${run?'<span class="workspace-resize-hint">拖动右下角调整高度</span>':''}${btn('latest','最新 ↓','data-scroll-target="conversation" aria-label="回到对话最新内容"'+(run?'':' disabled'))}</header>${conversationPagination(messages_page)}</div>`;

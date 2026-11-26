@@ -1,7 +1,7 @@
 import {esc,json,label,btn,empty,evidenceLinks} from './ui.js';
 import {evidenceReading,evidenceDetail} from './evidence.js';
 import {evidencePresentation,evidenceText} from './evidence-report.js';
-import {graphSnapshot,replayToolbar,mountGraphPan} from './history-projection.js';
+import {graphSnapshot,replayToolbar,mountGraphPan,historyDetail} from './history-projection.js';
 import {reportDownloads} from './delivery.js';
 
 // References: ARTEX e6ec56999175509551a1e43a3ee3b053d0941bd9,
@@ -36,51 +36,70 @@ export function explorationScale(width,height,viewportWidth,viewportHeight,mode=
   const fit=Math.min(1,(viewportWidth-24)/width,(viewportHeight-24)/height);
   return Math.max(mode==='initial'?.65:.08,fit);
 }
+export function resolveEvidenceReference(snap,reference,sourceRunID=snap.run.id){
+  const id=typeof reference==='string'?reference:reference.id,slash=id.indexOf('/');
+  const run_id=slash<0?sourceRunID:id.slice(0,slash),evidence_id=slash<0?id:id.slice(slash+1),external=run_id!==snap.run.id;
+  return {run_id,evidence_id,external,id:external?run_id+'/'+evidence_id:evidence_id,node_id:external?'external:'+run_id+':'+evidence_id:'evidence:'+evidence_id};
+}
+export const childReportKey=(report,version=false)=>JSON.stringify([report.source_run_id,report.task_id,report.worker_id,report.visit,...(version?[report.source_hash]:[])]);
+export function childReportGroups(reports=[]){
+  const groups=new Map(),seen=new Set();
+  for(const report of reports){
+    const version=childReportKey(report,true);if(seen.has(version))continue;seen.add(version);
+    const key=childReportKey(report);if(!groups.has(key))groups.set(key,{key,versions:[]});
+    const group=groups.get(key);group.versions.push(report);group.report=report;
+    // Map order follows the most recent registration, never CreatedAt.
+    groups.delete(key);groups.set(key,group);
+  }
+  return [...groups.values()];
+}
+export function childReportCounts(snap){
+  const loaded=(snap.child_reports||[]).length,total=snap.totals?.child_reports??loaded;
+  return '累计回执 '+total+' 条 · 载入回执 '+loaded+' 条 · 载入访问组 '+childReportGroups(snap.child_reports).length+' 组'+(total>loaded?' · 未载入 '+(total-loaded)+' 条':'');
+}
 export function explorationData(snap){
   const nodes=[],edges=[],run=snap.run||{},tasks=snap.plan?.tasks||[],evidence=snap.evidence||[];
   const seenEdges=new Set(),missing=new Set(),presentations=new Map(evidence.map(e=>[e.id,evidencePresentation(e,snap)]));
   const add=(id,kind,title,state,record,summary='')=>{
     const t=evidenceText(title,kinds[kind],80),s=evidenceText(summary,'此处保留'+kinds[kind]+'的原始记录；展开详情阅读原文。',180);
-    nodes.push({id,kind,title:t.value,summary:s.value,original:{title:t.original,summary:s.original},state,record,search:[id,title,summary,t.value,s.value,state,record.call_id,record.request_id,record.child_run_id].filter(Boolean).join(' ').toLowerCase()});
+    const node={id,kind,title:t.value,summary:s.value,original:{title:t.original,summary:s.original},state,record,search:[id,title,summary,t.value,s.value,state,record.call_id,record.request_id,record.child_run_id].filter(Boolean).join(' ').toLowerCase()};nodes.push(node);return node;
   };
   const edge=(from,to,relation)=>{const key=[from,to,relation].join('\0');if(from!==to&&!seenEdges.has(key)){seenEdges.add(key);edges.push({from,to,relation})}};
   const latest=new Map();for(const c of snap.checks||[])latest.set(c.requirement_id,c);
   const reportRecords=[snap.result,...(snap.result?.answers||[]),...(snap.findings||[]).flatMap(f=>[f,...(f.retests||[])]),...(snap.requirements||[]).map(r=>latest.get(r.id))];
-  const reportIDs=new Set(reportRecords.flatMap(references));
-  const explorationIDs=new Set(tasks.filter(t=>!t.evidence_run_id||t.evidence_run_id===run.id).flatMap(t=>t.evidence_ids||[]));
-  for(const a of snap.assets||[])if(!a.source_run_id||a.source_run_id===run.id)for(const id of a.evidence_ids||[])explorationIDs.add(id);
-  for(const r of snap.relations||[])for(const id of r.evidence_ids||[])explorationIDs.add(id);
+  const reportIDs=new Set(reportRecords.flatMap(references).map(id=>resolveEvidenceReference(snap,id).id));
+  const explorationIDs=new Set();
+  for(const t of tasks)for(const id of t.evidence_ids||[])explorationIDs.add(resolveEvidenceReference(snap,id,t.evidence_run_id||run.id).id);
+  for(const a of snap.assets||[])for(const id of a.evidence_ids||[])explorationIDs.add(resolveEvidenceReference(snap,id,a.source_run_id||run.id).id);
+  for(const r of snap.relations||[])for(const id of r.evidence_ids||[])explorationIDs.add(resolveEvidenceReference(snap,id).id);
+  const evidenceNode=(id,sourceRunID)=>{
+    const ref=resolveEvidenceReference(snap,id,sourceRunID);
+    if(ref.external&&!nodes.some(n=>n.id===ref.node_id))add(ref.node_id,'external','来源证据 · '+ref.evidence_id,'尚未载入来源',ref,'来源 '+ref.run_id+'；原始读取、内容完整性与父目标验收分别核对');
+    return ref.node_id;
+  };
   add('goal','goal','研究目标',label(run.status),run,run.goal||'尚未填写研究目标');
-  for(const t of tasks){add('task:'+t.id,'intent',t.goal||'探索方向',label(t.status),t,t.error?'执行说明：'+t.error:t.completion_criteria?'完成条件：'+t.completion_criteria:t.success_contains?'精确判据：'+t.success_contains:'计划记录中的探索方向');edge('goal','task:'+t.id,'计划方向');for(const d of t.dependencies||[])edge('task:'+d,'task:'+t.id,'依赖');}
+  for(const t of tasks){add('task:'+t.id,'intent',t.goal||'探索方向',t.history_incomplete?'历史信息不完整':label(t.status),t,t.error?'执行说明：'+t.error:t.completion_criteria?'完成条件：'+t.completion_criteria:t.success_contains?'精确判据：'+t.success_contains:'计划记录中的探索方向');edge('goal','task:'+t.id,'计划方向');for(const d of t.dependencies||[])edge('task:'+d,'task:'+t.id,'依赖');}
   for(const e of evidence){
     const p=presentations.get(e.id);if(p.graphEligible===false||!reportIDs.has(e.id)&&!(explorationIDs.has(e.id)&&p.graphEligible))continue;
     const r=evidenceReading(e),failed=r.result&&(r.result.error||r.result.mcp_is_error||r.result.exit_code!==undefined&&r.result.exit_code!==0),uncertain=p.action?.status==='uncertain'||r.result&&(r.result.interrupted||r.result.outcome_uncertain||r.result.worker_outcome_uncertain);
     add('evidence:'+e.id,'observation',p.title,(uncertain?'执行结果待核对 · ':failed?'执行失败 · ':'')+r.source,e,p.summary);
   }
-  for(const t of tasks)for(const id of t.evidence_ids||[]){
-    if(t.evidence_run_id&&t.evidence_run_id!==run.id){const key='external:'+t.evidence_run_id+':'+id;if(!nodes.some(n=>n.id===key))add(key,'external','子运行引用证据','尚未载入来源',{run_id:t.evidence_run_id,evidence_id:id},'证据 '+id+'；打开来源运行核对');edge('task:'+t.id,key,'方向引用');}
-    else edge('task:'+t.id,'evidence:'+id,'方向引用');
-  }
-  for(const a of snap.assets||[])if(a.source_task_id&&tasks.some(t=>t.id===a.source_task_id)&&(!a.source_run_id||a.source_run_id===run.id))for(const id of a.evidence_ids||[])edge('task:'+a.source_task_id,'evidence:'+id,'资产引用');
-  for(const r of snap.requirements||[]){const c=latest.get(r.id);add('requirement:'+r.id,'requirement',r.description,c?({pass:'判据通过',fail:'判据未通过',unknown:'待核对'}[c.status]||c.status):'待验证',{requirement:r,check:c},c?.reason||'尚无验收检查记录');edge('goal','requirement:'+r.id,'验收要求');for(const id of references(c))edge('evidence:'+id,'requirement:'+r.id,'检查引用');}
-  for(const f of snap.findings||[]){add('finding:'+f.id,'finding',f.title,findingStates[f.status]||label(f.status),f,f.impact||'尚未记录影响说明');for(const id of references(f))edge('evidence:'+id,'finding:'+f.id,'发现引用');for(const t of f.retests||[])for(const id of references(t))edge('evidence:'+id,'finding:'+f.id,'复测引用');}
-  // Child source references remain external: no naked child evidence IDs are
-  // promoted into this parent's observed/verified evidence collection.
-  const childKeys=new Set();
-  for(const report of snap.child_reports||[]){
-    const key=JSON.stringify([report.source_run_id,report.task_id,report.worker_id,report.visit,report.source_hash]);
-    if(childKeys.has(key))continue;childKeys.add(key);
-    const id='child-report:'+key,source='child-source:'+key;
-    add(id,'child_report','子报告 · '+(report.task_id||report.source_run_id),label(report.run_status)+' / '+label(report.result_status),report,report.summary);
+  for(const t of tasks)for(const id of t.evidence_ids||[])edge('task:'+t.id,evidenceNode(id,t.evidence_run_id||run.id),'方向引用');
+  for(const a of snap.assets||[])if(a.source_task_id&&tasks.some(t=>t.id===a.source_task_id))for(const id of a.evidence_ids||[])edge('task:'+a.source_task_id,evidenceNode(id,a.source_run_id||run.id),'资产引用');
+  for(const r of snap.requirements||[]){const c=latest.get(r.id);add('requirement:'+r.id,'requirement',r.description,c?({pass:'判据通过',fail:'判据未通过',unknown:'待核对'}[c.status]||c.status):'待验证',{requirement:r,check:c},c?.reason||'尚无验收检查记录');edge('goal','requirement:'+r.id,'验收要求');for(const id of references(c))edge(evidenceNode(id),'requirement:'+r.id,'检查引用');}
+  for(const f of snap.findings||[]){add('finding:'+f.id,'finding',f.title,findingStates[f.status]||label(f.status),f,f.impact||'尚未记录影响说明');for(const id of references(f))edge(evidenceNode(id),'finding:'+f.id,'发现引用');for(const t of f.retests||[])for(const id of references(t))edge(evidenceNode(id),'finding:'+f.id,'复测引用');}
+  for(const group of childReportGroups(snap.child_reports)){
+    const report=group.report,key=childReportKey(report,true),id='child-report:'+key,source='child-source:'+key;
+    add(id,'child_report','子报告 · '+(report.task_id||report.source_run_id),label(report.run_status)+' / '+label(report.result_status),report,report.summary).versions=group.versions;
     edge(tasks.some(t=>t.id===report.task_id)?'task:'+report.task_id:'goal',id,'子结算报告');
-    add(source,'source','来源 · '+report.source_run_id,label(report.source_status)+(report.current===false?' · 历史版本':''),report,'版本 '+(report.source_hash||'未记录')+'；清理 '+label(report.cleanup_status));
+    add(source,'source','来源 · '+report.source_run_id,label(report.source_status)+(report.current===true?' · 当前 visit':report.current===false?' · 历史 visit':' · visit 未核对'),report,'回执版本 '+(report.source_hash||'未记录')+'；清理 '+label(report.cleanup_status)).versions=group.versions;
     edge(id,source,'固定来源指针');
   }
   const result=snap.result;
-  if(result&&(result.summary||result.evidence_ids?.length||result.answers?.length)){
+  if(result&&(result.summary||references(result).length||result.answers?.length)){
     add('report','report','研究报告',label(result.status),result,result.summary||'报告已登记证据引用');
-    for(const id of result.evidence_ids||[])edge('evidence:'+id,'report','报告引用');
-    for(const a of result.answers||[])for(const id of a.evidence_ids||[])edge('evidence:'+id,'report','结论引用');
+    for(const id of references(result))edge(evidenceNode(id),'report','报告引用');
+    for(const a of result.answers||[])for(const id of references(a))edge(evidenceNode(id),'report','结论引用');
     edge('goal','report','运行报告');
   }
   const ids=new Set(nodes.map(n=>n.id)),available=new Set(evidence.map(e=>e.id));
@@ -293,19 +312,25 @@ export function locateExploration(){
   if(matches.length){const node=matches[matchIndex++%matches.length];for(let p=node.parentElement;p;p=p.parentElement)if(p.tagName==='DETAILS')p.open=true;const canvas=root.querySelector('.exploration-canvas');if(canvas?.scrollTo){const view=viewState(root.dataset.explorationRun);view.mode='manual';if(view.zoom<.85)applyZoom(root,.85);const bounds=node.getBoundingClientRect(),viewport=canvas.getBoundingClientRect();canvas.scrollTo({left:canvas.scrollLeft+bounds.left-viewport.left-(canvas.clientWidth-bounds.width)/2,top:canvas.scrollTop+bounds.top-viewport.top-(canvas.clientHeight-bounds.height)/2})}else node.scrollIntoView({block:'nearest',inline:'center'});node.focus({preventScroll:true})}return matches.length;
 }
 export function renderExplorationDetail(snap,id){
-  const {nodes,edges}=explorationData(snap),n=nodes.find(n=>n.id===id);if(!n)return empty('节点已更新','关闭详情后重新选择。');
-  if(n.kind==='observation')return evidenceDetail(n.record,snap);
+  const {nodes,edges}=explorationData(snap);let n=nodes.find(n=>n.id===id);
+  if(!n&&(id.startsWith('child-report:')||id.startsWith('child-source:'))){
+    const report=(snap.child_reports||[]).find(r=>id.slice(id.indexOf(':')+1)===childReportKey(r,true));
+    if(report){n=explorationData({...snap,child_reports:[report]}).nodes.find(n=>n.id===id);n.versions=childReportGroups(snap.child_reports).find(g=>g.key===childReportKey(report)).versions}
+  }
+  if(!n)return historyDetail(snap,empty('引用版本未载入','保留原始引用；未以最新版本替换。'));
+  if(n.kind==='observation')return historyDetail(snap,evidenceDetail(n.record,snap));
   const r=n.record;
   let detail='';
   if(n.kind==='child_report'||n.kind==='source'){
-    const safePath=typeof r.report_path==='string'&&r.report_path.startsWith('/api/')&&!r.report_path.includes('\\');
-    detail='<p>运行：'+esc(label(r.run_status))+' · 业务：'+esc(label(r.result_status))+' · 来源：'+esc(label(r.source_status))+' · 清理：'+esc(label(r.cleanup_status))+'</p><p class="note">'+(r.current===false?'历史结算版本':'当前结算版本')+'；子报告不代表父运行执行或父目标成功。</p><pre>'+esc(r.source_hash)+'</pre><h4>登记发现</h4><pre>'+json(r.findings||[])+'</pre><h4>未决项</h4><pre>'+json(r.unresolved||[])+'</pre>'+btn('select','打开来源子运行 ↗','data-id="'+esc(r.source_run_id)+'"')+(safePath?'<a href="'+esc(r.report_path)+'" target="_blank" rel="noopener">读取固定版本源报告 ↗</a>':'<p class="note">来源报告路径：'+esc(r.report_path||'未记录')+'</p>');
+    const fixedPath=typeof r.report_path==='string'&&r.report_path.startsWith('/api/runs/'+encodeURIComponent(r.source_run_id)+'/export?')&&!r.report_path.includes('\\')&&new URLSearchParams(r.report_path.split('?')[1]).get('report_id');
+    const versions=n.versions||[r],latest=versions.at(-1),recent=childReportKey(latest,true)===childReportKey(r,true);
+    detail='<p>运行：'+esc(label(r.run_status))+' · 业务：'+esc(label(r.result_status))+' · 来源：'+esc(label(r.source_status))+' · 清理：'+esc(label(r.cleanup_status))+'</p><p class="note">'+(r.current===true?'当前 visit':r.current===false?'历史 visit':'visit 未核对')+' · '+(recent?'本组最近登记回执':'本组历史回执')+' · 报告交付 '+(r.delivery_pending?'待完成':'未标记待完成')+' · 生命周期结算 '+(r.settlement_pending?'待完成':'未标记待完成')+'；子报告不代表父目标成功。</p><pre>'+esc(r.source_hash)+'</pre><h4>登记发现</h4><pre>'+json(r.findings||[])+'</pre><h4>未决项</h4><pre>'+json(r.unresolved||[])+'</pre>'+btn('select','查看当前来源子运行 ↗','data-id="'+esc(r.source_run_id)+'"')+(fixedPath?'<a href="'+esc(r.report_path)+'" target="_blank" rel="noopener">读取固定版本源报告 ↗</a>':'<p class="note">未登记固定 report_id 归档；此回执正文之外的旧版报告未保存，查看当前来源不会替换此版本。</p>')+(versions.length>1?'<details><summary>此 visit 的回执版本 · '+versions.length+'</summary>'+versions.map(v=>'<p><code>'+esc(v.source_hash)+'</code> '+btn('exploration-detail','查看此回执详情','data-id="'+esc('child-report:'+childReportKey(v,true))+'"')+'</p>').join('')+'</details>':'');
   }
   if(n.kind==='intent')detail=`${r.error?`<p class="inline-error">${esc(r.error)}</p>`:''}<p>完成条件：${esc(r.completion_criteria||r.success_contains||'未设置')}</p><div class="buttons">${btn('task-detail','查看计划记录',`data-id="${esc(r.id)}"`)}${r.child_run_id?btn('select','进入执行子运行 ↗',`data-id="${esc(r.child_run_id)}"`):''}</div>`;
-  if(n.kind==='external')detail=btn('select','进入证据来源运行 ↗',`data-id="${esc(r.run_id)}"`);
+  if(n.kind==='external')detail='<p class="note">原始来源尚未载入；内容完整性待核对。父目标验收资格以父运行绑定检查为准，原始证据可读不授予验收资格。</p>'+btn('evidence-detail','读取此来源证据',`data-id="${esc(r.id)}"`)+btn('select','查看当前证据来源运行 ↗',`data-id="${esc(r.run_id)}"`);
   if(n.kind==='requirement')detail=`<p>${esc(r.check?.reason||'尚无检查记录')}</p>${evidenceLinks(references(r.check))}${r.check?.review?`<p>独立审阅：${esc(r.check.review.reason)}</p>`:''}<details><summary>验收条件与检查原文</summary><pre>${json(r)}</pre></details>`;
-  if(n.kind==='report')detail=`<p>${esc(r.summary||'尚无报告摘要')}</p><h4>报告引用证据</h4>${evidenceLinks(r.evidence_ids)}${(r.answers||[]).map(a=>`<section><h4>报告结论 · ${a.verified?'引用校验通过':'待核对'}</h4><p>${esc(a.value)}</p>${evidenceLinks(a.evidence_ids)}</section>`).join('')}<p class="note">业务状态：${esc(label(r.status))}；清理状态：${esc(label(r.cleanup_status))}。引用校验不等于语义结论已证明。</p>${reportDownloads(snap,true)}<details><summary>完整报告记录</summary><pre>${json(r)}</pre></details>`;
+  if(n.kind==='report')detail=`<p>${esc(r.summary||'尚无报告摘要')}</p><h4>报告引用证据</h4>${evidenceLinks(references(r))}${(r.answers||[]).map(a=>`<section><h4>报告结论 · ${a.verified?'引用校验通过':'待核对'}</h4><p>${esc(a.value)}</p>${evidenceLinks(references(a))}</section>`).join('')}<p class="note">业务状态：${esc(label(r.status))}；清理状态：${esc(label(r.cleanup_status))}。引用校验不等于语义结论已证明。</p>${reportDownloads(snap,true)}<details><summary>完整报告记录</summary><pre>${json(r)}</pre></details>`;
   if(n.kind==='finding')detail=`<dl class="key-values"><dt>影响</dt><dd>${esc(r.impact)}</dd><dt>根因</dt><dd>${esc(r.root_cause)}</dd><dt>修复建议</dt><dd>${esc(r.remediation)}</dd><dt>来源状态</dt><dd>${esc(label(r.source_status))}</dd></dl><h4>引用证据</h4>${evidenceLinks(references(r))}<h4>复现步骤</h4><ol>${(r.reproduction_steps||[]).map(v=>`<li>${esc(v)}</li>`).join('')}</ol>${r.review?`<p>独立审阅：${esc(r.review.reason)}</p>`:''}${(r.retests||[]).map(t=>`<p>复测：${esc(t.status)} · ${esc(t.reason)}</p>${evidenceLinks(references(t))}`).join('')}<p class="note">登记、审阅和复测是不同阶段；以各自记录为准。</p><details><summary>完整发现记录</summary><pre>${json(r)}</pre></details>`;
   const linked=edges.filter(e=>e.from===id||e.to===id);
-  return `<div class="exploration-detail"><p class="note">${kinds[n.kind]} · ${esc(n.state)}</p><h3>${esc(n.title)}</h3><p>${esc(n.summary)}</p>${n.original.title||n.original.summary?`<details><summary>查看节点原文</summary><pre>${esc([n.original.title,n.original.summary].filter(Boolean).join('\n'))}</pre></details>`:''}${detail}${linked.length?`<h4>关联节点</h4><div class="exploration-relations">${linked.map(e=>{const other=nodes.find(x=>x.id===(e.from===id?e.to:e.from));return `<div><span class="note">${e.from===id?'→':'←'} ${esc(e.relation)}</span>${btn('exploration-detail',esc(other.title),`data-id="${esc(other.id)}"`)}</div>`}).join('')}</div>`:''}</div>`;
+  return historyDetail(snap,`<div class="exploration-detail"><p class="note">${kinds[n.kind]} · ${esc(n.state)}</p><h3>${esc(n.title)}</h3><p>${esc(n.summary)}</p>${n.original.title||n.original.summary?`<details><summary>查看节点原文</summary><pre>${esc([n.original.title,n.original.summary].filter(Boolean).join('\n'))}</pre></details>`:''}${detail}${linked.length?`<h4>关联节点</h4><div class="exploration-relations">${linked.map(e=>{const other=nodes.find(x=>x.id===(e.from===id?e.to:e.from));return `<div><span class="note">${e.from===id?'→':'←'} ${esc(e.relation)}</span>${btn('exploration-detail',esc(other.title),`data-id="${esc(other.id)}"`)}</div>`}).join('')}</div>`:''}</div>`);
 }

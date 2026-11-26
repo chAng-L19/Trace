@@ -49,15 +49,19 @@ async function graphs({page,base,id,output,frame,stage,result,change}){
  }
  stage('removed relation clears selection');
  await change('remove-dependency');
- async function cleared(root){
+ async function cleared(root,preview=false){
   await root.locator(edgeSelector).waitFor({state:'detached'});
-  await root.locator('.exploration-edge[data-from="goal"][data-to="task:todo-dependent"]').waitFor();
+  if(preview){
+   await root.locator('[data-action="exploration-detail"][data-id="task:task-running"]').waitFor();
+   assert.equal(await root.locator('[data-action="exploration-detail"][data-id="task:todo-dependent"]').count(),0,'active directions retain the bounded preview slots');
+   assert.match(await root.evaluate(el=>el.nextElementSibling.textContent),/简图显示 8 个方向.*省略 1 个方向/);
+  }else await root.locator('.exploration-edge[data-from="goal"][data-to="task:todo-dependent"]').waitFor();
   assert.equal(await root.locator('.chain-muted').count(),0);
   assert.ok(await root.locator('[data-command=clear]').isDisabled());
  }
  await cleared(page.locator('.exploration-view'));
  await page.locator('#task-tab-activity').click();
- await cleared(page.locator('.exploration-preview'));
+ await cleared(page.locator('.exploration-preview'),true);
  result.removal={fullCleared:true,previewCleared:true};
 }
 

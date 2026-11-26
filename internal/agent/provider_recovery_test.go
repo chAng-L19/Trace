@@ -163,36 +163,28 @@ func TestProviderContextRecoveryStopsRepeatedOverflowAndPersistsLimit(t *testing
 	}
 }
 
-func TestProviderRecoverySummaryFailuresContinueThroughPi(t *testing.T) {
+func TestProviderRecoverySummaryFailuresCloseOrigin(t *testing.T) {
 	for _, backend := range []string{"json", "sqlite"} {
 		for _, kind := range []string{"length", "tool_calls", "empty", "no_reduction", "transient"} {
 			t.Run(backend+"/"+kind, func(t *testing.T) {
 				bad := ModelResponse{Content: "partial summary", StopReason: "length"}
-				failures := 3
 				var summaryErr error
 				switch kind {
 				case "tool_calls":
-					bad = ModelResponse{ToolCalls: []ToolCall{{ID: "never-dispatch", Name: "write", Arguments: `{}`}}}
+					bad = ModelResponse{ToolCalls: []ToolCall{{ID: "never-dispatch", Name: "write", Arguments: "{}"}}}
 				case "empty":
 					bad = ModelResponse{}
 				case "no_reduction":
 					bad = ModelResponse{Content: strings.Repeat("long summary ", 500)}
 				case "transient":
-					failures, summaryErr = 1, &ProviderHTTPError{StatusCode: 503}
+					summaryErr = &ProviderHTTPError{StatusCode: 503}
 				}
+				usage := &TokenUsage{TotalTokens: int64Pointer(1)}
+				bad.Usage = usage
 				p := &modelRetryProvider{
-					responses: []ModelResponse{{Usage: &TokenUsage{TotalTokens: int64Pointer(1)}}},
-					errors:    []error{&ProviderHTTPError{StatusCode: 400, Body: "context_length_exceeded"}},
+					responses: []ModelResponse{{Usage: usage}, bad, {Content: "Exact objective and historical observations retained.", Usage: usage}, {Content: "done", Usage: usage}},
+					errors:    []error{&ProviderHTTPError{StatusCode: 400, Body: "context_length_exceeded"}, summaryErr, nil, nil},
 				}
-				for i := 0; i < failures; i++ {
-					bad.Usage = &TokenUsage{TotalTokens: int64Pointer(1)}
-					p.responses = append(p.responses, bad)
-					p.errors = append(p.errors, summaryErr)
-				}
-				p.responses = append(p.responses,
-					ModelResponse{Content: "Exact objective and historical observations retained.", Usage: &TokenUsage{TotalTokens: int64Pointer(1)}},
-					ModelResponse{Content: "done", Usage: &TokenUsage{TotalTokens: int64Pointer(1)}})
-				p.errors = append(p.errors, nil, nil)
 				store, _ := u7Store(t, backend)
 				a, err := New(store, p, "")
 				if err != nil {
@@ -200,38 +192,36 @@ func TestProviderRecoverySummaryFailuresContinueThroughPi(t *testing.T) {
 				}
 				id, original := recoveryHistory(t, a, store)
 				snap, err := a.Run(context.Background(), id)
-				want := failures + 3
-				if err != nil || snap.Run.Status != StatusCompleted || len(snap.Requests) != want || len(snap.Responses) != want || len(snap.Compactions) != failures+1 {
-					t.Fatalf("summary correction stopped: %+v requests=%d err=%v", snap.Run, len(snap.Requests), err)
-				}
-				if len(snap.Actions) != 0 || len(pendingToolCalls(&snap)) != 0 || len(snap.Messages) != len(original)+1 || messageHash(snap.Messages[:len(original)]) != messageHash(original) || *snap.Run.Usage.KnownTotalTokens != int64(want) {
-					t.Fatal("summary correction rewrote history, dispatched tools or escaped usage accounting")
-				}
-				for i := 0; i < failures; i++ {
-					if snap.Compactions[i].Status != "failed" || snap.Responses[i+1].Error == "" || snap.Requests[i+1].Purpose != "context_summary" {
-						t.Fatal("failed summary or its archived response was replaced")
+				want := 2
+				if kind == "transient" {
+					want = 4
+					if err != nil || snap.Run.Status != StatusCompleted || snap.Compactions[1].Status != "completed" {
+						t.Fatalf("transient retry did not recover: %+v err=%v", snap.Run, err)
 					}
+				} else if err == nil || snap.Run.Status != StatusFailed || snap.Run.PauseReason != "" {
+					t.Fatalf("deterministic summary failure did not close origin: %+v err=%v", snap.Run, err)
 				}
-				lastSummary := snap.Requests[want-2]
-				started, ready := 0, 0
-				for _, event := range snap.Events {
-					if event.Type == "context_recovery_started" {
-						started++
-						origin := recoveryEvent(event)
-						if origin.RequestID != snap.Requests[0].ID || origin.SourceHash != messageHash(original) {
-							t.Fatal("summary retry lost the original failure/source identity")
-						}
-					}
-					if event.Type == "context_recovery_ready" {
-						ready++
-						if recoveryEvent(event).SummaryRequestID != lastSummary.ID {
-							t.Fatal("a failed summary was marked ready")
-						}
-					}
+				if len(snap.Requests) != want || len(snap.Responses) != want || snap.Compactions[0].Status != "failed" || snap.Responses[1].Error == "" || *snap.Run.Usage.KnownTotalTokens != int64(want) {
+					t.Fatal("failed response, usage or terminal decision did not persist together")
 				}
-				last := snap.Requests[want-1]
-				if started != failures+1 || ready != 1 || last.CompactionID != lastSummary.CompactionID || EstimateContextTokens(last.Messages, last.Tools) >= EstimateContextTokens(snap.Requests[0].Messages, snap.Requests[0].Tools) {
-					t.Fatal("summary retry bypassed source-bound complete-context reduction")
+				if len(snap.Actions) != 0 || len(pendingToolCalls(&snap)) != 0 || messageHash(snap.Messages[:len(original)]) != messageHash(original) {
+					t.Fatal("summary failure changed history or dispatched tools")
+				}
+				if kind == "transient" {
+					return
+				}
+				// Reload durable state, then mimic a manual status reset: it is not progress.
+				reloaded, err := store.Load(id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				reloaded.Run.Status, reloaded.Run.Error = StatusRunning, ""
+				if err := providerRecoveryProjectionError(&reloaded); !errors.Is(err, errProviderRecoveryLedger) {
+					t.Fatalf("closed origin reopened: %v", err)
+				}
+				reloaded.Run.Context.OutputReserve++
+				if err := providerRecoveryProjectionError(&reloaded); err != nil {
+					t.Fatalf("effective configuration change did not unlock planning: %v", err)
 				}
 			})
 		}
@@ -253,9 +243,11 @@ func TestProviderContextRecoveryPreservesExplicitBudgetAndCancellation(t *testin
 				a.ConfigureBudget(BudgetOverride{MaxModelRequests: intPointer(1)})
 				wantRequests = 1
 			case "summary_failure":
+				wantStatus = StatusFailed
 				p.responses[1].StopReason = "length"
 				a.ConfigureBudget(BudgetOverride{MaxModelRequests: intPointer(2)})
 			case "no_reduction":
+				wantStatus = StatusFailed
 				p.responses[1].Content = strings.Repeat("long summary ", 500)
 				a.ConfigureBudget(BudgetOverride{MaxModelRequests: intPointer(2)})
 			case "cancel":
@@ -273,7 +265,7 @@ func TestProviderContextRecoveryPreservesExplicitBudgetAndCancellation(t *testin
 			if (kind == "summary_failure" || kind == "no_reduction") && snap.Compactions[0].Status != "failed" {
 				t.Fatal("truncated summary was accepted")
 			}
-			if kind != "cancel" && snap.Run.PauseReason != "model request budget exhausted" {
+			if kind == "budget" && snap.Run.PauseReason != "model request budget exhausted" {
 				t.Fatal("technical summary failure introduced an implicit pause")
 			}
 		})
@@ -282,14 +274,13 @@ func TestProviderContextRecoveryPreservesExplicitBudgetAndCancellation(t *testin
 
 func TestProviderRecoveryRetryRejectsChangedHistory(t *testing.T) {
 	p := &modelRetryProvider{
-		errors: []error{&ProviderHTTPError{StatusCode: 400, Body: "context_length_exceeded"}, nil, nil},
-		responses: []ModelResponse{{}, {Content: "truncated summary", StopReason: "length"},
-			{Content: "compact source-bound summary"}},
+		errors:    []error{&ProviderHTTPError{StatusCode: 400, Body: "context_length_exceeded"}, nil, nil},
+		responses: []ModelResponse{{}, {Content: "compact source-bound summary"}},
 	}
 	a, store := newTestAgent(t, p)
 	id, original := recoveryHistory(t, a, store)
 	p.onCall = func(n int) {
-		if n == 3 {
+		if n == 2 {
 			if _, err := store.Update(id, func(s *Snapshot) error {
 				s.Messages = append(s.Messages, Message{Role: "user", Content: "new constraint while the retry was pending"})
 				return nil
@@ -299,10 +290,10 @@ func TestProviderRecoveryRetryRejectsChangedHistory(t *testing.T) {
 		}
 	}
 	snap, err := a.Run(context.Background(), id)
-	if err == nil || snap.Run.Status != StatusFailed || len(snap.Requests) != 3 || len(snap.Compactions) != 2 || snap.Compactions[1].Status != "failed" || len(snap.Actions) != 0 {
+	if err == nil || snap.Run.Status != StatusFailed || len(snap.Requests) != 2 || len(snap.Compactions) != 1 || snap.Compactions[0].Status != "failed" || len(snap.Actions) != 0 {
 		t.Fatalf("changed retry source was accepted: %+v err=%v", snap.Run, err)
 	}
-	if messageHash(snap.Messages[:len(original)]) != messageHash(original) || len(snap.Messages) != len(original)+1 || snap.Responses[2].Error == "" {
+	if messageHash(snap.Messages[:len(original)]) != messageHash(original) || len(snap.Messages) != len(original)+1 || snap.Responses[1].Error == "" {
 		t.Fatal("source failure lost the original history or failed response")
 	}
 	for _, event := range snap.Events {
@@ -389,12 +380,12 @@ func TestProviderRecoveryPauseCommitsReductionBeforeSummaryReuse(t *testing.T) {
 			}
 			restarted.registry = a.registry
 			snap, err = restarted.Run(context.Background(), id)
-			wantRequests, wantCompactions := 4, 2
 			if reduce {
-				wantRequests, wantCompactions = 3, 1
-			}
-			if err != nil || snap.Run.Status != StatusCompleted || len(snap.Requests) != wantRequests || len(snap.Compactions) != wantCompactions {
-				t.Fatalf("restart reused an unready summary or stopped correction: %+v requests=%d err=%v", snap.Run, len(snap.Requests), err)
+				if err != nil || snap.Run.Status != StatusCompleted || len(snap.Requests) != 3 || len(snap.Compactions) != 1 {
+					t.Fatalf("ready summary was not reused: %+v err=%v", snap.Run, err)
+				}
+			} else if err == nil || snap.Run.Status != StatusFailed || len(snap.Requests) != 2 || len(snap.Compactions) != 1 {
+				t.Fatalf("restart reopened an unready origin: %+v err=%v", snap.Run, err)
 			}
 		})
 	}

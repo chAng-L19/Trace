@@ -40,135 +40,6 @@ type WorkerMessage struct {
 	CreatedAt    time.Time           `json:"created_at"`
 }
 
-// DispatchTask persists a claim and child identity before invoking the child
-// model loop. Separate child runs retain independent evidence and run locks.
-func (a *Agent) DispatchTask(ctx context.Context, id, taskID string) (AgentWorker, error) {
-	// Like ARTEX pumpLocked, a stopped dispatcher must not consume queued work.
-	if err := ctx.Err(); err != nil {
-		return AgentWorker{}, err
-	}
-	ctx, release, err := a.workers.begin(ctx)
-	if err != nil {
-		return AgentWorker{}, err
-	}
-	launched := false
-	defer func() {
-		if !launched {
-			release()
-		}
-	}()
-	wid, err := newID()
-	if err != nil {
-		return AgentWorker{}, err
-	}
-	snap, err := a.claimTask(ctx, id, taskID, wid, 30)
-	if err != nil {
-		return AgentWorker{}, err
-	}
-	task, _ := planTask(&snap, taskID)
-	workerContext, err := a.newWorkerContext(&snap, *task)
-	if err != nil {
-		return AgentWorker{}, errors.Join(err, a.finishWorkerFailure(id, taskID, wid, err))
-	}
-	workerContext.WorkerID = wid
-	for _, handoff := range workerContext.Handoffs {
-		if handoff.Status != "available" {
-			err := &HandoffNotReadyError{TaskID: taskID, Sources: []string{handoff.SourceTaskID}}
-			return AgentWorker{}, errors.Join(err, a.finishWorkerFailure(id, taskID, wid, err))
-		}
-	}
-	workerContext.MethodCandidates = a.recallWorkerMethods(task.Goal)
-	inputs, err := taskInputAttachments(&snap, task.InputAttachmentIDs)
-	if err != nil {
-		return AgentWorker{}, errors.Join(err, a.finishWorkerFailure(id, taskID, wid, err))
-	}
-	stageModel, err := a.stageModelSelection(*task)
-	if err != nil {
-		return AgentWorker{}, errors.Join(err, a.finishWorkerFailure(id, taskID, wid, err))
-	}
-	child, err := a.CreateConfigured(task.Goal, RunConfiguration{Requirements: task.Requirements, ModelSelection: stageModel, inheritedRun: &snap.Run, TreeBudget: &TreeBudget{}, role: "worker"}, inputs...)
-	if err != nil {
-		return AgentWorker{}, errors.Join(err, a.finishWorkerFailure(id, taskID, wid, err))
-	}
-	workerContext.RunID = child.Run.ID
-	unlock, err := a.store.AcquireRunLock(child.Run.ID)
-	if err != nil {
-		// A different holder may already be running this child. Cancellation
-		// requests its stop but does not prove exit, so retain the claim.
-		_, cancelErr := a.Cancel(child.Run.ID)
-		return AgentWorker{}, errors.Join(err, cancelErr)
-	}
-	defer func() {
-		if !launched {
-			unlock()
-		}
-	}()
-	// An unregistered child must be stopped before releasing its claim. A
-	// failed cancellation leaves that claim occupied for explicit recovery.
-	failChild := func(cause error) (AgentWorker, error) {
-		if _, cancelErr := a.Cancel(child.Run.ID); cancelErr != nil {
-			return AgentWorker{}, errors.Join(cause, cancelErr)
-		}
-		return AgentWorker{}, errors.Join(cause, a.finishWorkerFailure(id, taskID, wid, cause))
-	}
-	_, err = a.store.Update(child.Run.ID, func(s *Snapshot) error {
-		s.Run.RequireVerifiedCompletion = snap.Run.RequireVerifiedCompletion
-		s.Run.ParentRunID = id
-		s.Run.ParentTaskID = taskID
-		if s.Run.ToolSelection != nil && len(task.RequiredToolIDs) > 0 {
-			ids := append([]string(nil), s.Run.ToolSelection.IDs...)
-			for _, toolID := range task.RequiredToolIDs {
-				if tool, ok := a.registry.Lookup(toolID); ok && externalTool(tool) && !hasString(ids, toolID) {
-					ids = append(ids, toolID)
-				}
-			}
-			s.Run.ToolSelection = a.registry.selection(ids, s.Run.ToolSelection)
-		}
-		s.Run.SuccessContains = task.SuccessContains
-		s.WorkerContext = workerContext
-		addEvent(s, "worker_context_created", "任务限定上下文与来源引用已保存", map[string]any{"parent_run_id": id, "task_id": taskID, "assets": len(workerContext.Assets), "dependencies": len(workerContext.Dependencies), "evidence_refs": len(workerContext.Evidence)})
-		return nil
-	})
-	if err != nil {
-		return failChild(err)
-	}
-	w := AgentWorker{ID: wid, TaskID: taskID, RunID: child.Run.ID, Status: "running", CleanupStatus: "pending", StartedAt: time.Now().UTC(), Visit: 1}
-	_, err = a.store.Update(id, func(s *Snapshot) error {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if err := a.checkTaskAdmissionLocked(s); err != nil {
-			return err
-		}
-		t, e := planTask(s, taskID)
-		if e != nil {
-			return e
-		}
-		if t.WorkerID != wid || t.Status != "running" || !t.LeaseUntil.After(time.Now()) {
-			return fmt.Errorf("lease changed")
-		}
-		if err := a.checkWorkerCapacityLocked(s, 0); err != nil {
-			return err
-		}
-		if err := a.checkTaskDispatchWindowLocked(s, *t); err != nil {
-			return err
-		}
-		if err := a.validateHandoffManifestLocked(s, *t, workerContext.Handoffs); err != nil {
-			return err
-		}
-		t.ChildRunID = child.Run.ID
-		s.Workers = append(s.Workers, w)
-		addEvent(s, "worker_started", "子智能 worker 已启动", w)
-		return nil
-	})
-	if err != nil {
-		return failChild(err)
-	}
-	launched = true
-	go func() { defer release(); defer unlock(); a.runChild(ctx, id, w) }()
-	return w, nil
-}
-
 // Like Muteki coordinator_schedule_dispatch.py:162-175, a failed terminal
 // transition must remain visible rather than masquerading as settled work.
 func (a *Agent) finishWorkerFailure(id, taskID, wid string, cause error) error {
@@ -619,54 +490,11 @@ func (a *Agent) deliverWorkerInbox(id, rootID, to string, root Observation) erro
 }
 
 func (a *Agent) CancelWorker(id, workerID string) (Snapshot, error) {
-	snap, err := a.store.Load(id)
-	if err != nil {
-		return snap, err
-	}
-	childID, err := workerRun(&snap, workerID)
-	if err != nil {
-		return snap, err
-	}
-	if workerID == "parent" {
-		return snap, fmt.Errorf("use parent cancel")
-	}
-	child, loadErr := a.store.Load(childID)
-	if loadErr != nil {
-		return snap, loadErr
-	}
-	if child.Run.Status != StatusCancelled {
-		if _, err = a.Cancel(childID); err != nil {
-			return snap, err
-		}
-	}
-	return a.settleCancelledChild(id, childID)
+	return a.CancelWorkerVisit(id, workerID, nil)
 }
 
-// A paused/uncertain child has no live goroutine to settle its parent after
-// direct Web/CLI cancellation. Active workers still settle after cleanup.
 func (a *Agent) settleCancelledChild(id, childID string) (Snapshot, error) {
-	return a.store.Update(id, func(s *Snapshot) error {
-		for i := range s.Workers {
-			w := &s.Workers[i]
-			if w.RunID != childID || w.Status == "running" || w.CleanupStatus != "completed" {
-				continue
-			}
-			task, err := planTask(s, w.TaskID)
-			if err != nil {
-				return err
-			}
-			if taskDisposed(*task) {
-				continue
-			}
-			if task.WorkerID == w.ID && task.ChildRunID == childID && (w.Status != "cancelled" || task.Status != "cancelled") {
-				w.Status, task.Status = "cancelled", "cancelled"
-				task.LeaseUntil = time.Time{}
-				refreshFrontier(&s.Plan)
-				addEvent(s, "worker_cancel_requested", "子 worker 取消已结算", map[string]string{"worker_id": w.ID})
-			}
-		}
-		return nil
-	})
+	return a.settleCancelledWorker(id, childID, nil)
 }
 
 // Expiry never requeues a task: a dead dispatcher may have already committed
@@ -713,6 +541,12 @@ func (a *Agent) recoverWorkersLocked(id string, visiting map[string]bool) (Snaps
 		}
 		locked[task.ChildRunID] = true
 		releases = append(releases, release)
+		if task.DispatchPhase == "preparing" {
+			if err := a.abortDispatchPreparation(id, task.ID, task.WorkerID, task.ChildRunID, errDispatchInterrupted); err != nil {
+				return Snapshot{}, err
+			}
+			continue
+		}
 		child, loadErr := a.store.Load(task.ChildRunID)
 		if loadErr != nil {
 			return Snapshot{}, loadErr

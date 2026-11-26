@@ -290,8 +290,10 @@ func (a *Agent) applyWorkerSettlementLocked(s *Snapshot, w AgentWorker) error {
 	report := newChildReport(s.Run.ID, w, &child, current.CleanupStatus)
 	addEvent(s, eventType, fmt.Sprintf("子任务结算：运行 %s，业务 %s，清理 %s", report.RunStatus, report.ResultStatus, report.CleanupStatus), map[string]string{
 		"worker_id": w.ID, "run_id": w.RunID, "status": status,
+		"task_id": w.TaskID, "visit": fmt.Sprint(w.Visit), "source_hash": report.SourceHash,
 		"run_status": string(report.RunStatus), "result_status": report.ResultStatus, "cleanup_status": report.CleanupStatus,
 	})
+	addEvent(s, "task_completed", "子任务最终状态已保存", *task)
 	appendChildReport(s, report)
 	return appendWorkerMessage(s, w.ID, "parent", childReportMessage(report))
 }

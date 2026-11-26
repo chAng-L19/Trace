@@ -312,6 +312,8 @@ func sqliteWriteEvents(tx *sql.Tx, identity Run, events []Event) error {
 }
 
 func (s *Store) sqliteSave(snap Snapshot) error {
+	started := time.Now()
+	defer s.diagnostics.record(storeSQLiteWriteCommit, started, 0)
 	if s.beforePersist != nil {
 		s.beforePersist(snap.Run.ID)
 	}
@@ -331,7 +333,10 @@ func (s *Store) sqliteSave(snap Snapshot) error {
 	if s.beforeSQLiteCommit != nil {
 		s.beforeSQLiteCommit()
 	}
-	if err = tx.Commit(); err != nil {
+	commitStarted := time.Now()
+	err = tx.Commit()
+	s.diagnostics.record(storeSQLiteCommit, commitStarted, 0)
+	if err != nil {
 		return err
 	}
 	s.notifyEventCommit(snap.Run.ID)
@@ -343,13 +348,17 @@ func (s *Store) sqliteAppend(id string, events []Event) error {
 	if len(events) == 0 {
 		return nil
 	}
+	waitStarted := time.Now()
 	s.mu.Lock()
+	s.diagnostics.record(storeMutexWait, waitStarted, 0)
 	defer s.mu.Unlock()
 	unlock, err := s.acquireStoreLock()
 	if err != nil {
 		return err
 	}
 	defer unlock()
+	started := time.Now()
+	defer s.diagnostics.record(storeSQLiteWriteCommit, started, 0)
 	if s.beforePersist != nil {
 		s.beforePersist(id)
 	}
@@ -414,7 +423,10 @@ func (s *Store) sqliteAppend(id string, events []Event) error {
 	if _, err = tx.Exec("INSERT INTO run_control(run_id,run,observation) VALUES(?,?,?) ON CONFLICT(run_id) DO UPDATE SET run=excluded.run,observation=excluded.observation", id, runRaw, observationRaw); err != nil {
 		return err
 	}
-	if err = tx.Commit(); err != nil {
+	commitStarted := time.Now()
+	err = tx.Commit()
+	s.diagnostics.record(storeSQLiteCommit, commitStarted, 0)
+	if err != nil {
 		return err
 	}
 	s.notifyEventCommit(id)

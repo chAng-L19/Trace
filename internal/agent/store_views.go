@@ -425,7 +425,9 @@ func (s *Store) AppendEvents(id string, events []Event) error {
 			return err
 		}
 	}
+	waitStarted := time.Now()
 	s.mu.Lock()
+	s.diagnostics.record(storeMutexWait, waitStarted, 0)
 	defer s.mu.Unlock()
 	unlock, err := s.acquireStoreLock()
 	if err != nil {

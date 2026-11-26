@@ -173,7 +173,9 @@ func (s *Store) appendEventsOptimistic(id string, previous *storedView, events [
 // Generation matching and publication share the semantic writer's locks.
 // A stale candidate never exposes its sequence, cache, or notification.
 func (s *Store) commitAppendedEvents(id string, previous, v *storedView, staged *stagedSnapshot, events []Event, through int) (bool, error) {
+	waitStarted := time.Now()
 	s.mu.Lock()
+	s.diagnostics.record(storeMutexWait, waitStarted, 0)
 	defer s.mu.Unlock()
 	unlock, err := s.acquireStoreLock()
 	if err != nil {

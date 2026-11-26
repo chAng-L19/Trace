@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {explorationData,explorationGraph,explorationSubset,renderExplorationDetail} from './static/exploration.js';
+import {explorationData,explorationGraph,explorationSubset,renderExplorationDetail,resolveEvidenceReference} from './static/exploration.js';
 
 // Run only on the designated Ubuntu test host; no browser/runtime dependency.
 const evidence=(id,request=id,extra={})=>({id,call_id:'call-'+id,request_id:request,type:'tool_execution',verification:'verified',content:JSON.stringify({stdout:'响应正文：'+id,exit_code:0}),...extra});
@@ -88,4 +88,18 @@ assert.ok(englishGraph.nodes.every(n=>/\p{Script=Han}/u.test(n.title)&&/\p{Scrip
 assert.match(renderExplorationDetail(english,'task:en-task'),/English plan/);
 assert.match(renderExplorationDetail(english,'goal'),/English research goal/);
 assert.match(englishGraph.nodes.find(n=>n.id==='finding:en-finding').search,/english finding/);
+{
+// Qualified references retain one source identity across every graph consumer.
+const qualified={run:{id:'parent',status:'running'},actions:[action('same')],evidence:[evidence('same')],plan:{tasks:[{id:'cross',goal:'跨运行方向',status:'running',evidence_run_id:'child',evidence_ids:['same','child/same']}]},requirements:[{id:'qualified',description:'来源检查'}],checks:[{requirement_id:'qualified',status:'unknown',references:[{id:'child/same',hash:'raw-content',source_hash:'parent-binding'}]}],findings:[{id:'qualified',title:'跨运行发现',evidence_ids:['child/same'],retests:[{references:[{id:'child/same'}]}]}],result:{status:'incomplete',references:[{id:'parent/same'}],answers:[{evidence_ids:['child/same']} ]}};
+const qualifiedBefore=JSON.stringify(qualified),qualifiedGraph=explorationData(qualified),external='external:child:same';
+assert.equal(qualifiedGraph.nodes.filter(n=>n.id===external).length,1);
+assert.ok(qualifiedGraph.nodes.some(n=>n.id==='evidence:same'),'qualified local evidence resolves in its owning Run');
+for(const [from,to,relation] of [['task:cross',external,'方向引用'],[external,'requirement:qualified','检查引用'],[external,'finding:qualified','发现引用'],[external,'finding:qualified','复测引用'],[external,'report','结论引用'],['evidence:same','report','报告引用']])assert.ok(qualifiedGraph.edges.some(e=>e.from===from&&e.to===to&&e.relation===relation),relation+' keeps the correct source endpoint');
+assert.equal(qualifiedGraph.reportReferenceCount,2);assert.equal(qualifiedGraph.reportEvidenceCount,1);
+assert.ok(renderExplorationDetail(qualified,external).includes('data-id="child/same"'));
+assert.match(renderExplorationDetail(qualified,'requirement:qualified'),/parent-binding/);
+assert.deepEqual(resolveEvidenceReference(qualified,{id:'child/same',hash:'raw',source_hash:'binding'}),{run_id:'child',evidence_id:'same',external:true,id:'child/same',node_id:external});
+assert.equal(resolveEvidenceReference(qualified,'same','child').node_id,external);
+assert.equal(JSON.stringify(qualified),qualifiedBefore,'projection neither copies child evidence nor changes parent acceptance');
+}
 console.log('Semantic exploration: report citations, latest checks, retests, control exclusion, ancestor filtering, scoped calls, missing evidence and cycles passed.');

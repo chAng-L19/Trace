@@ -58,6 +58,9 @@ func finalReportTurn(s *Snapshot) (source, summary string, body *ReportText) {
 		if body == nil && submission != nil && (!m.ReportOnly || submission.SourceDigest != "") && (submission.ZhCN != "" || submission.En != "") {
 			copy := submission.ReportText
 			body = &copy
+		} else if body != nil && submission != nil {
+			merged := preserveReportLanguages(*body, submission.ReportText)
+			body = &merged
 		}
 		if m.ReportOnly {
 			continue
@@ -114,6 +117,19 @@ func stripReportEnvelope(text string) string {
 	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
+func preserveReportLanguages(body, earlier ReportText) ReportText {
+	if body.SourceDigest == "" || body.SourceDigest != earlier.SourceDigest {
+		return body
+	}
+	if !substantiveReportText(body.ZhCN, "zh-CN") && substantiveReportText(earlier.ZhCN, "zh-CN") {
+		body.ZhCN = earlier.ZhCN
+	}
+	if !substantiveReportText(body.En, "en") && substantiveReportText(earlier.En, "en") {
+		body.En = earlier.En
+	}
+	return body
+}
+
 func applyReportTranslations(s *Snapshot) {
 	for i := len(s.Messages) - 1; i >= 0; i-- {
 		if s.Messages[i].Role != "assistant" {
@@ -133,6 +149,9 @@ func applyReportTranslations(s *Snapshot) {
 					continue
 				}
 				body := doc.ReportText
+				if c.text != nil {
+					body = preserveReportLanguages(body, *c.text)
+				}
 				if doc.Kind == "finding" {
 					if finding := findingByID(s, doc.SubjectID); finding != nil {
 						finding.Report = &body
@@ -157,14 +176,7 @@ func continueForReport(s *Snapshot, preparing ...bool) bool {
 	// The post-callback archive pass must not invalidate the request it just saved.
 	archiveConclusionChains(s)
 	applyReportTranslations(s)
-	var missing []map[string]any
-	for _, c := range deliveryReportCandidates(s) {
-		body, languages := c.bodies()
-		attachments := c.missingImages(body)
-		if len(languages) > 0 || len(attachments) > 0 {
-			missing = append(missing, map[string]any{"kind": c.source.Kind, "subject_id": c.source.SubjectID, "source_digest": c.digest(), "missing_languages": languages, "missing_attachments": attachments, "source": c.source})
-		}
-	}
+	missing := pendingReportDocuments(s)
 	if len(missing) == 0 {
 		if len(preparing) > 0 && preparing[0] {
 			return false
@@ -175,7 +187,7 @@ func continueForReport(s *Snapshot, preparing ...bool) bool {
 		return false
 	}
 	raw, _ := json.Marshal(missing)
-	text := "Complete report delivery in this same pi conversation. Existing business checks and execution results are retained. Do not repeat tools, probes or finding submissions just to translate. Return one closed json fence containing trace_report with source_digest, zh_cn and en for the final report; include documents:[{kind,subject_id,source_digest,zh_cn,en}] for the listed finding/stage reports. Both languages need substantive factual prose covering summary, root cause/conditions where applicable, reproduction explanation, impact, remediation and unresolved items. Preserve commands, values, hashes, source IDs, business and cleanup states exactly. Do not copy Chinese into en or translate headings only. For missing image references, use only the registered source attachments listed here. If no actual capture exists, replace the broken image with an explicit delivery gap; never fabricate a link or execute target tools during this report-only turn. Translation is not new execution proof. Pending source-bound documents: " + string(raw)
+	text := reportDeliveryInstruction + string(raw)
 	if reportDeliveryPending(s) {
 		preparation := len(preparing) > 0 && preparing[0]
 		if !preparation || s.ReportDelivery.DocumentsDigest != valueHash(missing) {

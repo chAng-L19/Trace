@@ -71,6 +71,7 @@ type Store struct {
 	eventReaders       map[string]int
 	eventChanges       map[string]chan struct{}
 	scheduling         map[string]*schedulingSubscription
+	diagnostics        storeDiagnosticCounters
 	root               string
 	mu                 sync.Mutex
 	beforePersist      func(string) // Tests inject filesystem faults under the Store lock.
@@ -151,14 +152,20 @@ func (s *Store) Create(goal, prompt, promptHash string) (Snapshot, error) {
 // Publish a configured Run once: no observer or crash recovery can execute an
 // intermediate snapshot that lacks the declared budget or acceptance contract.
 func (s *Store) createInitialized(goal, prompt, promptHash string, initialize func(*Snapshot) error) (Snapshot, error) {
+	return s.createInitializedWithID("", goal, prompt, promptHash, initialize)
+}
+
+func (s *Store) createInitializedWithID(id, goal, prompt, promptHash string, initialize func(*Snapshot) error) (Snapshot, error) {
+	waitStarted := time.Now()
 	s.mu.Lock()
+	s.diagnostics.record(storeMutexWait, waitStarted, 0)
 	defer s.mu.Unlock()
 	unlock, err := s.acquireStoreLock()
 	if err != nil {
 		return Snapshot{}, err
 	}
 	defer unlock()
-	return s.createInitializedLocked(goal, prompt, promptHash, initialize)
+	return s.createInitializedIDLocked(id, goal, prompt, promptHash, initialize)
 }
 
 func (s *Store) createLocked(goal, prompt, promptHash string) (Snapshot, error) {
@@ -166,9 +173,25 @@ func (s *Store) createLocked(goal, prompt, promptHash string) (Snapshot, error) 
 }
 
 func (s *Store) createInitializedLocked(goal, prompt, promptHash string, initialize func(*Snapshot) error) (Snapshot, error) {
-	id, err := newID()
-	if err != nil {
-		return Snapshot{}, err
+	return s.createInitializedIDLocked("", goal, prompt, promptHash, initialize)
+}
+
+func (s *Store) createInitializedIDLocked(id, goal, prompt, promptHash string, initialize func(*Snapshot) error) (Snapshot, error) {
+	if id == "" {
+		var err error
+		id, err = newID()
+		if err != nil {
+			return Snapshot{}, err
+		}
+	} else {
+		if raw, err := hex.DecodeString(id); err != nil || len(raw) != 16 {
+			return Snapshot{}, fmt.Errorf("invalid reserved run ID")
+		}
+		if _, err := s.loadRawLocked(id); err == nil {
+			return Snapshot{}, fmt.Errorf("reserved run already exists: %w", os.ErrExist)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return Snapshot{}, err
+		}
 	}
 	now := time.Now().UTC()
 	snap := Snapshot{Run: Run{ID: id, Goal: goal, Status: StatusCreated, PromptHash: promptHash, PromptBytes: len([]byte(prompt)), CreatedAt: now, UpdatedAt: now}, Prompt: prompt}
@@ -197,6 +220,8 @@ func (s *Store) Load(id string) (Snapshot, error) {
 }
 
 func (s *Store) loadLocked(id string) (Snapshot, error) {
+	started := time.Now()
+	defer s.diagnostics.record(storeLoadVerify, started, 0)
 	return s.loadVerifiedLocked(id, map[string]bool{})
 }
 
@@ -272,13 +297,17 @@ func (s *Store) saveLocked(snap Snapshot) error {
 // The caller has already archived reports on this exact snapshot under the
 // current Store lock. Keep the same persistence path without a second archive.
 func (s *Store) savePreparedLocked(snap Snapshot) error {
+	started := time.Now()
+	defer s.diagnostics.record(storeSave, started, 0)
 	if s.sqlite {
 		return s.sqliteSave(snap)
 	}
 	if info, err := os.Stat(filepath.Join(s.root, snap.Run.ID+".json")); err == nil && info.Size() > largeSnapshotBytes {
 		return s.saveLargeSnapshotLocked(snap)
 	}
+	encodeStarted := time.Now()
 	b, err := json.Marshal(snap)
+	s.diagnostics.record(storeJSONEncode, encodeStarted, int64(len(b)))
 	if err != nil {
 		return err
 	}
@@ -329,6 +358,8 @@ func (s *Store) stageSnapshotLocked(id string, parts ...[]byte) (*stagedSnapshot
 // Readers select the file generation and cache under this same short lock.
 // Encoding, writing, fsync, cold decoding, and notifications stay outside it.
 func (s *Store) publishSnapshotViewsLocked(id string, staged *stagedSnapshot, view *storedView, metadata json.RawMessage) error {
+	started := time.Now()
+	defer s.diagnostics.record(storeJSONPublish, started, 0)
 	s.prepareJSONDisplayIndex(id, staged, view)
 	if staged.displayPath != "" {
 		defer os.Remove(staged.displayPath)
@@ -363,6 +394,9 @@ type stagedSnapshot struct {
 // A candidate is not a committed generation. Expensive writes and fsync can
 // happen before taking the store-wide lock; only its guarded rename publishes.
 func (s *Store) stageSnapshot(parts ...[]byte) (_ *stagedSnapshot, err error) {
+	started := time.Now()
+	var written int64
+	defer func() { s.diagnostics.record(storeJSONWriteSync, started, written) }()
 	f, err := os.CreateTemp(s.root, ".trace-*.tmp")
 	if err != nil {
 		return nil, err
@@ -375,7 +409,10 @@ func (s *Store) stageSnapshot(parts ...[]byte) (_ *stagedSnapshot, err error) {
 		}
 	}()
 	for _, part := range parts {
-		if _, err = f.Write(part); err != nil {
+		var n int
+		n, err = f.Write(part)
+		written += int64(n)
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -405,7 +442,9 @@ func (s *Store) publishSnapshotLocked(id string, staged *stagedSnapshot) (os.Fil
 }
 
 func (s *Store) Update(id string, fn func(*Snapshot) error) (Snapshot, error) {
+	waitStarted := time.Now()
 	s.mu.Lock()
+	s.diagnostics.record(storeMutexWait, waitStarted, 0)
 	defer s.mu.Unlock()
 	unlock, err := s.acquireStoreLock()
 	if err != nil {
@@ -417,7 +456,10 @@ func (s *Store) Update(id string, fn func(*Snapshot) error) (Snapshot, error) {
 
 func (s *Store) acquireStoreLock() (func(), error) {
 	// ponytail: one store-wide lock suits local snapshots; use database transactions if throughput requires it.
-	return s.finishStoreLock(acquireFileLock(filepath.Join(s.root, ".store.lock"), true))
+	started := time.Now()
+	unlock, err := acquireFileLock(filepath.Join(s.root, ".store.lock"), true)
+	s.diagnostics.record(storeFileLockWait, started, 0)
+	return s.finishStoreLock(unlock, err)
 }
 
 func (s *Store) finishStoreLock(unlock func(), err error) (func(), error) {

@@ -564,7 +564,11 @@ func (a *Agent) preparePiRequest(ctx context.Context, id string) (ModelRequest, 
 		var estimate int
 		var compactionID string
 		if contextErr == nil {
-			messages, estimate, compactionID, contextErr = projectContext(s, definitions, catalog+toolHint, runtimeObservations)
+			if reportDeliveryPending(s) {
+				messages, estimate, compactionID, contextErr = projectReportDeliveryContext(s)
+			} else {
+				messages, estimate, compactionID, contextErr = projectContext(s, definitions, catalog+toolHint, runtimeObservations)
+			}
 		}
 		var summary *summaryNeeded
 		if contextErr != nil && !errors.As(contextErr, &summary) {
@@ -582,7 +586,9 @@ func (a *Agent) preparePiRequest(ctx context.Context, id string) (ModelRequest, 
 		}
 		s.Run.RequestSeq++
 		request := ModelRequest{ID: fmt.Sprintf("%s-%04d", id, s.Run.RequestSeq), PromptHash: s.Run.PromptHash, Messages: messages, Tools: definitions, CreatedAt: now, MaxOutputTokens: s.Run.Context.OutputReserve, ContextTokens: estimate, CompactionID: compactionID, PlannerThrough: plannerThrough}
-		if handoffOnly {
+		if reportDeliveryPending(s) {
+			request.Purpose = "report_delivery"
+		} else if handoffOnly {
 			request.Purpose = "outcome_delivery"
 		}
 		if summary != nil {

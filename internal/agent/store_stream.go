@@ -9,6 +9,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"time"
 )
 
 const largeSnapshotBytes = 16 << 20
@@ -194,6 +195,7 @@ func discardJSONDepth(d *json.Decoder, depth int, before func()) error {
 // The existing verified Update path owns this snapshot. Preserve the atomic
 // staged-file publication while bounding the output buffer to one record.
 func (s *Store) saveLargeSnapshotLocked(snap Snapshot) (err error) {
+	started := time.Now()
 	if s.beforePersist != nil {
 		s.beforePersist(snap.Run.ID)
 	}
@@ -219,6 +221,7 @@ func (s *Store) saveLargeSnapshotLocked(snap Snapshot) (err error) {
 	if err = f.Close(); err != nil {
 		return err
 	}
+	s.diagnostics.record(storeJSONEncodeWriteSync, started, info.Size())
 	metadata, err := json.Marshal(Observation{Run: snap.Run, Plan: snap.Plan, Workers: snap.Workers, WorkerMessages: snap.WorkerMessages, Mailbox: snap.Mailbox})
 	if err != nil {
 		return err

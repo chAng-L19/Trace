@@ -36,6 +36,12 @@ func BenchmarkTelemetryCommit50k(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+	b.StopTimer()
+	metrics, err := json.Marshal(s.StoreDiagnostics())
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Logf("store_diagnostics_including_fixture_setup=%s", metrics)
 }
 
 // Same immutable history and validation in both cases; only the committed

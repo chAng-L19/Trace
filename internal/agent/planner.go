@@ -11,6 +11,8 @@ import (
 )
 
 type PlanTask struct {
+	// DispatchPhase distinguishes a reserved child from an admitted executor.
+	DispatchPhase string `json:"dispatch_phase,omitempty"`
 	// LocalExecution is server-owned: one task may reuse its live child executor.
 	LocalExecution     bool     `json:"local_execution,omitempty"`
 	LocalWorkerVisit   uint64   `json:"local_worker_visit,omitempty"`
@@ -267,6 +269,7 @@ func (a *Agent) updatePlan(id string, tasks []PlanTask, mode string, capacity in
 					t.ModelSelection = &copy
 				}
 				t.Status, t.WorkerID, t.ChildRunID = "pending", "", ""
+				t.DispatchPhase = ""
 				t.BlockedReason = nil
 				t.Started = false
 				t.DispositionReason, t.ReplacementTaskID, t.PreviousStatus, t.Error = "", "", "", ""
@@ -375,6 +378,10 @@ func (a *Agent) ClaimTask(id, taskID, workerID string, leaseSeconds int) (Snapsh
 }
 
 func (a *Agent) claimTask(ctx context.Context, id, taskID, workerID string, leaseSeconds int) (Snapshot, error) {
+	return a.claimTaskWithChild(ctx, id, taskID, workerID, leaseSeconds, "")
+}
+
+func (a *Agent) claimTaskWithChild(ctx context.Context, id, taskID, workerID string, leaseSeconds int, childID string) (Snapshot, error) {
 	if workerID == "" || leaseSeconds <= 0 {
 		return Snapshot{}, fmt.Errorf("worker and positive lease required")
 	}
@@ -480,6 +487,9 @@ func (a *Agent) claimTask(ctx context.Context, id, taskID, workerID string, leas
 			t.Status = "running"
 			t.Started = true
 			t.WorkerID = workerID
+			if childID != "" {
+				t.ChildRunID, t.DispatchPhase = childID, "preparing"
+			}
 		}
 		t.LeaseUntil = time.Now().UTC().Add(time.Duration(leaseSeconds) * time.Second)
 		refreshFrontier(&s.Plan)

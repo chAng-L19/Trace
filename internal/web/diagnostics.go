@@ -180,7 +180,7 @@ func (s *Server) getDiagnostics(w http.ResponseWriter, r *http.Request) {
 	s.diagnostics.mu.Unlock()
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Route+rows[i].StatusClass < rows[j].Route+rows[j].StatusClass })
 	sort.Slice(stages, func(i, j int) bool { return stages[i].Stage < stages[j].Stage })
-	writeJSON(w, 200, map[string]any{"since": since, "in_flight": inFlight, "http": rows, "stages": stages, "max_http_series": 128, "basis": "process_local_monotonic; completed HTTP requests; SSE duration is connection lifetime; not p95"})
+	writeJSON(w, 200, map[string]any{"since": since, "in_flight": inFlight, "http": rows, "stages": stages, "max_http_series": 128, "store": s.store.StoreDiagnostics(), "basis": "process_local_monotonic; completed HTTP requests; SSE duration is connection lifetime; not p95"})
 }
 
 func (s *Server) getRunDiagnostics(w http.ResponseWriter, r *http.Request) {

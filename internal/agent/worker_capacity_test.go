@@ -284,7 +284,7 @@ func TestTreeWorkerCapacityRegistrationRechecksRootOverride(t *testing.T) {
 				t.Fatalf("registration ignored changed tree capacity or ran child: %v", err)
 			}
 			parent, err := store.Load(root)
-			if err != nil || len(parent.Workers) != 0 || parent.Plan.Tasks[1].Status != "failed" {
+			if err != nil || len(parent.Workers) != 0 || parent.Plan.Tasks[1].Status != "pending" || parent.Plan.Tasks[1].WorkerID != "" || parent.Plan.Tasks[1].ChildRunID != "" || !parent.Plan.Tasks[1].LeaseUntil.IsZero() || len(parent.Plan.Frontier) != 1 || parent.Plan.Frontier[0] != "1" {
 				t.Fatalf("unstarted child claim was not settled: %+v %v", parent.Plan, err)
 			}
 			state, err := a.WorkerCapacity(root)

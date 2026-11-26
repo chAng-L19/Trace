@@ -285,7 +285,11 @@ func refreshResult(s *Snapshot) {
 			}
 		}
 	}
-	if len(s.Requirements) > 0 && len(unmetRequirements(s)) == 0 && !explicitResult && s.Run.SuccessContains == "" {
+	hasGoalRequirement := false
+	for _, requirement := range s.Requirements {
+		hasGoalRequirement = hasGoalRequirement || requirement.Category == "goal"
+	}
+	if hasGoalRequirement && len(unmetRequirements(s)) == 0 && !explicitResult && s.Run.SuccessContains == "" {
 		s.Result = result
 		result.Status = "success"
 		result.TerminalReason = "all declared evidence checks passed"

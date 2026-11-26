@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"time"
 )
 
@@ -311,14 +312,78 @@ func buildActivityPage(fields map[string]json.RawMessage, records *activityRecor
 		}
 		s.WorkerMessages = append(s.WorkerMessages, m)
 	}
-	for _, raw := range arrays["child_reports"][max(0, len(arrays["child_reports"])-12):] {
-		var r ChildReport
-		if e := json.Unmarshal(raw, &r); e != nil {
-			return p, e
-		}
-		s.ChildReports = append(s.ChildReports, r)
+	const reportLimit = 12
+	type receiptIdentity struct {
+		runID, taskID, workerID string
+		visit                   uint64
 	}
-	s.ChildReports = ChildReportReceipts(*s, 12)
+	type receiptHeader struct {
+		SourceRunID       string `json:"source_run_id"`
+		TaskID            string `json:"task_id"`
+		WorkerID          string `json:"worker_id"`
+		Visit             uint64 `json:"visit"`
+		DeliveryPending   bool   `json:"delivery_pending"`
+		SettlementPending bool   `json:"settlement_pending"`
+	}
+	receiptHeaders := make([]receiptHeader, len(arrays["child_reports"]))
+	latestReceipts := map[receiptIdentity]int{}
+	for i, raw := range arrays["child_reports"] {
+		report := &receiptHeaders[i]
+		if err := json.Unmarshal(raw, report); err != nil {
+			return p, err
+		}
+		latestReceipts[receiptIdentity{report.SourceRunID, report.TaskID, report.WorkerID, report.Visit}] = i
+	}
+	activeTasks := map[[3]string]bool{}
+	for _, task := range s.Plan.Tasks {
+		switch task.Status {
+		case "starting", "running", "claimed", "paused", "uncertain", "blocked_capability":
+			activeTasks[[3]string{task.ChildRunID, task.ID, task.WorkerID}] = true
+		}
+	}
+	type receiptCandidate struct{ index, priority int }
+	var candidates []receiptCandidate
+	for _, worker := range s.Workers {
+		index, ok := latestReceipts[receiptIdentity{worker.RunID, worker.TaskID, worker.ID, worker.Visit}]
+		if !ok {
+			continue
+		}
+		priority := 1
+		if worker.Status == "running" || worker.Status == "starting" || worker.Status == "cancelling" || worker.Status == "uncertain" || activeTasks[[3]string{worker.RunID, worker.TaskID, worker.ID}] {
+			priority = 0
+		} else if worker.Status != "paused" && worker.Status != "failed" && worker.CleanupStatus == "completed" && !receiptHeaders[index].DeliveryPending && !receiptHeaders[index].SettlementPending {
+			continue
+		}
+		candidates = append(candidates, receiptCandidate{index, priority})
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].priority != candidates[j].priority {
+			return candidates[i].priority < candidates[j].priority
+		}
+		return candidates[i].index > candidates[j].index
+	})
+	selected := map[int]bool{}
+	for _, candidate := range candidates {
+		if len(selected) == reportLimit {
+			break
+		}
+		selected[candidate.index] = true
+	}
+	for i := len(receiptHeaders) - 1; i >= 0 && len(selected) < reportLimit; i-- {
+		selected[i] = true
+	}
+	// Keep registration order for per-visit representatives and exact hashes.
+	for i, raw := range arrays["child_reports"] {
+		if !selected[i] {
+			continue
+		}
+		var report ChildReport
+		if err := json.Unmarshal(raw, &report); err != nil {
+			return p, err
+		}
+		s.ChildReports = append(s.ChildReports, report)
+	}
+	s.ChildReports = ChildReportReceipts(*s, reportLimit)
 	workers := s.Workers
 	s.Workers = nil
 	for _, w := range workers {

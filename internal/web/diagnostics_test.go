@@ -114,8 +114,17 @@ func TestRuntimeDiagnosticsAPIReadOnlyAndExplicitLimits(t *testing.T) {
 		t.Fatal("diagnostic API mutated run")
 	}
 	w = request(t, h, "GET", "/api/diagnostics", nil, 200)
-	if strings.Contains(w.Body.String(), id) || strings.Contains(w.Body.String(), "missing/diagnostics") {
-		t.Fatal("HTTP labels contain raw path")
+	if strings.Contains(w.Body.String(), id) || strings.Contains(w.Body.String(), "missing/diagnostics") || strings.Contains(w.Body.String(), "private body") {
+		t.Fatal("HTTP diagnostics contain content or raw path")
+	}
+	var runtime struct {
+		Store agent.StoreDiagnostics `json:"store"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &runtime); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.Store.Backend != "json" || len(runtime.Store.Stages) == 0 || runtime.Store.Since.IsZero() {
+		t.Fatal("Store timing not connected to diagnostics API")
 	}
 }
 

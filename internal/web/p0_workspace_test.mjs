@@ -1,14 +1,16 @@
 import assert from 'node:assert/strict';
-import {occupiedWorkerCount} from './static/ui.js';
+import {occupiedWorkerCount,esc,btn,label,json} from './static/ui.js';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import {workerGroups,pendingDispatch,workerSummary,workerPanel} from './static/workers.js';
 import {taskGroups,renderPage} from './static/views.js';
-import {explorationData,renderExplorationDetail} from './static/exploration.js';
+import {explorationData,renderExplorationDetail,resolveEvidenceReference} from './static/exploration.js';
 import {captureScroll,restoreScroll} from './static/interactions.js';
 import {creationOptions,readCreationOptions,parseRunRoute,runLink} from './static/run-management.js';
 import {taskForm,readTask} from './static/workforms.js';
 import {explorationPreview} from './static/graphs.js';
+import {detailSnapshot,historyDetail} from './static/history-projection.js';
+import {evidenceDetail} from './static/evidence.js';
 
 const tasks=[{id:'wait',goal:'等待依赖',status:'pending',dependencies:['active']},{id:'blocked',status:'blocked_capability'},{id:'active',status:'running',worker_id:'w1',child_run_id:'child1'},{id:'claim',status:'running'},{id:'failed',status:'failed'},{id:'done',status:'completed'}];
 const workers=[{id:'w1',task_id:'active',run_id:'child1',status:'running'},{id:'w2',status:'starting'},{id:'w3',status:'cancelling'},{id:'w4',status:'paused'},{id:'w5',status:'uncertain'},{id:'w6',status:'completed',cleanup_status:'unknown'},{id:'w7',status:'completed',cleanup_status:'completed'}];
@@ -35,7 +37,7 @@ assert.match(html,/workspace-composer/);assert.match(html,/workspace-secondary/)
 assert.match(renderPage({...state,runLoading:true}),/aria-busy="true"/);
 assert.match(renderPage({...state,runLoading:true}),/data-action="latest"[^>]* disabled>[^]*?正在读取会话/);
 
-const report={source_run_id:'child1',parent_run_id:'root',task_id:'active',worker_id:'w1',visit:1,source_hash:'abc',run_status:'completed',result_status:'incomplete',cleanup_status:'unknown',source_status:'valid',current:true,summary:'child conclusion',report_path:'/api/runs/child1/reports/abc',findings:[],unresolved:['pending']};
+const report={source_run_id:'child1',parent_run_id:'root',task_id:'active',worker_id:'w1',visit:1,source_hash:'abc',run_status:'completed',result_status:'incomplete',cleanup_status:'unknown',source_status:'valid',current:true,summary:'child conclusion',report_path:'/api/runs/child1/export?format=report&report_id=archive-abc&language=zh-CN',findings:[],unresolved:['pending']};
 const graph=explorationData({...snap,child_reports:[report,report,{...report,visit:2,source_hash:'def'}]});
 assert.equal(graph.nodes.filter(n=>n.kind==='child_report').length,2);
 assert.equal(graph.nodes.filter(n=>n.kind==='source').length,2);
@@ -54,6 +56,28 @@ assert.ok((large.match(/data-node-search=/g)||[]).length<=22,'preview DOM stays 
 assert.match(large,/task:t29/,'recent report tasks retain their real ancestors');
 assert.doesNotMatch(large,/<script>/,'untrusted node titles are escaped');
 
+{
+// Same-visit revisions fold by registration, while explicit old hashes stay exact.
+const early={...report,summary:'旧回执正文',source_hash:'early',created_at:'2030-01-01T00:00:00Z',report_path:'/api/runs/child1',settlement_pending:true};
+const final={...report,summary:'新回执正文',source_hash:'final',created_at:'2020-01-01T00:00:00Z'};
+const revisions={...snap,child_reports:[early,final,{...report,visit:2,source_hash:'second-visit'}],totals:{child_reports:40}};
+const revisedGraph=explorationData(revisions),representative=revisedGraph.nodes.find(n=>n.kind==='child_report'&&n.record.visit===1);
+assert.equal(revisedGraph.nodes.filter(n=>n.kind==='child_report').length,2);
+assert.equal(representative.record.source_hash,'final','last registration wins even if CreatedAt was rewritten');
+const earlyID='child-report:'+JSON.stringify(['child1','active','w1',1,'early']),earlyDetail=renderExplorationDetail(revisions,earlyID);
+assert.match(earlyDetail,/旧回执正文/);assert.doesNotMatch(earlyDetail,/新回执正文/);
+assert.match(earlyDetail,/本组历史回执/);assert.match(earlyDetail,/未登记固定 report_id/);
+assert.doesNotMatch(earlyDetail,/读取固定版本源报告/);
+assert.match(renderExplorationDetail({...revisions,child_reports:[final]},earlyID),/引用版本未载入/);
+assert.doesNotMatch(renderExplorationDetail({...revisions,child_reports:[final]},earlyID),/新回执正文/);
+assert.match(renderExplorationDetail(revisions,representative.id),/此 visit 的回执版本 · 2/);
+assert.match(explorationPreview(revisions),/累计回执 40 条 · 载入回执 3 条 · 载入访问组 2 组 · 未载入 37 条/);
+assert.match(explorationPreview({...revisions,totals:{child_reports:0}}),/累计回执 0 条/,'authoritative zero is not replaced with a window length');
+const busy={...snap,plan:{tasks:[...Array.from({length:12},(_,i)=>({id:'old-'+i,goal:'最近完成方向 '+i,status:'completed'})),{id:'running-now',goal:'当前活动方向',status:'running'},{id:'blocked-now',goal:'能力阻塞方向',status:'blocked_capability'}]},child_reports:Array.from({length:12},(_,i)=>({...report,task_id:'old-'+i,source_hash:'old-'+i}))};
+const busyPreview=explorationPreview(busy);
+assert.match(busyPreview,/task:running-now/);assert.match(busyPreview,/task:blocked-now/);
+assert.match(busyPreview,/省略 6 个方向/);
+}
 let top=100,offset=10,writes=0;
 const node={dataset:{messageId:'m1'},getBoundingClientRect:()=>({top:offset,bottom:offset+60})};
 const pane={dataset:{scroll:'conversation'},scrollHeight:1000,clientHeight:200,scrollLeft:0,get scrollTop(){return top},set scrollTop(v){writes++;top=v},getBoundingClientRect:()=>({top:0}),querySelectorAll:()=>[node]};
@@ -74,6 +98,33 @@ for(const taskTab of ['activity','assets']){
  const current={run:{id:'current'}},history={run:{id:'history'}};
  const ctx=vm.createContext({state:{snap:current,taskTab},action:'exploration-detail',el:{dataset:{id:'node'}},selectExplorationChain:selected=>assert.equal(selected.dataset.id,'node'),graphSnapshot:()=>history,renderExplorationDetail:s=>s,showDetail:(_,s)=>{assert.equal(s,taskTab==='activity'?current:history)}});
  vm.runInContext('(function(){'+detailAction+'})()',ctx);
+}
+{
+// Execute the real detail dispatch after the current snapshot has advanced.
+const pastSource={run:{id:'root'},plan:{tasks:[]},events:[{sequence:1,type:'plan_updated',data:{tasks:[{id:'old-task',goal:'原任务',status:'running',evidence_run_id:'child'}]}},{sequence:2,type:'tool_result',data:{evidence_id:'old-evidence'}}],evidence:[{id:'old-evidence',call_id:'call',request_id:'request',type:'tool_execution',verification:'verified',source_event_sequence:2,content:JSON.stringify({stdout:'截止前原文',exit_code:0}),report_links:[{title:'未来关联正文'}]}],actions:[{call_id:'call',request_id:'request',name:'probe',adapter:'local',status:'completed'}]};
+const futureSource={run:{id:'root'},plan:{tasks:[{id:'old-task',goal:'未来任务正文',status:'verified'}]},evidence:[{id:'old-evidence',content:'未来证据正文',verification:'verified'}]};
+const evidenceHandler=app.slice(app.indexOf("  if(action==='evidence-detail'){"),app.indexOf("  if(['asset-detail','action-detail','task-detail'].includes(action))"));
+for(const reference of ['old-evidence','child/old-evidence']){
+  let shown='';const context=vm.createContext({state:{snap:futureSource,replaySnapshot:pastSource,replaySequence:20},el:{dataset:{id:reference},closest:selector=>selector==='[data-history-sequence]'?{dataset:{historyRun:'root',historySequence:'2'}}:null},action:'evidence-detail',detailSnapshot,resolveEvidenceReference,historyDetail,evidenceDetail,esc,btn,label,json,api:async()=>{throw new Error('historical detail fetched current data')},showDetail:(_,html)=>shown=html});
+  await vm.runInContext('(async()=>{'+evidenceHandler+'})()',context);
+  assert.match(shown,/data-history-sequence="2"/);assert.doesNotMatch(shown,/未来证据正文|未来关联正文/);
+  assert.match(shown,reference.includes('/')?/历史信息不完整/:/截止前原文/);
+}
+const recordHandler=app.split('\n').find(line=>line.includes("if(['asset-detail','action-detail','task-detail'].includes(action))"));
+let taskShown='';
+const taskContext=vm.createContext({state:{snap:futureSource,replaySnapshot:pastSource,replaySequence:20},el:{dataset:{id:'old-task'},closest:()=>({dataset:{historyRun:'root',historySequence:'2'}})},action:'task-detail',detailSnapshot,historyDetail,esc,recordDetail:(_,record)=>JSON.stringify(record),showDetail:(_,html)=>taskShown=html,api:async()=>{throw new Error('historical task fetched current data')}});
+await vm.runInContext('(async()=>{'+recordHandler+'})()',taskContext);
+assert.match(taskShown,/原任务/);assert.match(taskShown,/running/);assert.match(taskShown,/data-evidence-run="child"/);assert.doesNotMatch(taskShown,/未来任务正文|verified/);
+// Preserve the visit stamped when this particular cancellation button was rendered.
+for(const observedVisit of [0,1]){
+const cancelButton={tagName:'BUTTON',disabled:false,dataset:{action:'worker-cancel',worker:'w1'},setAttribute(){},removeAttribute(){}};
+const cancelBodies=[],cancelState={snap:{workers:[{id:'w1',visit:observedVisit}]}},cancelContext=vm.createContext({state:cancelState,document:{querySelectorAll:()=>[cancelButton]},pending:new Set(),operationKey:()=> 'cancel',action:'worker-cancel',el:cancelButton,id:'root',mutate:async(path,body)=>cancelBodies.push({path,body}),notice(){}});
+vm.runInContext(app.slice(app.indexOf('function applyPending(){'),app.indexOf('async function saveConfig(')),cancelContext);
+vm.runInContext('applyPending()',cancelContext);cancelState.snap.workers[0].visit=observedVisit+1;vm.runInContext('applyPending()',cancelContext);
+const cancelHandler=app.split('\n').find(line=>line.includes("if(action==='worker-cancel')"));
+await vm.runInContext('(async()=>{'+cancelHandler+'})()',cancelContext);
+assert.equal(cancelBodies[0].path,'/runs/root/workers/w1/cancel');assert.equal(cancelBodies[0].body.expected_visit,observedVisit,'zero and positive visits both fence a stale DOM button');
+}
 }
 const select=app.slice(app.indexOf('async function selectRun('),app.indexOf('async function loadEventHistory('));
 assert.ok(select.indexOf('subscribe();')<select.indexOf('await conversationHistory.load('));

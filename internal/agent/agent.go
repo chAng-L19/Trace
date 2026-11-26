@@ -123,6 +123,9 @@ func (a *Agent) Create(goal string, attachments ...InputAttachment) (Snapshot, e
 }
 
 type RunConfiguration struct {
+	runID              string
+	workerTask         *PlanTask
+	workerContext      *WorkerContext
 	CompletionCriteria string
 	inheritedRun       *Run
 	RootContract       *RootContract
@@ -176,7 +179,7 @@ func (a *Agent) CreateConfigured(goal string, config RunConfiguration, attachmen
 	if err != nil {
 		return Snapshot{}, err
 	}
-	return a.store.createInitialized(goal, a.prompt, a.promptID, func(s *Snapshot) error {
+	return a.store.createInitializedWithID(config.runID, goal, a.prompt, a.promptID, func(s *Snapshot) error {
 		s.Run.Exec, s.Run.ToolSchema, s.Run.ToolSelection = execConfig, toolSchema, toolSelection
 		s.Run.Responsibility = ResponsibilityCoordinator
 		if config.role == "worker" {
@@ -234,6 +237,24 @@ func (a *Agent) CreateConfigured(goal string, config RunConfiguration, attachmen
 			if err := a.prepareInputMessages(s); err != nil {
 				return err
 			}
+		}
+
+		if config.workerTask != nil && config.workerContext != nil && config.inheritedRun != nil {
+			task := config.workerTask
+			s.Run.RequireVerifiedCompletion = config.inheritedRun.RequireVerifiedCompletion
+			s.Run.ParentRunID, s.Run.ParentTaskID = config.inheritedRun.ID, task.ID
+			s.Run.SuccessContains = task.SuccessContains
+			s.WorkerContext = config.workerContext
+			if s.Run.ToolSelection != nil && len(task.RequiredToolIDs) > 0 {
+				ids := append([]string(nil), s.Run.ToolSelection.IDs...)
+				for _, toolID := range task.RequiredToolIDs {
+					if tool, ok := a.registry.Lookup(toolID); ok && externalTool(tool) && !hasString(ids, toolID) {
+						ids = append(ids, toolID)
+					}
+				}
+				s.Run.ToolSelection = a.registry.selection(ids, s.Run.ToolSelection)
+			}
+			addEvent(s, "worker_context_created", "任务限定上下文与来源引用已保存", map[string]any{"parent_run_id": s.Run.ParentRunID, "task_id": task.ID, "assets": len(config.workerContext.Assets), "dependencies": len(config.workerContext.Dependencies), "evidence_refs": len(config.workerContext.Evidence)})
 		}
 		addEvent(s, "run_created", "运行已创建", map[string]any{"prompt_hash": s.Run.PromptHash, "prompt_bytes": s.Run.PromptBytes, "requirements": s.Requirements, "success_contains": s.Run.SuccessContains, "budget": s.Run.Budget})
 		a.prepareRecon(s)

@@ -1,4 +1,5 @@
 import {esc,btn} from './ui.js';
+import {detailSnapshot,historyDetail} from './history-projection.js';
 
 // Same kind order and language suffixes as ReportDocument. Historical files
 // remain explicit archive choices, never a current-run shortcut.
@@ -51,17 +52,22 @@ export function createDelivery({state,showDetail,notice,isCurrent,token,captureN
   let url,controller;
   function close(){controller?.abort();controller=null;if(url)URL.revokeObjectURL(url);url=null}
   async function preview(el){
-    const ref=artifactReference(state.snap,el.dataset.hash);if(!ref||!mediaKind(ref.mime_type))return false;
+    const snap=detailSnapshot(state,el),ref=artifactReference(snap,el.dataset.hash);
+    if(!ref){
+      if(Number.isSafeInteger(snap?.history_sequence)){showDetail('历史产物详情',historyDetail(snap,'<p class="note">历史信息不完整：该截止点没有保存此产物的来源关联；未用当前关联替换。</p>'));return true}
+      return false;
+    }
+    if(!mediaKind(ref.mime_type))return false;
     close();const download='/api/artifacts/'+encodeURIComponent(ref.hash)+'/download';
-    showDetail(ref.name||'媒体产物',`<p role="status">正在读取关联 CAS 文件…</p><a href="${download}" download>下载原始字节 ↓</a>`,true);
+    showDetail(ref.name||'媒体产物',historyDetail(snap,`<p role="status">正在读取关联 CAS 文件…</p><a href="${download}" download>下载原始字节 ↓</a>`),true);
     const current=token(),abort=new AbortController();controller=abort;
     try{
       const response=await fetch(download,{signal:abort.signal});if(!response.ok)throw new Error('产物读取失败（HTTP '+response.status+'）');
       const data=await response.blob();if(abort.signal.aborted||controller!==abort||!isCurrent(current))return true;
       url=URL.createObjectURL(new Blob([data],{type:ref.mime_type}));
-      showDetail(ref.sources.length>1?'同字节媒体产物':ref.name||'媒体产物',`<p class="note">${esc(ref.mime_type)} · ${ref.bytes} 字节</p><p class="hash">SHA256 ${esc(ref.hash)}</p>${mediaMarkup(ref,url)}<section><h4>关联来源 · ${ref.sources.length} 项</h4>${ref.sources.map(source=>`<p class="note">${esc(source.name||source.filename||source.kind||'CAS 文件')} · 请求 ${esc(source.request_id)} / 调用 ${esc(source.call_id)}</p>`).join('')}</section><p class="note">相同字节可被多次登记；以上列出当前快照中的全部关联，预览格式采用首项登记的 MIME。浏览器若不支持此格式，可下载原始文件。预览不改变来源验证或报告结论。</p><a href="${download}" download="${esc(ref.name||ref.filename||'')}">下载原始字节 ↓</a>`,true);
+      showDetail(ref.sources.length>1?'同字节媒体产物':ref.name||'媒体产物',historyDetail(snap,`<p class="note">${esc(ref.mime_type)} · ${ref.bytes} 字节</p><p class="hash">SHA256 ${esc(ref.hash)}</p>${mediaMarkup(ref,url)}<section><h4>关联来源 · ${ref.sources.length} 项</h4>${ref.sources.map(source=>`<p class="note">${esc(source.name||source.filename||source.kind||'CAS 文件')} · 请求 ${esc(source.request_id)} / 调用 ${esc(source.call_id)}</p>`).join('')}</section><p class="note">相同字节可被多次登记；${Number.isSafeInteger(snap.history_sequence)?'以上仅列出历史截止点已保存的关联':'以上列出当前快照中的全部关联'}，预览格式采用首项登记的 MIME。浏览器若不支持此格式，可下载原始文件。预览不改变来源验证或报告结论。</p><a href="${download}" download="${esc(ref.name||ref.filename||'')}">下载原始字节 ↓</a>`),true);
       return true;
-    }catch(error){if(error.name==='AbortError'||abort.signal.aborted||controller!==abort||!isCurrent(current))return true;showDetail('产物读取失败',`<p class="inline-error">${esc(error.message)}</p><a href="${download}" download>下载原始字节 ↓</a>`,true);return true}
+    }catch(error){if(error.name==='AbortError'||abort.signal.aborted||controller!==abort||!isCurrent(current))return true;showDetail('产物读取失败',historyDetail(snap,`<p class="inline-error">${esc(error.message)}</p><a href="${download}" download>下载原始字节 ↓</a>`),true);return true}
   }
   async function dispatch(action,el){const notice=captureNotice();
     if(action==='copy-code'){await copyText(el.closest('.code-block').querySelector('code').textContent);notice('代码已复制');return true}

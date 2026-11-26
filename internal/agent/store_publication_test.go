@@ -1,9 +1,14 @@
 package agent
 
 import (
+	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -280,5 +285,162 @@ func TestPublicationHeldReaderSurvivesUnrelatedReleaseFence(t *testing.T) {
 	store.finishReadView(id, true, true, epoch, cold)
 	if got, ok := store.eventViews.Load(id); !ok || got != cold {
 		t.Fatal("new active reader could not reuse current immutable generation")
+	}
+}
+
+func TestStoreDiagnosticsMeasuresStorePhases(t *testing.T) {
+	for _, backend := range []string{"json", "sqlite"} {
+		t.Run(backend, func(t *testing.T) {
+			var store *Store
+			if backend == "sqlite" {
+				store = sqliteTestStore(t)
+			} else {
+				var err error
+				store, err = NewStore(t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			snap, err := store.Create("private-diagnostic-payload", "private-prompt", "hash")
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := snap.Run.ID
+			if _, err = store.Update(id, func(s *Snapshot) error {
+				s.Messages = append(s.Messages, Message{Role: "user", Content: "private-message"})
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err = store.AppendEvents(id, []Event{{Type: "model_stream", Data: "private-stream"}}); err != nil {
+				t.Fatal(err)
+			}
+			before, err := store.Load(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeMetrics := store.StoreDiagnostics()
+			var persisted []byte
+			if backend == "json" {
+				persisted, err = os.ReadFile(filepath.Join(store.root, id+".json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			writes := 0
+			store.beforePersist = func(string) { writes++ }
+			defer func() { store.beforePersist = nil }()
+			metrics := store.StoreDiagnostics()
+			if writes != 0 || !reflect.DeepEqual(beforeMetrics, metrics) {
+				t.Fatal("diagnostic read changed counters or persisted a Run")
+			}
+			after, err := store.Load(id)
+			if err != nil || writes != 0 || !reflect.DeepEqual(before, after) {
+				t.Fatal("diagnostic read changed Run state")
+			}
+			if backend == "json" {
+				current, err := os.ReadFile(filepath.Join(store.root, id+".json"))
+				if err != nil || string(current) != string(persisted) {
+					t.Fatal("diagnostic read changed snapshot bytes")
+				}
+			}
+			stages := map[string]StoreStageDiagnostic{}
+			for _, row := range metrics.Stages {
+				if row.Samples < 1 || row.DurationMicros < row.MaxDurationMicros || row.MaxDurationMicros < 0 {
+					t.Fatalf("invalid stage counters: %+v", row)
+				}
+				stages[row.Stage] = row
+			}
+			if metrics.Backend != backend || metrics.Since.IsZero() || len(stages) > int(storeDiagnosticStageCount) {
+				t.Fatal("missing or unbounded Store diagnostics")
+			}
+			for _, stage := range []string{"mutex_wait", "file_lock_wait", "load_verify", "save"} {
+				if stages[stage].Samples == 0 {
+					t.Fatalf("missing %s stage", stage)
+				}
+			}
+			if backend == "json" {
+				if stages["json_write_fsync"].MaxBytes != int64(len(persisted)) || stages["json_encode"].BytesTotal == 0 || stages["json_publish"].Samples == 0 {
+					t.Fatal("snapshot staging bytes or stages not measured")
+				}
+			} else if stages["sqlite_commit"].Samples < 3 || stages["sqlite_write_commit"].Samples < 3 {
+				t.Fatal("SQLite semantic/telemetry commits not measured")
+			}
+			// A rejected mutation must not produce another save sample or Run write.
+			rejected := errors.New("private-rejection")
+			if _, err = store.Update(id, func(*Snapshot) error { return rejected }); !errors.Is(err, rejected) {
+				t.Fatal("callback error changed")
+			}
+			for _, row := range store.StoreDiagnostics().Stages {
+				if row.Stage == "save" && row.Samples != stages["save"].Samples {
+					t.Fatal("rejected callback counted as a save")
+				}
+			}
+			if writes != 0 {
+				t.Fatal("rejected callback wrote a Run")
+			}
+			raw, err := json.Marshal(metrics)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, private := range []string{"private-", id, store.root} {
+				if strings.Contains(string(raw), private) {
+					t.Fatal("Store diagnostics contain content or identity")
+				}
+			}
+			t.Logf("store_diagnostics=%s", raw)
+		})
+	}
+}
+
+func TestStoreDiagnosticsConcurrentReadDoesNotWaitForStore(t *testing.T) {
+	for _, backend := range []string{"json", "sqlite"} {
+		t.Run(backend, func(t *testing.T) {
+			var store *Store
+			if backend == "sqlite" {
+				store = sqliteTestStore(t)
+			} else {
+				var err error
+				store, err = NewStore(t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			snap, err := store.Create("private-concurrent-payload", "prompt", "hash")
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The writer owns Store.mu and the file fence while the readers sample.
+			entered, resume, finished := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+			var once sync.Once
+			store.beforePersist = func(string) { once.Do(func() { close(entered); <-resume }) }
+			go func() { _, err := store.Update(snap.Run.ID, func(*Snapshot) error { return nil }); finished <- err }()
+			defer func() {
+				close(resume)
+				if err := <-finished; err != nil {
+					t.Error(err)
+				}
+				store.beforePersist = nil
+			}()
+			select {
+			case <-entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("writer did not reach persistence")
+			}
+			read := make(chan StoreDiagnostics, 8)
+			for i := 0; i < cap(read); i++ {
+				go func() { read <- store.StoreDiagnostics() }()
+			}
+			for i := 0; i < cap(read); i++ {
+				select {
+				case metrics := <-read:
+					if metrics.Backend != backend {
+						t.Fatal("backend changed")
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("diagnostic reader waits for Store writer")
+				}
+			}
+		})
 	}
 }

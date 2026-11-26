@@ -179,10 +179,11 @@ func (s *Server) taskOperation(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) workerOperation(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		OperationID string `json:"operation_id"`
-		Content     string `json:"content"`
-		Kind        string `json:"kind"`
-		ReplyTo     string `json:"reply_to"`
+		OperationID   string  `json:"operation_id"`
+		Content       string  `json:"content"`
+		Kind          string  `json:"kind"`
+		ReplyTo       string  `json:"reply_to"`
+		ExpectedVisit *uint64 `json:"expected_visit"`
 	}
 	if !decode(w, r, &in) {
 		return
@@ -203,7 +204,11 @@ func (s *Server) workerOperation(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("X-Worker-Message-ID", receipt.ID)
 		}
 	case "cancel":
-		v, e = s.a.CancelWorker(r.PathValue("id"), r.PathValue("worker"))
+		v, e = s.a.CancelWorkerVisit(r.PathValue("id"), r.PathValue("worker"), in.ExpectedVisit)
+		if errors.Is(e, agent.ErrStaleWorkerVisit) {
+			writeError(w, http.StatusConflict, e)
+			return
+		}
 	default:
 		writeError(w, 404, errors.New("unknown worker operation"))
 		return

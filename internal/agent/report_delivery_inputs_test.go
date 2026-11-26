@@ -271,3 +271,129 @@ func TestU7WorkerInboxStaleObservationDoesNotAcknowledge(t *testing.T) {
 		})
 	}
 }
+
+func TestReportDeliveryProjectsOnlyPendingSourceFacts(t *testing.T) {
+	s := Snapshot{
+		Run:            Run{ID: "delivery-projection", Goal: "preserve the exact goal", Status: StatusRunning, Context: DefaultContextConfig()},
+		Prompt:         "fixture system",
+		ReportDelivery: &ReportDeliveryState{Pending: true},
+		Result:         Result{Status: "incomplete", CleanupStatus: "not_checked", Summary: "Fixed business conclusion", Report: &ReportText{ZhCN: u7Text.ZhCN}, ReproductionSteps: []string{"exact-command --proof VALUE"}},
+		Findings:       []Finding{{ID: "complete-finding", Title: "Complete document", Report: &ReportText{ZhCN: u7Text.ZhCN, En: u7Text.En}}},
+		Messages: []Message{
+			{Role: "user", Content: "preserve the exact goal"},
+			{Role: "user", Content: "keep exact constraint VALUE"},
+			{Role: "tool", Content: strings.Repeat("UNRELATED_HISTORY_SENTINEL", 1000)},
+			{Role: "assistant", Content: "UNRELATED_ASSISTANT_SENTINEL"},
+			{Role: "user", Content: reportDeliveryInstruction + "STALE_DELIVERY_SENTINEL"},
+		},
+	}
+	resultValidationSource(t, &s, "required-proof", "read", "builtin", "EXACT_NEEDED_PROOF")
+	resultValidationSource(t, &s, "background-observation", "read", "builtin", strings.Repeat("UNRELATED_EVIDENCE_SENTINEL", 5000))
+	s.Result.EvidenceIDs = []string{"required-proof"}
+	s.Responses = append(s.Responses, ResponseRecord{Error: "delivery tool call rejected"})
+	documents := pendingReportDocuments(&s)
+	if len(documents) != 1 || documents[0].Kind != "final" || len(documents[0].MissingLanguages) != 1 || documents[0].MissingLanguages[0] != "en" || documents[0].Existing.ZhCN != u7Text.ZhCN {
+		t.Fatalf("completed unit was lost or resubmitted: %+v", documents)
+	}
+	s.ReportDelivery.DocumentsDigest = valueHash(documents)
+	before := valueHash(s)
+	messages, estimate, compaction, err := projectReportDeliveryContext(&s)
+	if err != nil || compaction != "" || estimate != EstimateContextTokens(messages, nil) || valueHash(s) != before {
+		t.Fatalf("delivery projection mutated source state or accounting: %v", err)
+	}
+	wire := ""
+	for _, message := range messages {
+		wire += message.Content
+		if len(message.ToolCalls) != 0 {
+			t.Fatal("delivery projection contains a tool call")
+		}
+	}
+	for _, want := range []string{s.Run.Goal, "keep exact constraint VALUE", "exact-command --proof VALUE", "EXACT_NEEDED_PROOF", documents[0].SourceDigest, s.ReportDelivery.DocumentsDigest, "delivery tool call rejected"} {
+		if !strings.Contains(wire, want) {
+			t.Fatalf("required fact missing: %s", want)
+		}
+	}
+	for _, sentinel := range []string{"UNRELATED_HISTORY_SENTINEL", "UNRELATED_ASSISTANT_SENTINEL", "STALE_DELIVERY_SENTINEL", "UNRELATED_EVIDENCE_SENTINEL"} {
+		if strings.Contains(wire, sentinel) {
+			t.Fatalf("irrelevant history leaked: %s", sentinel)
+		}
+	}
+	// Source changes invalidate the document identity and do not carry old prose.
+	s.Result.Report.SourceDigest = documents[0].SourceDigest
+	s.Result.Summary = "Changed business conclusion"
+	changed := pendingReportDocuments(&s)
+	if len(changed) != 1 || changed[0].SourceDigest == documents[0].SourceDigest || changed[0].Existing.ZhCN != "" {
+		t.Fatal("changed source retained an old translation")
+	}
+	s.Run.Context = ContextConfig{WindowTokens: 500, OutputReserve: 100, CompactionMode: "semantic"}
+	if _, _, _, err := projectReportDeliveryContext(&s); err == nil {
+		t.Fatal("oversized necessary facts escaped the existing context budget")
+	}
+}
+
+func TestReportDeliveryNaturalConclusionPreservesObservationFacts(t *testing.T) {
+	s := Snapshot{
+		Run:            Run{ID: "natural-delivery", Goal: "Explain the observed file contents", Status: StatusCompleted, Context: DefaultContextConfig()},
+		Prompt:         "fixture system",
+		ReportDelivery: &ReportDeliveryState{Pending: true},
+		Messages:       []Message{{Role: "user", Content: "Explain the observed file contents"}},
+	}
+	resultValidationSource(t, &s, "first-observation", "read", "builtin", "NATURAL_OBSERVATION_ALPHA")
+	resultValidationSource(t, &s, "second-observation", "read", "builtin", "NATURAL_OBSERVATION_BETA")
+	arguments := `{"path":"observed.txt","offset":17,"limit":23}`
+	s.Actions[0].Arguments = arguments
+	s.Responses[0].Response.ToolCalls[0].Arguments = arguments
+	s.Messages = append(s.Messages, Message{Role: "assistant", Content: "The two observed files contain different values; the original readings establish the difference."})
+	refreshResult(&s)
+	if len(s.Requirements)+len(s.Checks)+len(s.Findings)+len(s.Result.EvidenceIDs)+len(s.Result.SupportingEvidenceIDs)+len(s.Result.ArtifactEvidenceIDs)+len(s.Result.Answers) != 0 || s.RootContract != nil || s.Run.SuccessContains != "" {
+		t.Fatal("natural-language fixture acquired structured acceptance or evidence references")
+	}
+	documents := pendingReportDocuments(&s)
+	candidates := deliveryReportCandidates(&s)
+	if len(documents) != 1 || len(candidates) != 1 || documents[0].Kind != "final" || len(documents[0].Facts) != 2 || documents[0].SourceDigest != candidates[0].digest() || valueHash(documents[0].Source) != valueHash(candidates[0].source) {
+		t.Fatalf("uncited observations or their source binding were lost: %+v", documents)
+	}
+	for i, fact := range documents[0].Facts {
+		if verifyEvidence(&s, &s.Evidence[i]) != "verified" || fact.ID != s.Evidence[i].ID || fact.Content != s.Evidence[i].Content || fact.Hash != s.Evidence[i].ContentHash || fact.Tool != s.Actions[i].Name || fact.Arguments != s.Actions[i].Arguments {
+			t.Fatal("delivery lost the verified observation or its exact call arguments")
+		}
+	}
+	s.ReportDelivery.DocumentsDigest = valueHash(documents)
+	before := valueHash(s)
+	messages, _, _, err := projectReportDeliveryContext(&s)
+	if err != nil || valueHash(s) != before {
+		t.Fatalf("natural-language delivery failed or changed source state: %v", err)
+	}
+	wire := ""
+	for _, message := range messages {
+		wire += message.Content
+	}
+	for _, want := range []string{"NATURAL_OBSERVATION_ALPHA", "NATURAL_OBSERVATION_BETA"} {
+		if !strings.Contains(wire, want) {
+			t.Fatalf("natural-language delivery omitted observation: %s", want)
+		}
+	}
+	// An original-prose citation still narrows facts without shrinking the manifest.
+	s.Result.Summary += " Source: " + s.Evidence[0].ID
+	cited := pendingReportDocuments(&s)
+	if len(cited) != 1 || len(cited[0].Facts) != 1 || cited[0].Facts[0].ID != s.Evidence[0].ID || len(cited[0].Source.Evidence) != 2 {
+		t.Fatal("original-prose citation failed to narrow facts independently of the manifest")
+	}
+	s.Result.Summary = documents[0].Original
+	s.Run.Context = ContextConfig{WindowTokens: 500, OutputReserve: 100, CompactionMode: "semantic"}
+	if _, _, _, err := projectReportDeliveryContext(&s); err == nil {
+		t.Fatal("uncited necessary observations were silently dropped to fit the budget")
+	}
+}
+
+func TestReportDeliveryPreservesCompletedSourceBoundLanguage(t *testing.T) {
+	earlier := ReportText{SourceDigest: "same-source", ZhCN: u7Text.ZhCN}
+	body := preserveReportLanguages(ReportText{SourceDigest: "same-source", En: u7Text.En}, earlier)
+	if body.ZhCN != earlier.ZhCN || body.En != u7Text.En {
+		t.Fatal("missing-language submission discarded an already complete language")
+	}
+	changed := preserveReportLanguages(ReportText{SourceDigest: "new-source", En: u7Text.En}, earlier)
+	if changed.ZhCN != "" {
+		t.Fatal("language was copied across different source identities")
+	}
+}

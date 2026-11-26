@@ -134,9 +134,22 @@ func TestWorkerCheckpointRegistrationRechecksFixedManifest(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			wantStatus := "failed"
+			if mutation == "checkpoint" {
+				wantStatus = "pending"
+			}
 			task, err := planTask(&snap, "receiver")
-			if err != nil || task.Status != "failed" || task.ChildRunID != "" || !task.LeaseUntil.IsZero() || len(snap.Workers) != 1 || occupiedWorkerSlots(&snap) != 0 {
+			if err != nil || task.Status != wantStatus || task.WorkerID != "" || task.ChildRunID != "" || !task.LeaseUntil.IsZero() || len(snap.Workers) != 1 || occupiedWorkerSlots(&snap) != 0 {
 				t.Fatalf("rejected dispatch remained registered or claimed: %+v %v", task, err)
+			}
+			inFrontier := false
+			for _, ready := range snap.Plan.Frontier {
+				if ready == "receiver" {
+					inFrontier = true
+				}
+			}
+			if inFrontier != (mutation == "checkpoint") {
+				t.Fatal("temporary handoff wait and invalid ancestry were not distinguished")
 			}
 			for _, event := range snap.Events {
 				if event.Type == "worker_started" {

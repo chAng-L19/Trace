@@ -217,3 +217,75 @@ func BenchmarkActivityProjectionHistoricalRequests(b *testing.B) {
 		})
 	}
 }
+
+func TestActivityChildReportWindowPrefersCurrentVisits(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		currentWorkers int
+		filteredWorker bool
+	}{
+		{name: "older active receipt", currentWorkers: 1},
+		{name: "active overflow stays bounded", currentWorkers: 16},
+		{name: "task before worker filtering", currentWorkers: 1, filteredWorker: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s := Snapshot{Run: Run{ID: "parent"}}
+			for i := 0; i < test.currentWorkers; i++ {
+				id := fmt.Sprintf("current-%02d", i)
+				worker := AgentWorker{ID: id, TaskID: id, RunID: "child-" + id, Visit: 2, Status: "running", CleanupStatus: "pending"}
+				if test.filteredWorker {
+					worker.Status, worker.CleanupStatus = "completed", "completed"
+				}
+				s.Workers = append(s.Workers, worker)
+				s.Plan.Tasks = append(s.Plan.Tasks, PlanTask{ID: id, WorkerID: id, ChildRunID: worker.RunID, Status: "running"})
+				for _, revision := range []struct {
+					visit uint64
+					hash  string
+				}{{1, "old-visit"}, {2, "early"}, {2, "final"}} {
+					s.ChildReports = append(s.ChildReports, ChildReport{ParentRunID: s.Run.ID, SourceRunID: worker.RunID, TaskID: id, WorkerID: id, Visit: revision.visit, SourceHash: id + "-" + revision.hash})
+				}
+			}
+			for i := 0; i < 30; i++ {
+				s.ChildReports = append(s.ChildReports, ChildReport{ParentRunID: s.Run.ID, SourceRunID: fmt.Sprintf("history-%d", i), WorkerID: "historical", Visit: 1, SourceHash: fmt.Sprint(i)})
+			}
+			raw, err := json.Marshal(s)
+			if err != nil {
+				t.Fatal(err)
+			}
+			view := &storedView{}
+			if err := view.retainSnapshot(raw); err != nil {
+				t.Fatal(err)
+			}
+			projection, err := buildActivityRecords(view.fields, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if projection.Totals["child_reports"] != len(s.ChildReports) || len(projection.Snapshot.ChildReports) != 12 {
+				t.Fatalf("receipt total/window: total=%d loaded=%d", projection.Totals["child_reports"], len(projection.Snapshot.ChildReports))
+			}
+			current := 0
+			for _, report := range projection.Snapshot.ChildReports {
+				if !strings.HasPrefix(report.SourceHash, "current-") {
+					continue
+				}
+				current++
+				if report.Visit != 2 || !strings.HasSuffix(report.SourceHash, "-final") || !report.Current || report.SourceStatus != "not_checked" {
+					t.Fatalf("wrong active receipt or source claim: %+v", report)
+				}
+			}
+			if current != min(test.currentWorkers, 12) {
+				t.Fatalf("active receipts lost to history: got %d", current)
+			}
+			if test.filteredWorker && len(projection.Snapshot.Workers) != 0 {
+				t.Fatal("completed worker was retained only to select a receipt")
+			}
+			again, err := buildActivityRecords(view.fields, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(projection.Snapshot.ChildReports, again.Snapshot.ChildReports) {
+				t.Fatal("receipt overflow selection changed without a ledger change")
+			}
+		})
+	}
+}

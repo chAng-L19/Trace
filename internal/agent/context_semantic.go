@@ -42,6 +42,9 @@ func contextRecentBudget(c ContextConfig) int {
 }
 
 func projectSemanticContext(s *Snapshot, tools []ToolDefinition, catalog string, runtime ...string) ([]Message, int, string, error) {
+	if reportDeliveryPending(s) {
+		return projectReportDeliveryContext(s)
+	}
 	if err := providerRecoveryProjectionError(s); err != nil {
 		return nil, 0, "", err
 	}
@@ -97,6 +100,20 @@ func projectSemanticContextMode(s *Snapshot, tools []ToolDefinition, catalog str
 	if before <= limit && !force {
 		return current, before, compactionID, nil
 	}
+	if !force && compactionID != "" {
+		for _, event := range s.Events {
+			if event.Type == "context_recovery_started" {
+				origin := recoveryEvent(event)
+				if origin.RequestID != "" && recoveryOriginMatches(s, origin) {
+					for _, c := range s.Compactions {
+						if c.ID == compactionID && c.RequestID == origin.SummaryRequestID {
+							return nil, before, "", fmt.Errorf("%w: complete summary still exceeds the context input budget; original history is retained", errProviderRecoveryLedger)
+						}
+					}
+				}
+			}
+		}
+	}
 	// Fixed prompt/tools and the latest complete group must fit independently.
 	// We never split a tool batch or silently replace semantic input with excerpts.
 	pending := map[string]bool{}
@@ -116,25 +133,10 @@ func projectSemanticContextMode(s *Snapshot, tools []ToolDefinition, catalog str
 		return nil, before, "", fmt.Errorf("context budget exceeded: prompt/tools/latest complete turn exceeds %d estimated tokens", limit)
 	}
 	var selected *summaryNeeded
-	summaryInstruction := summaryPrompt
-	for i := len(s.Compactions) - 1; i >= 0; i-- {
-		c := s.Compactions[i]
-		count := len(c.SourceMessageIDs)
-		if c.Status != "failed" || count > len(s.Messages) || messageHash(s.Messages[:count]) != c.SourceHash {
-			continue
-		}
-		for _, response := range s.Responses {
-			if response.RequestID == c.RequestID && response.Error != "" {
-				summaryInstruction += "\nThe previous summary was rejected: " + excerpt(response.Error, 512) + ". Return a shorter complete text summary without tool calls; preserve exact IDs and unresolved work."
-				break
-			}
-		}
-		break
-	}
 	for _, end := range ends {
 		raw, _ := json.Marshal(s.Messages[start:end])
 		input := "Previous summary:\n" + summary + "\nNew historical messages (JSON data):\n" + string(raw)
-		messages := []Message{{Role: "system", Content: summaryInstruction}, {Role: "user", Content: input}}
+		messages := []Message{{Role: "system", Content: summaryPrompt}, {Role: "user", Content: input}}
 		if EstimateContextTokens(messages, nil) > limit {
 			break
 		}
@@ -142,7 +144,7 @@ func projectSemanticContextMode(s *Snapshot, tools []ToolDefinition, catalog str
 		for i := range ids {
 			ids[i] = s.Messages[i].ID
 		}
-		selected = &summaryNeeded{messages: messages, record: Compaction{Method: "llm_semantic", Status: "pending", SourceMessageIDs: ids, SourceHash: messageHash(s.Messages[:end]), FirstKeptMessageID: s.Messages[end].ID, BeforeTokens: before, InputBudget: limit, CreatedAt: time.Now().UTC()}}
+		selected = &summaryNeeded{recovery: &providerRecoveryEvent{SourceHash: messageHash(s.Messages), ConfigurationHash: recoveryConfigurationHash(s)}, messages: messages, record: Compaction{Method: "llm_semantic", Status: "pending", SourceMessageIDs: ids, SourceHash: messageHash(s.Messages[:end]), FirstKeptMessageID: s.Messages[end].ID, BeforeTokens: before, InputBudget: limit, CreatedAt: time.Now().UTC()}}
 		// Compact toward a recent-history target, not merely the hard limit:
 		// otherwise one more tool result can immediately require another summary.
 		// If one complete group exceeds the target, keep it intact at the last
@@ -166,6 +168,7 @@ func finishCompaction(s *Snapshot, request ModelRequest, response ModelResponse,
 		if c.RequestID != request.ID {
 			continue
 		}
+		retryable := callErr != nil && classifyProviderFailure(callErr) == providerTransient
 		if callErr == nil {
 			callErr = validateResponse(response)
 		}
@@ -183,10 +186,10 @@ func finishCompaction(s *Snapshot, request ModelRequest, response ModelResponse,
 		}
 		if callErr != nil {
 			c.Status = "failed"
-			if !isStopped(s.Run.Status) && s.Run.Status != StatusFailed {
-				s.Run.Status, s.Run.PauseReason, s.Run.Error = StatusRunning, "", ""
+			if !isStopped(s.Run.Status) && !retryable {
+				s.Run.Status, s.Run.PauseReason, s.Run.Error = StatusFailed, "", callErr.Error()
 			}
-			addEvent(s, "context_summary_failed", "语义摘要失败；保留原始历史，交回现有模型回合修正", map[string]string{"request_id": request.ID, "error": callErr.Error()})
+			addEvent(s, "context_summary_failed", "语义摘要失败；保留原始历史，确定性失败关闭当前来源", map[string]string{"request_id": request.ID, "error": callErr.Error()})
 			return true, callErr
 		}
 		addEvent(s, "context_compacted", "语义摘要已保存，原始历史保留", *c)

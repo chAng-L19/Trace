@@ -7,6 +7,8 @@ import {inspectionCalls,messageCallRecords,conversation,toolCard,callLinks} from
 import {redraw} from './static/interactions.js';
 import {evidenceCard,evidenceDetail} from './static/evidence.js';
 import {pendingTools,recordDetail} from './static/workforms.js';
+import {detailSnapshot,historyDetail} from './static/history-projection.js';
+import {esc} from './static/ui.js';
 
 const run={id:'conversation-fixture',status:'running'};
 const read={call_id:'read-1',name:'read',arguments:'{"path":"first.txt"}',status:'completed',result:{stdout:'READ_OUTPUT_MARKER',exit_code:0}};
@@ -85,12 +87,15 @@ assert.match(pending,/data-id="same" data-request="r-second"/);
 const legacy={run,actions:[{...read,call_id:'old'}],messages:[],events:[]};
 assert.match(callLinks(legacy.actions[0],legacy),/data-id="old" data-request=""/);
 const app=fs.readFileSync(new URL('./static/app.js',import.meta.url),'utf8');
-let inspected;
-const dispatchContext=createContext({chainEvents:{action:async()=>false},state:{snap:linked},inspectionCalls,messageCallRecords,showDetail(title,body){inspected=body},recordDetail(kind,item,snapshot){return {item,evidence:snapshot.evidence}}});
+let inspected,inspectionHTML;
+const dispatchContext=createContext({chainEvents:{action:async()=>false},state:{snap:linked},detailSnapshot,historyDetail,esc,inspectionCalls,messageCallRecords,showDetail(title,body){inspectionHTML=body},recordDetail(kind,item,snapshot){inspected={item,evidence:snapshot.evidence};return recordDetail(kind,item,snapshot)}});
 vm.runInContext(app.slice(app.indexOf('async function dispatch('),app.indexOf('async function submit(')),dispatchContext);
 await vm.runInContext("dispatch('action-detail',{dataset:{id:'same',request:'r-second'}})",dispatchContext);
 assert.equal(inspected.item.request_id,'r-second');
 assert.deepEqual(inspected.evidence.map(item=>item.id),['ev-second']);
+assert.match(inspectionHTML,/data-evidence-run="conversation-fixture"/);
+assert.match(inspectionHTML,/data-action="evidence-detail"[^>]*data-id="ev-second"/);
+assert.doesNotMatch(inspectionHTML,/data-action="evidence-detail"[^>]*data-id="ev-first"/);
 await assert.rejects(vm.runInContext("dispatch('action-detail',{dataset:{id:'same'}})",dispatchContext),/多个请求中复用/,'ambiguous historical links never open a random action');
 dispatchContext.state.snap=legacy;
 await vm.runInContext("dispatch('action-detail',{dataset:{id:'old'}})",dispatchContext);

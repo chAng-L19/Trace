@@ -145,6 +145,12 @@ func (a *Agent) prepareWorkerResume(ctx context.Context, child Snapshot) (contex
 			if err != nil {
 				return err
 			}
+			if latestChild.Run.Deleted || latestChild.Run.Status == StatusCompleted || latestChild.Run.Status == StatusCancelled {
+				return fmt.Errorf("run is %s or deleted", latestChild.Run.Status)
+			}
+			if latestChild.Run.ParentRunID != parent.Run.ID || latestChild.Run.ParentTaskID != task.ID {
+				return fmt.Errorf("worker attempt has been replaced")
+			}
 			// Reuse one retained slot only after this exact visit's cleanup was
 			// committed. This admits the original continuation/manual resolution;
 			// it does not resolve or replay any uncertain action in the child.

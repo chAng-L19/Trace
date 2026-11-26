@@ -161,7 +161,7 @@ func (a *Agent) publishWorkerResult(id string) error {
 				// this unchanged receipt can skip the callback's full commit.
 				return unchangedReport
 			}
-			addEvent(parent, "worker_result_ready", "子任务核心结果已保存；报告交付与生命周期结算仍待完成", map[string]string{"worker_id": w.ID, "run_id": id, "source_hash": report.SourceHash})
+			addEvent(parent, "worker_result_ready", "子任务核心结果已保存；报告交付与生命周期结算仍待完成", map[string]string{"worker_id": w.ID, "run_id": id, "source_hash": report.SourceHash, "task_id": w.TaskID, "visit": fmt.Sprint(w.Visit)})
 			return appendWorkerMessage(parent, w.ID, "parent", childReportMessage(report))
 		}
 		return nil
