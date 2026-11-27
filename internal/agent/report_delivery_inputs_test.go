@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Run through the real pi scheduler: the first report requires translation,
@@ -52,8 +53,17 @@ func TestU7ReportDeliveryDefersBusinessInputs(t *testing.T) {
 							if err != nil {
 								return err
 							}
-							if len(root.WorkerMessages) != 1 || root.WorkerMessages[0].Delivered != delivered {
-								return fmt.Errorf("worker acknowledgement mismatch: %+v", root.WorkerMessages)
+							matched := 0
+							for _, message := range root.WorkerMessages {
+								if message.From == "parent" && message.To == to && message.Content == follow {
+									matched++
+									if message.Delivered != delivered {
+										return fmt.Errorf("business input acknowledgement mismatch: %+v", message)
+									}
+								}
+							}
+							if matched != 1 {
+								return fmt.Errorf("business input registered %d times", matched)
 							}
 						}
 						count := 0
@@ -174,19 +184,22 @@ func TestU7ReportDeliveryDefersBusinessInputs(t *testing.T) {
 						if _, err = store.Update(receiver, func(s *Snapshot) error {
 							s.Run.ParentRunID, s.Run.ParentTaskID = sender, "task"
 							s.RootContract = nil
+							s.WorkerContext = &WorkerContext{RunID: receiver, ParentRunID: sender, TaskID: "task", WorkerID: to}
 							return nil
 						}); err != nil {
 							t.Fatal(err)
 						}
 						if _, err = store.Update(sender, func(s *Snapshot) error {
-							s.Workers = []AgentWorker{{ID: to, TaskID: "task", RunID: receiver, Status: "completed", CleanupStatus: "completed"}}
+							s.Run.Status = StatusRunning
+							s.Plan.Tasks = []PlanTask{{ID: "task", Goal: run.Run.Goal, Status: "running", WorkerID: to, ChildRunID: receiver, LeaseUntil: time.Now().Add(time.Hour)}}
+							s.Workers = []AgentWorker{{ID: to, TaskID: "task", RunID: receiver, Visit: 1, Status: "running", CleanupStatus: "pending"}}
 							return nil
 						}); err != nil {
 							t.Fatal(err)
 						}
 						// This test owns the existing child execution, as a dispatched
 						// worker agent does; it does not ask the parent to resume it.
-						a.workerRunID = receiver
+						a.workerRunID, a.workerVisit = receiver, 1
 					}
 					s, err := a.Run(context.Background(), receiver)
 					if err != nil {

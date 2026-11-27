@@ -24,6 +24,10 @@ func (r *ToolRegistry) permitsRunTool(run Run, name, adapter string) bool {
 	if !ok || tool.Adapter != "builtin" {
 		return false
 	}
+	return coordinatorBuiltin(name)
+}
+
+func coordinatorBuiltin(name string) bool {
 	switch name {
 	case "tool_search", "tool_select", "search_sources", "skills_list",
 		"artifact_read", "session_read",

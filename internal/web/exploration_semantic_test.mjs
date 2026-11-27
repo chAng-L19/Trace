@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import {explorationData,explorationGraph,explorationSubset,renderExplorationDetail,resolveEvidenceReference} from './static/exploration.js';
+import {explorationPreview} from './static/graphs.js';
+import {explorationData,explorationGraph,explorationSubset,explorationProjection,childReportKey,renderExplorationDetail,resolveEvidenceReference} from './static/exploration.js';
 
 // Run only on the designated Ubuntu test host; no browser/runtime dependency.
 const evidence=(id,request=id,extra={})=>({id,call_id:'call-'+id,request_id:request,type:'tool_execution',verification:'verified',content:JSON.stringify({stdout:'响应正文：'+id,exit_code:0}),...extra});
@@ -25,8 +26,8 @@ assert.ok(graph.edges.some(e=>e.from==='evidence:retest'&&e.to==='finding:observ
 assert.ok(graph.edges.some(e=>e.from==='task:compare'&&e.to==='evidence:asset'));
 assert.equal(graph.nodes.find(n=>n.id==='requirement:response').state,'待核对');
 assert.equal(graph.nodes.find(n=>n.id==='finding:observation').state,'待补证据');
-assert.equal(graph.nodes.find(n=>n.id==='goal').state,'已完成');
-assert.equal(graph.nodes.find(n=>n.id==='report').state,'未完成','run completion does not imply business success');
+assert.equal(graph.nodes.find(n=>n.id==='goal').state,'运行：已完成');
+assert.equal(graph.nodes.find(n=>n.id==='report').state,'业务：未完成','run completion does not imply business success');
 assert.ok(graph.nodes.every(n=>typeof n.title==='string'&&typeof n.summary==='string'));
 assert.match(explorationGraph({snap}),/exploration-node-summary/);
 assert.match(renderExplorationDetail(snap,'report'),/报告引用证据/);
@@ -60,6 +61,27 @@ const missing={...empty,result:{status:'incomplete',evidence_ids:['deleted']}};
 assert.equal(explorationData(missing).missingEvidenceCount,1);
 assert.equal(explorationData(missing).nodes.some(n=>n.id==='evidence:deleted'),false);
 assert.match(explorationGraph({snap:missing}),/1 条引用的证据未在当前快照中找到/);
+
+// A persisted business result is not an archived report or a delivery receipt.
+{
+  const pending={run:{id:'pending-delivery',status:'running'},result:{status:'incomplete'}};
+  const pendingHTML=explorationGraph({snap:pending});
+  assert.match(pendingHTML,/报告交付：<span class="note">最终报告未归档<\/span>/);
+  assert.doesNotMatch(pendingHTML,/已登记报告|data-report-id=/);
+  const files=[{name:'final.zh-CN.md'},{name:'final.en.md'}];
+  for(const [source_status,state] of [['not_checked','归档状态待核对'],['changed','仅有历史归档']]){
+    const html=explorationGraph({snap:{...pending,reports:[{id:'old',kind:'final',source_status,files}]}});
+    assert.ok(html.includes(state),source_status);
+    assert.doesNotMatch(html,/已登记报告|data-report-id=/);
+  }
+  const partial={id:'current',kind:'final',version:2,source_status:'current',translation_status:'translation_missing',files:[files[0]],missing_attachments:['capture']};
+  const partialHTML=explorationGraph({snap:{...pending,reports:[partial]}});
+  for(const text of ['最终报告 v2','待补译','截图附件缺失 1 项','English 文件未归档','data-report-id="current"'])assert.ok(partialHTML.includes(text),text);
+  assert.doesNotMatch(partialHTML,/data-language="en"/);
+  const deliveredHTML=explorationGraph({snap:{...pending,reports:[{...partial,version:3,translation_status:'complete',missing_attachments:[],files}]}});
+  for(const text of ['最终报告 v3','data-report-id="current"','data-language="zh-CN"','data-language="en"'])assert.ok(deliveredHTML.includes(text),text);
+  assert.doesNotMatch(deliveredHTML,/已登记报告|待补译|截图附件缺失|文件未归档/);
+}
 
 // Evidence IDs in child runs are scoped to the run; no local same-ID collision.
 const external={...empty,plan:{tasks:[{id:'child',goal:'子运行核验',status:'completed',evidence_run_id:'child-run',evidence_ids:['original']}]}};
@@ -101,5 +123,60 @@ assert.match(renderExplorationDetail(qualified,'requirement:qualified'),/parent-
 assert.deepEqual(resolveEvidenceReference(qualified,{id:'child/same',hash:'raw',source_hash:'binding'}),{run_id:'child',evidence_id:'same',external:true,id:'child/same',node_id:external});
 assert.equal(resolveEvidenceReference(qualified,'same','child').node_id,external);
 assert.equal(JSON.stringify(qualified),qualifiedBefore,'projection neither copies child evidence nor changes parent acceptance');
+}
+
+{
+const receipt={source_run_id:'child',task_id:'compare',worker_id:'worker',visit:2,source_hash:'ready',current:true,run_status:'completed',result_status:'incomplete',source_status:'verified',cleanup_status:'completed',summary:'当前阶段保留剩余工作',delivery_pending:true};
+const history={...receipt,visit:1,source_hash:'prior',current:false,summary:'历史访问回执'};
+const work=[{task_id:'compare',item_id:'response',goal:'核对本次响应',next_action:'读取剩余对象',status:'pending',task_ids:['prepare','not-loaded'],evidence_ids:['original','child/raw'],reason:'覆盖尚不完整'},{task_id:'compare',item_id:'accepted',goal:'已验收部分',next_action:'等待其他工作项',status:'verified',task_ids:[],evidence_ids:['latest'],reason:'本项证据通过'},{task_id:'compare',item_id:'blocked',goal:'受阻的声明范围',next_action:'等待所需能力',status:'blocked',task_ids:[],evidence_ids:[],reason:'已记录能力缺口'},{task_id:'compare',item_id:'abandoned',goal:'已放弃的声明范围',next_action:'保留显式处置',status:'abandoned',task_ids:[],evidence_ids:[],reason:'已记录放弃原因'}];
+const projected={...snap,run:{...snap.run,id:'projection-run',hint:'保留用户 hint <原文>'},plan:{...snap.plan,work_progress:work,tasks:snap.plan.tasks.map(t=>({...t,hint:'阶段 hint <原文>'}))},child_reports:[history,receipt,receipt]};
+const before=JSON.stringify(projected),all=explorationData(projected),mainline=explorationProjection(all),ids=new Set(mainline.nodes.map(n=>n.id));
+assert.equal(all.nodes.filter(n=>n.kind==='child_report').length,2,'duplicate receipt does not create a new visit');
+for(const kind of ['observation','external','source'])assert.equal(mainline.nodes.some(n=>n.kind===kind),false,kind+' is disclosed on demand');
+const latest=all.nodes.find(n=>n.kind==='child_report'&&n.record.visit===2),old=all.nodes.find(n=>n.kind==='child_report'&&n.record.visit===1);
+assert.ok(ids.has(latest.id));assert.equal(ids.has(old.id),false,'historical visits stay out of the default task line');
+assert.equal(latest.id,'child-report:'+childReportKey(receipt));
+assert.equal(explorationData({...projected,child_reports:[{...receipt,source_hash:'settled'}]}).nodes.find(n=>n.kind==='child_report').id,latest.id,'same visit retains its graph identity across report revisions');
+const expanded=explorationProjection(all,{expanded:new Set(['task:compare'])});
+for(const id of [old.id,latest.id,'child-source:'+childReportKey(history),'child-source:'+childReportKey(receipt),'evidence:original'])assert.ok(expanded.nodes.some(n=>n.id===id),'task disclosure retains '+id);
+assert.equal(explorationProjection(all,{expanded:new Set(['task:prepare'])}).nodes.some(n=>n.id===old.id),false,'expanding another task does not expose unrelated history');
+assert.deepEqual(explorationProjection(all),mainline,'expansion is presentation state, not a mutation of all graph data');
+assert.equal(explorationProjection(all,{projection:'all'}),all);
+assert.equal(explorationProjection(all,{query:'历史访问'}),all,'search includes folded visits and original text');
+assert.deepEqual(explorationProjection(all,{kind:'source'}),explorationSubset(all,'source'),'existing type and ancestor filtering remains available');
+assert.ok(mainline.nodes.some(n=>n.kind==='work'&&n.record.status==='pending'));
+assert.ok(mainline.nodes.some(n=>n.kind==='work'&&n.record.status==='verified'));
+assert.ok(all.missingTaskIDs.includes('not-loaded'));
+assert.equal(all.edges.some(e=>e.from==='task:not-loaded'||e.to==='task:not-loaded'),false,'unloaded task references never become invented edges');
+const workID='work:'+JSON.stringify(['compare','response']),detail=renderExplorationDetail(projected,workID),html=explorationGraph({snap:projected});
+for(const text of ['核对本次响应','读取剩余对象','覆盖尚不完整','not-loaded','child/raw','只读 Plan.work_progress'])assert.ok(detail.includes(text),text);
+const coverage='工作项/范围覆盖 4 项 · 验收通过 1 项 · 剩余/待核对 1 项 · 受阻 1 项 · 已放弃 1 项';
+assert.ok(html.includes(coverage),'finite declarations and remaining work share distinct outcome counts');
+assert.ok(explorationPreview(projected).includes(coverage),'preview and full graph keep the same coverage semantics');
+assert.equal(all.nodes.find(n=>n.kind==='work'&&n.record.status==='verified').state,'工作项：验收通过');
+for(const status of ['blocked','abandoned']){
+  const node=all.nodes.find(n=>n.kind==='work'&&n.record.status===status);
+  assert.match(node.state,/显式处置/);assert.doesNotMatch(node.state,/验收通过|剩余工作/);
+  assert.ok(renderExplorationDetail(projected,node.id).includes(work.find(p=>p.status===status).reason));
+}
+assert.ok(renderExplorationDetail(projected,workID).includes('工作项/范围覆盖'));
+assert.doesNotMatch(html,/剩余工作：|剩余工作 ·/);
+assert.match(html,/data-command="mainline" aria-pressed="true"/);
+assert.doesNotMatch(html,/data-exploration-search="evidence:/);
+assert.match(renderExplorationDetail(projected,'task:compare'),/阶段 hint &lt;原文&gt;/);
+assert.match(renderExplorationDetail(projected,'goal'),/保留用户 hint &lt;原文&gt;/);
+const versions={...projected,child_reports:[history,receipt,{...receipt,source_hash:'settled',summary:'新回执正文',delivery_pending:false}]};
+const pinned='child-report:'+childReportKey(receipt,true);
+assert.match(renderExplorationDetail(versions,pinned),/当前阶段保留剩余工作/);
+const pinnedSource='child-source:'+childReportKey(receipt,true);
+assert.ok(renderExplorationDetail(versions,pinned).includes('data-id="'+pinnedSource.replaceAll('"','&quot;')+'"'),'a pinned historical receipt links its exact source version');
+assert.ok(renderExplorationDetail(versions,pinnedSource).includes('data-id="'+pinned.replaceAll('"','&quot;')+'"'),'a pinned source links back to the same receipt hash');
+assert.doesNotMatch(renderExplorationDetail(versions,pinned),/新回执正文/);
+assert.match(renderExplorationDetail({...versions,child_reports:versions.child_reports.filter(r=>r.source_hash!=='ready')},pinned),/引用版本未载入/);
+assert.match(renderExplorationDetail(projected,latest.id),/报告交付 待完成/);
+assert.match(renderExplorationDetail(projected,latest.id),/业务：未完成/);
+assert.match(renderExplorationDetail(projected,latest.id),/清理：已完成/);
+assert.equal(JSON.stringify(projected),before,'projection cannot change acceptance, remaining work, hints or source records');
+assert.ok(explorationGraph({snap:{run:{id:'unknown-scope',status:'completed'}}}).includes('工作项/范围覆盖未知'));
 }
 console.log('Semantic exploration: report citations, latest checks, retests, control exclusion, ancestor filtering, scoped calls, missing evidence and cycles passed.');

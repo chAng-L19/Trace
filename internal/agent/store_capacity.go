@@ -218,7 +218,7 @@ func (s *Store) loadCapacityLocked(ctx context.Context, tx *sql.Tx, id string, b
 // into this detached Snapshot, and no caller may persist it or use it to admit.
 var capacityProjectionFields = map[reflect.Type]string{
 	reflect.TypeOf(Snapshot{}):         "run plan workers worker_context worker_settlement actions",
-	reflect.TypeOf(Run{}):              "id parent_run_id parent_task_id status deleted",
+	reflect.TypeOf(Run{}):              "id parent_run_id parent_task_id status deleted resource_limits",
 	reflect.TypeOf(PlanState{}):        "capacity tasks",
 	reflect.TypeOf(PlanTask{}):         "id status worker_id child_run_id lease_until local_execution local_worker_visit disposition_reason",
 	reflect.TypeOf(AgentWorker{}):      "id task_id run_id status cleanup_status visit settled_visit",

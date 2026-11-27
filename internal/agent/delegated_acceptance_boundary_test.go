@@ -237,6 +237,10 @@ func TestDelegatedAcceptanceLegacyDisposedSourceNotReadJSONSQLite(t *testing.T) 
 			f := delegatedFixtureRun(t, backend, false)
 			delegatedRawMutation(t, f, f.root, func(s *Snapshot) {
 				s.Run.Responsibility = ""
+				// A legacy disposed stage with a root contract also has no work declarations.
+				s.Plan.Tasks[0].Stage = true
+				contract := pinRootContract(s, RootContract{Version: 2, Goal: s.Run.Goal})
+				s.RootContract = &contract
 				s.Plan.Tasks[0].Status, s.Plan.Tasks[0].DispositionReason = "abandoned", "legacy retired source"
 			})
 			delegatedRawMutation(t, f, f.worker.RunID, func(s *Snapshot) { s.Evidence[0].ContentHash = strings.Repeat("0", 64) })

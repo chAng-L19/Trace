@@ -46,9 +46,9 @@ assert.ok(graph.edges.some(e=>e.from==='task:active'&&e.relation==='子结算报
 assert.match(renderExplorationDetail({...snap,child_reports:[report]},graph.nodes.find(n=>n.kind==='child_report').id),/读取固定版本源报告/);
 const preview=explorationPreview({...snap,child_reports:[report,report,{...report,visit:2,source_hash:'def'}]});
 assert.equal((preview.match(/class="child_report"/g)||[]).length,2,'distinct visits expand distinct report nodes');
-assert.equal((preview.match(/class="source"/g)||[]).length,2,'fixed source versions stay visible');
+assert.equal((preview.match(/class="source"/g)||[]).length,0,'fixed sources remain in receipt details instead of the default mainline');
 assert.match(preview,/<title>子结算报告<\/title>/);
-assert.match(preview,/<title>固定来源指针<\/title>/);
+assert.doesNotMatch(preview,/<title>固定来源指针<\/title>/);
 assert.doesNotMatch(preview,/class="observation"/,'child receipts never become parent execution proof');
 assert.doesNotMatch(explorationPreview({run:snap.run}),/class="intent"|class="child_report"/,'empty plans do not invent work');
 const large=explorationPreview({...snap,plan:{tasks:Array.from({length:100},(_,i)=>({id:'t'+i,status:'pending',goal:'<script>'+i}))},child_reports:Array.from({length:30},(_,i)=>({...report,task_id:'t'+i,source_hash:'hash'+i}))});

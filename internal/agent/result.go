@@ -109,8 +109,17 @@ func traceEnvelope[T any](text, envelope string) (*T, bool) {
 }
 
 func refreshResult(s *Snapshot) {
+	declarations, declarationIssues := collectRemainingDeclarations(s)
 	defer func() {
-		if gaps := rootContractGaps(s); len(gaps) > 0 && s.Result.Status == "success" {
+		s.Result.Remaining = pendingRemainingDeclarations(s, declarations)
+		s.Result.ValidationIssues = append(s.Result.ValidationIssues, declarationIssues...)
+		if len(declarationIssues) > 0 && s.Result.Status == "success" {
+			s.Result.Status = "incomplete"
+			s.Result.TerminalReason = resultValidationSummary(s.Result.ValidationIssues)
+		}
+	}()
+	defer func() {
+		if gaps := append(rootContractGaps(s), workProgressGaps(s)...); len(gaps) > 0 && s.Result.Status == "success" {
 			s.Result.Status = "incomplete"
 			s.Result.TerminalReason = strings.Join(gaps, "; ")
 		}
@@ -208,6 +217,7 @@ func refreshResult(s *Snapshot) {
 			result.Report = claim.Report
 		}
 		result.Summary = claim.Summary
+		result.Remaining = declarations
 		result.Answers = claim.Answers
 		result.EvidenceIDs = claim.EvidenceIDs
 		result.SupportingEvidenceIDs = claim.SupportingEvidenceIDs
@@ -223,6 +233,10 @@ func refreshResult(s *Snapshot) {
 			result.ReproductionSteps = []string{}
 		}
 		allValid := validateResultReferences(s, &result)
+		if err := validateRemainingWork(s, result.Remaining); err != nil {
+			allValid = false
+			result.ValidationIssues = append(result.ValidationIssues, ResultValidationIssue{Code: "invalid_remaining_work", Field: "trace_result.remaining", Blocking: true, Repair: err.Error()})
+		}
 		switch claim.Status {
 		case "failed":
 			result.Status = "failed"

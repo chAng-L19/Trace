@@ -4,11 +4,12 @@ import "encoding/json"
 
 // Result distinguishes a finished model turn from verified target success.
 type Result struct {
-	Report      *ReportText `json:"report,omitempty"`
-	Status      string      `json:"status"`
-	Summary     string      `json:"summary"`
-	Answers     []Answer    `json:"answers"`
-	EvidenceIDs []string    `json:"evidence_ids"`
+	Remaining   []RemainingWork `json:"remaining,omitempty"`
+	Report      *ReportText     `json:"report,omitempty"`
+	Status      string          `json:"status"`
+	Summary     string          `json:"summary"`
+	Answers     []Answer        `json:"answers"`
+	EvidenceIDs []string        `json:"evidence_ids"`
 	// Supplemental references never establish outcome proof or waive answers/checks.
 	SupportingEvidenceIDs []string                `json:"supporting_evidence_ids,omitempty"`
 	ArtifactEvidenceIDs   []string                `json:"artifact_evidence_ids,omitempty"`

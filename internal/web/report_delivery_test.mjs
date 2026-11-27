@@ -15,7 +15,7 @@ function button(html,language){
   return {dataset:{format:attr('format'),run:attr('run'),reportId:attr('report-id'),language:attr('language')}};
 }
 function fixture(t){
-  const state={selected:'run-A',snap:snap()},urls=[],saved=[],blobs=[],notes=[];
+  const state={selected:'run-A',snap:snap()},urls=[],saved=[],blobs=[],notes=[],graphRoots=[];
   const bytes={'final-v1':'version one archived bytes','final-v2':'version two different bytes'};
   const fetchCall=t.mock.method(globalThis,'fetch',async url=>{
     urls.push(url);const id=new URL(url,'http://fixture').searchParams.get('report_id');
@@ -23,10 +23,10 @@ function fixture(t){
   });
   t.mock.method(URL,'createObjectURL',blob=>{blobs.push(blob);return 'blob:fixture'});
   t.mock.method(URL,'revokeObjectURL',()=>{});
-  globalThis.document={body:{append(){}},createElement(){return {click(){saved.push(this.download)},remove(){}}}};
+  globalThis.document={body:{append(){}},createElement(){return {click(){saved.push(this.download)},remove(){}}},querySelectorAll(selector){assert.equal(selector,'.exploration-view');return graphRoots}};
   t.after(()=>{delete globalThis.document});
   const {dispatch}=createDelivery({state,token:()=>({nav:0}),notice:text=>notes.push(text)});
-  return {state,urls,saved,blobs,notes,bytes,fetchCall,click:el=>dispatch('export',el)};
+  return {state,urls,saved,blobs,notes,bytes,fetchCall,graphRoots,click:el=>dispatch('export',el)};
 }
 test('rendered report buttons fetch the selected Run, immutable version and language',async t=>{
   const f=fixture(t),other={...report,id:'stage-new',kind:'stage'};
@@ -40,6 +40,17 @@ test('rendered report buttons fetch the selected Run, immutable version and lang
   assert.equal(f.saved.length,2);
   for(const format of ['json','evidence'])await f.click({dataset:{format}});
   assert.deepEqual(f.urls.slice(2),['/api/runs/run-A/export?format=json','/api/runs/run-A/export?format=evidence']);
+});
+test('report detail offers association expansion only for a mounted graph of the same Run',t=>{
+  const f=fixture(t);
+  for(const mountedRuns of [[],['run-B'],['run-B','run-A']]){
+    f.graphRoots.splice(0,f.graphRoots.length,...mountedRuns.map(run=>({dataset:{explorationRun:run}})));
+    const html=renderExplorationDetail(f.state.snap,'report');
+    if(mountedRuns.includes('run-A'))assert.match(html,/data-command="expand" data-run="run-A" data-id="report"/);
+    else assert.doesNotMatch(html,/data-command="expand"/);
+    assert.deepEqual(button(html,'en').dataset,{format:'report',run:'run-A',reportId:'final-v1',language:'en'});
+  }
+  assert.deepEqual(f.urls,[]);assert.deepEqual(f.saved,[]);
 });
 test('a displayed v1 stays downloadable after v2 replaces the current projection',async t=>{
   const f=fixture(t),old=button(reportDownloads(f.state.snap),'en');

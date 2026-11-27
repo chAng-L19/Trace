@@ -13,7 +13,7 @@ func TestWorkerCheckpointSurvivesReopenAndActualCompaction(t *testing.T) {
 	// This fixture tests durable checkpoint compaction, not the evolving full
 	// production prompt size. Persist the fixed prompt when creating the child.
 	const prompt = "Checkpoint compaction fixture: preserve exact user constraints and source identities."
-	a.prompt, a.promptID = prompt, promptHash(prompt)
+	a.workerPrompt = prompt
 	child := contextChild(t, a, store, parent)
 	if child.Prompt != prompt || child.Run.PromptHash != promptHash(prompt) {
 		t.Fatal("child did not persist the fixture prompt identity")

@@ -74,13 +74,25 @@ func (a *Agent) taskResourcesLocked(s *Snapshot, candidate PlanTask) error {
 	}
 	for _, node := range nodes {
 		for _, owner := range node.Plan.Tasks {
-			if node.Run.ID == s.Run.ID && owner.ID == candidate.ID || !taskOwnsResources(node, owner) {
+			if node.Run.ID == s.Run.ID && owner.ID == candidate.ID {
 				continue
 			}
 			for _, key := range candidate.ResourceKeys {
-				if hasString(owner.ResourceKeys, key) {
+				if !hasString(owner.ResourceKeys, key) {
+					continue
+				}
+				held := taskOwnsResources(node, owner)
+				if !held && owner.ChildRunID == "" {
+					held = localWorkSourceUnresolved(node, owner)
+				}
+				if !held && owner.ChildRunID != "" {
+					source, err := a.store.loadLocked(owner.ChildRunID)
+					held = err != nil || unresolvedWorkActions(&source)
+				}
+				if held {
 					return &ResourceBusyError{candidate.ID, node.Run.ID + "/" + owner.ID, key}
 				}
+				break
 			}
 		}
 	}

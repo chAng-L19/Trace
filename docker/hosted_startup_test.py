@@ -194,10 +194,13 @@ esac
             overlay = []
             if source:
                 source_path = Path(source).resolve()
-                for relative, destination in [("prompts/agent.md", "/opt/trace/prompts/agent.md"), ("examples/tsecbench-task.md", "/opt/trace/examples/tsecbench-task.md"), ("examples/tsecbench_api.py", "/opt/trace/examples/tsecbench_api.py"), ("docker/entrypoint.sh", "/opt/trace/docker/entrypoint.sh")]:
+                for relative in (
+                    "prompts/agent.md", "prompts/coordinator.md", "prompts/worker.md", "prompts/recon.md",
+                    "examples/tsecbench-task.md", "examples/tsecbench_api.py", "docker/entrypoint.sh",
+                ):
                     path = source_path / relative
                     assert path.is_file()
-                    overlay += ["--volume", str(path) + ":" + destination + ":ro"]
+                    overlay += ["--volume", str(path) + ":/opt/trace/" + relative + ":ro"]
                 assert binary and Path(binary).is_file()
                 overlay += ["--volume", str(Path(binary).resolve()) + ":/usr/local/bin/trace:ro"]
                 # Only overlays need to supply the new image metadata. Final

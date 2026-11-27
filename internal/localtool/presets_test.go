@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -70,10 +71,70 @@ func writeFixture(t *testing.T, name string, content []byte) string {
 	return path
 }
 
+func TestPresetsHTTPJSONSchema(t *testing.T) {
+	var shared string
+	for _, spec := range pythonPresets {
+		if spec.name != "http-request" && spec.name != "page-fetch" {
+			continue
+		}
+		if shared != "" && shared != spec.schema {
+			t.Fatal("HTTP tools must expose the same request schema")
+		}
+		shared = spec.schema
+		var schema struct {
+			Properties map[string]json.RawMessage `json:"properties"`
+			Not        struct {
+				Required []string `json:"required"`
+			} `json:"not"`
+		}
+		if err := json.Unmarshal([]byte(spec.schema), &schema); err != nil {
+			t.Fatal(err)
+		}
+		var payload struct {
+			Type    []string        `json:"type"`
+			Default json.RawMessage `json:"default"`
+		}
+		if err := json.Unmarshal(schema.Properties["json"], &payload); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(payload.Type, []string{"object", "array", "string", "number", "boolean", "null"}) || len(payload.Default) != 0 {
+			t.Fatalf("%s JSON types or omission default: %+v", spec.name, payload)
+		}
+		if !reflect.DeepEqual(schema.Not.Required, []string{"body", "json"}) || schema.Properties["method"] == nil || schema.Properties["body"] == nil {
+			t.Fatalf("%s request body contract: %+v", spec.name, schema)
+		}
+	}
+	if shared == "" {
+		t.Fatal("HTTP presets missing")
+	}
+}
+
 func TestPresetsNetworkTools(t *testing.T) {
 	tools := installedPresets(t)
+	type requestObservation struct {
+		Body         string   `json:"body"`
+		ContentTypes []string `json:"content_types"`
+		Method       string   `json:"method"`
+		Fixture      string   `json:"fixture"`
+	}
+	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
 		switch r.URL.Path {
+		case "/echo":
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Error(err)
+				http.Error(w, "read request body", http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(requestObservation{
+				Body: string(body), ContentTypes: r.Header.Values("Content-Type"),
+				Method: r.Method, Fixture: r.Header.Get("X-Fixture"),
+			}); err != nil {
+				t.Error(err)
+			}
 		case "/post":
 			if r.Method != "POST" || r.Header.Get("X-Fixture") != "present" {
 				w.WriteHeader(http.StatusBadRequest)
@@ -107,6 +168,111 @@ func TestPresetsNetworkTools(t *testing.T) {
 		form := forms[0].(map[string]any)
 		if form["action"] != server.URL+"/submit" || form["method"] != "POST" || len(form["fields"].([]any)) != 2 {
 			t.Fatalf("form: %+v", form)
+		}
+		for _, name := range []string{"http-request", "page-fetch"} {
+			t.Run(name, func(t *testing.T) {
+				observe := func(t *testing.T, args map[string]any) requestObservation {
+					t.Helper()
+					args["url"] = server.URL + "/echo"
+					before := requests.Load()
+					out := invokePreset(t, tools[name], args, false)
+					if out["status"] != float64(200) || requests.Load() != before+1 {
+						t.Fatalf("request count/status: count=%d before=%d output=%+v", requests.Load(), before, out)
+					}
+					field := "body"
+					if name == "page-fetch" {
+						field = "text"
+					}
+					var observed requestObservation
+					if err := json.Unmarshal([]byte(out[field].(string)), &observed); err != nil {
+						t.Fatalf("decode request observation: %v output=%+v", err, out)
+					}
+					if observed.Method != args["method"] {
+						t.Fatalf("method changed: %+v", observed)
+					}
+					return observed
+				}
+				t.Run("omitted", func(t *testing.T) {
+					observed := observe(t, map[string]any{"method": "GET"})
+					if observed.Body != "" || len(observed.ContentTypes) != 0 {
+						t.Fatalf("omitted json sent a payload or JSON Content-Type: %+v", observed)
+					}
+				})
+				for _, tc := range []struct {
+					name        string
+					payload     any
+					contentType string
+				}{
+					{"object", map[string]any{"text": "中文", "nested": []any{true, nil, 1.25}}, ""},
+					{"null", nil, ""},
+					{"array", []any{false, "中文", nil}, "application/vnd.fixture+json; charset=UTF-8"},
+					{"string", `{"stays":"a string"}`, ""},
+					{"number", 1.25, "application/json; charset=utf-8"},
+					{"zero", 0, ""},
+					{"false", false, ""},
+					{"empty-string", "", ""},
+				} {
+					t.Run(tc.name, func(t *testing.T) {
+						headers := map[string]string{"X-Fixture": "present"}
+						if tc.contentType != "" {
+							headers["content-type"] = tc.contentType
+						}
+						observed := observe(t, map[string]any{"method": "POST", "json": tc.payload, "headers": headers})
+						wantContentType := tc.contentType
+						if wantContentType == "" {
+							wantContentType = "application/json"
+						}
+						if !reflect.DeepEqual(observed.ContentTypes, []string{wantContentType}) || observed.Fixture != "present" {
+							t.Fatalf("JSON request headers: %+v", observed)
+						}
+						var got, want any
+						if err := json.Unmarshal([]byte(observed.Body), &got); err != nil {
+							t.Fatalf("invalid JSON on wire: %q: %v", observed.Body, err)
+						}
+						encoded, err := json.Marshal(tc.payload)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := json.Unmarshal(encoded, &want); err != nil {
+							t.Fatal(err)
+						}
+						if !reflect.DeepEqual(got, want) {
+							t.Fatalf("JSON value/type changed: got=%#v want=%#v wire=%q", got, want, observed.Body)
+						}
+					})
+				}
+				t.Run("raw-body", func(t *testing.T) {
+					const body = "{raw body}\r\n中文"
+					observed := observe(t, map[string]any{"method": "POST", "body": body, "headers": map[string]string{"Content-Type": "application/x-fixture"}})
+					if observed.Body != body || !reflect.DeepEqual(observed.ContentTypes, []string{"application/x-fixture"}) {
+						t.Fatalf("raw body/header changed: %+v", observed)
+					}
+				})
+				for _, tc := range []struct {
+					name    string
+					args    map[string]any
+					message string
+				}{
+					{"body-json", map[string]any{"body": "raw", "json": map[string]any{}}, "mutually exclusive"},
+					{"empty-body-null-json", map[string]any{"body": "", "json": nil}, "mutually exclusive"},
+					{"null-body-null-json", map[string]any{"body": nil, "json": nil}, "mutually exclusive"},
+					{"content-type", map[string]any{"json": nil, "headers": map[string]string{"cOnTeNt-TyPe": "text/plain"}}, "Content-Type"},
+					{"charset", map[string]any{"json": nil, "headers": map[string]string{"Content-Type": "application/json; charset=iso-8859-1"}}, "UTF-8"},
+					{"duplicate-charset", map[string]any{"json": nil, "headers": map[string]string{"Content-Type": "application/json; charset=utf-8; charset=iso-8859-1"}}, "single UTF-8"},
+					{"duplicate-content-type", map[string]any{"json": nil, "headers": map[string]string{"Content-Type": "application/json", "content-type": "application/json"}}, "single Content-Type"},
+					{"non-finite-number", map[string]any{"json": json.RawMessage("1e400")}, "Out of range float"},
+				} {
+					t.Run(tc.name, func(t *testing.T) {
+						tc.args["url"], tc.args["method"] = server.URL+"/echo", "POST"
+						before := requests.Load()
+						out := invokePreset(t, tools[name], tc.args, true)
+						failure := out["error"].(map[string]any)
+						if failure["type"] != "ValueError" || !strings.Contains(failure["message"].(string), tc.message) || requests.Load() != before {
+							t.Fatalf("invalid request reached server or wrong error: before=%d after=%d output=%+v", before, requests.Load(), out)
+						}
+					})
+				}
+			})
 		}
 	})
 	out := invokePreset(t, tools["dns-resolve"], map[string]any{"host": "127.0.0.1"}, false)

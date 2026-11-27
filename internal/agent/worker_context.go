@@ -10,6 +10,7 @@ import (
 // WorkerContext records automatic context delivery, not a tool-access sandbox.
 // References stay in their source runs; they are never new child evidence.
 type WorkerContext struct {
+	WorkItems          []WorkItem                `json:"work_items,omitempty"`
 	ExecutionRole      string                    `json:"execution_role,omitempty"`
 	KnownInputs        *ReconContext             `json:"known_inputs,omitempty"`
 	CompletionCriteria string                    `json:"completion_criteria,omitempty"`
@@ -99,6 +100,23 @@ func (a *Agent) workerContextSource(parent *Snapshot, runID string) (*Snapshot, 
 	return nil, fmt.Errorf("source run is not a registered child")
 }
 
+// Each projection loads a source once, including errors; the next request revalidates it.
+func (a *Agent) workerContextSources(parent *Snapshot) func(string) (*Snapshot, error) {
+	sources := map[string]*Snapshot{parent.Run.ID: parent}
+	sourceErrors := map[string]error{}
+	return func(runID string) (*Snapshot, error) {
+		if runID == "" {
+			runID = parent.Run.ID
+		}
+		if s, ok := sources[runID]; ok {
+			return s, sourceErrors[runID]
+		}
+		s, err := a.workerContextSource(parent, runID)
+		sources[runID], sourceErrors[runID] = s, err
+		return s, err
+	}
+}
+
 func contextEvidence(source *Snapshot, ref *WorkerContextEvidence) {
 	ref.Output, ref.Artifacts = "", nil
 	ref.Scope, ref.Applicability = nil, "unavailable"
@@ -159,12 +177,14 @@ func (a *Agent) newWorkerContext(parent *Snapshot, task PlanTask) (*WorkerContex
 		c.EvidenceScope = &copy
 	}
 	c.ResourceKeys, c.ExpectedArtifacts, c.Requirements = task.ResourceKeys, task.ExpectedArtifacts, task.Requirements
+	c.WorkItems = task.WorkItems
 	c.RequiredToolIDs, c.RequiredAssetIDs = task.RequiredToolIDs, task.RequiredAssetIDs
+	load := a.workerContextSources(parent)
 	for _, sourceID := range task.HandoffTaskIDs {
 		ref := WorkerContextHandoff{SourceTaskID: sourceID, Status: "unavailable"}
 		if sourceTask, err := planTask(parent, sourceID); err == nil && sourceTask.ChildRunID != "" {
 			ref.SourceRunID, ref.WorkerID = sourceTask.ChildRunID, sourceTask.WorkerID
-			if source, err := a.workerContextSource(parent, sourceTask.ChildRunID); err == nil {
+			if source, err := load(sourceTask.ChildRunID); err == nil {
 				ref = projectCheckpoint(source, sourceID, sourceTask.WorkerID, "")
 			} else {
 				if !os.IsNotExist(err) {
@@ -174,19 +194,6 @@ func (a *Agent) newWorkerContext(parent *Snapshot, task PlanTask) (*WorkerContex
 			}
 		}
 		c.Handoffs = append(c.Handoffs, ref)
-	}
-	sources := map[string]*Snapshot{parent.Run.ID: parent}
-	sourceErrors := map[string]error{}
-	load := func(runID string) (*Snapshot, error) {
-		if runID == "" {
-			runID = parent.Run.ID
-		}
-		if s, ok := sources[runID]; ok {
-			return s, sourceErrors[runID]
-		}
-		s, err := a.workerContextSource(parent, runID)
-		sources[runID], sourceErrors[runID] = s, err
-		return s, err
 	}
 	seen := map[string]bool{}
 	addEvidence := func(runID string, ids []string) {
@@ -265,13 +272,14 @@ func (a *Agent) workerContextProjection(s *Snapshot) string {
 		}
 	}
 	manifestRunValid := c.RunID == "" || c.RunID == s.Run.ID
-	if task, taskErr := planTask(&parent, c.TaskID); taskErr != nil || !sameEvidenceScope(task.EvidenceScope, c.EvidenceScope) || task.ExecutionRole != c.ExecutionRole {
+	if task, taskErr := planTask(&parent, c.TaskID); taskErr != nil || !sameEvidenceScope(task.EvidenceScope, c.EvidenceScope) || task.ExecutionRole != c.ExecutionRole || valueHash(task.WorkItems) != valueHash(c.WorkItems) {
 		manifestRunValid = false
 	}
 	c.RunID = s.Run.ID
 	parentValid := err == nil && !parent.Run.Deleted && !s.Run.Deleted && parent.Run.ID == s.Run.ParentRunID && c.TaskID == s.Run.ParentTaskID && registered && manifestRunValid && handoffRegistered(&parent, WorkerContextHandoff{SourceRunID: s.Run.ID, SourceTaskID: c.TaskID, WorkerID: c.WorkerID})
 	if !parentValid {
 		c.EstimatedSeconds, c.ExpectedProgress = 0, ""
+		c.WorkItems = nil
 		c.MethodCandidates = nil
 		c.Issues = append(c.Issues, "parent context source is missing or ancestry changed")
 		for i := range c.Handoffs {
@@ -280,6 +288,7 @@ func (a *Agent) workerContextProjection(s *Snapshot) string {
 		c.Continuation = nil
 		parent = Snapshot{}
 	}
+	load := a.workerContextSources(&parent)
 	c.KnownInputs = a.reprojectKnownInputs(&parent, c.KnownInputs)
 	if registered && parent.Run.ID == s.Run.ParentRunID && c.TaskID == s.Run.ParentTaskID {
 		if checkpointData(s) != nil {
@@ -296,7 +305,7 @@ func (a *Agent) workerContextProjection(s *Snapshot) string {
 			ref.Status, ref.Error, ref.Checkpoint, ref.Evidence = "unavailable", "handoff task/worker registration changed", nil, nil
 			continue
 		}
-		if source, err := a.workerContextSource(&parent, ref.SourceRunID); err != nil || source.Run.ParentTaskID != ref.SourceTaskID {
+		if source, err := load(ref.SourceRunID); err != nil || source.Run.ParentTaskID != ref.SourceTaskID {
 			ref.Status, ref.Error, ref.Checkpoint, ref.Evidence = "unavailable", "handoff source missing or ancestry changed", nil, nil
 		} else {
 			*ref = reprojectCheckpoint(source, *ref)
@@ -311,7 +320,7 @@ func (a *Agent) workerContextProjection(s *Snapshot) string {
 			entry.Status, entry.Asset = "changed", nil
 		} else {
 			entry.Asset = asset
-			if _, err := a.workerContextSource(&parent, asset.SourceRunID); err != nil {
+			if _, err := load(asset.SourceRunID); err != nil {
 				entry.Status, entry.Asset = "unavailable", nil
 			}
 		}
@@ -332,7 +341,7 @@ func (a *Agent) workerContextProjection(s *Snapshot) string {
 		if ref.ContentHash == "" {
 			continue // A missing dispatch source is not silently replaced on resume.
 		}
-		if source, err := a.workerContextSource(&parent, ref.SourceRunID); err != nil {
+		if source, err := load(ref.SourceRunID); err != nil {
 			ref.Status, ref.Error, ref.Output, ref.Artifacts = "unavailable", err.Error(), "", nil
 		} else {
 			contextEvidence(source, ref)

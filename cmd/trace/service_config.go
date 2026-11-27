@@ -65,14 +65,20 @@ func cliContextOverride(result web.ConfigLoadResult) bool {
 }
 
 // Existing runs retain their persisted prompt even when the configured prompt
-// file has since moved. New runs and the prompt command load the shared path.
+// file has since moved. New descendants load the shared path at creation.
 func configuredRuntimeAgent(ctx context.Context, store *agent.Store) (*agent.Agent, error) {
 	result, err := cliServiceConfig()
 	if err != nil {
 		return nil, err
 	}
+	promptPath := result.Config.PromptPath
 	result.Config.PromptPath = ""
-	return buildConfiguredAgent(ctx, store, result.Config, true, cliContextOverride(result))
+	runner, err := buildConfiguredAgent(ctx, store, result.Config, true, cliContextOverride(result))
+	if err != nil {
+		return nil, err
+	}
+	runner.UsePromptFileForNewRuns(promptPath)
+	return runner, nil
 }
 
 // Discovery uses the shared saved connection settings and registry, without

@@ -515,6 +515,7 @@ func continueForEvidence(s *Snapshot) bool {
 		reasons = append(reasons, "local process cleanup remains unresolved: "+err.Error())
 	}
 	reasons = append(reasons, rootContractGaps(s)...)
+	reasons = append(reasons, workProgressGaps(s)...)
 	if s.Run.RequireVerifiedCompletion && s.Result.Status != "success" {
 		reasons = append(reasons, "autonomous task has no verified final result: "+s.Result.TerminalReason)
 	}

@@ -4,7 +4,7 @@
 !runtime/
 !runtime/**
 !prompts/
-!prompts/agent.md
+!prompts/*.md
 !.trace/
 !.trace/skills/
 !.trace/skills/**

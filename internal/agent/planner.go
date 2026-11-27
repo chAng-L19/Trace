@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -11,6 +10,10 @@ import (
 )
 
 type PlanTask struct {
+	WorkItems []WorkItem      `json:"work_items,omitempty"`
+	Continues []WorkReference `json:"continues,omitempty"`
+	// Remaining is source-bound, server-owned work returned by this task.
+	Remaining []RemainingWork `json:"remaining,omitempty"`
 	// DispatchPhase distinguishes a reserved child from an admitted executor.
 	DispatchPhase string `json:"dispatch_phase,omitempty"`
 	// LocalExecution is server-owned: one task may reuse its live child executor.
@@ -55,10 +58,11 @@ type PlanTask struct {
 	Error              string                    `json:"error,omitempty"`
 }
 type PlanState struct {
-	Capacity        int        `json:"capacity"`
-	ReasonedThrough int        `json:"reasoned_through"`
-	Tasks           []PlanTask `json:"tasks"`
-	Frontier        []string   `json:"frontier"`
+	WorkProgress    []WorkProgress `json:"work_progress,omitempty"`
+	Capacity        int            `json:"capacity"`
+	ReasonedThrough int            `json:"reasoned_through"`
+	Tasks           []PlanTask     `json:"tasks"`
+	Frontier        []string       `json:"frontier"`
 }
 
 var errWorkerCapacity = errors.New("worker capacity reached")
@@ -144,6 +148,9 @@ func (a *Agent) updatePlan(id string, tasks []PlanTask, mode string, capacity in
 			}
 		}
 		tasks = append([]PlanTask(nil), tasks...)
+		if err := validatePlanWorkerCeiling(s, s.Plan.Capacity); err != nil {
+			return err
+		}
 		switch mode {
 		case "", "replace":
 		case "append", "patch":
@@ -203,6 +210,17 @@ func (a *Agent) updatePlan(id string, tasks []PlanTask, mode string, capacity in
 			if t.EstimatedSeconds < 0 || t.EstimatedSeconds > maxBudgetSeconds {
 				return fmt.Errorf("task %s estimated_seconds must be 0..%d", t.ID, maxBudgetSeconds)
 			}
+			if err := validateTaskWork(t); err != nil {
+				return err
+			}
+			if previous, exists := old[t.ID]; exists {
+				if len(previous.WorkItems) > 0 && valueHash(previous.WorkItems) != valueHash(t.WorkItems) {
+					return fmt.Errorf("declared finite work is immutable: %s", t.ID)
+				}
+				t.Remaining = previous.Remaining
+			} else if len(t.Remaining) > 0 {
+				return fmt.Errorf("task remaining work is server-owned")
+			}
 			if err := ValidateRequirements(t.Requirements); err != nil {
 				return fmt.Errorf("task %s requirements: %w", t.ID, err)
 			}
@@ -218,6 +236,9 @@ func (a *Agent) updatePlan(id string, tasks []PlanTask, mode string, capacity in
 						t.RequiredImageInput = true
 					}
 				}
+			}
+			if t.ID == rootWorkTaskID {
+				return fmt.Errorf("task id %s is reserved for root work references", rootWorkTaskID)
 			}
 			if t.ID == "" || strings.TrimSpace(t.Goal) == "" {
 				return fmt.Errorf("task id and goal required")
@@ -247,7 +268,7 @@ func (a *Agent) updatePlan(id string, tasks []PlanTask, mode string, capacity in
 				if strings.Join(previous.AssetIDs, "\x00") != strings.Join(t.AssetIDs, "\x00") {
 					return fmt.Errorf("started task assets immutable: %s", t.ID)
 				}
-				if previous.CompletionCriteria != t.CompletionCriteria || !sameTaskSchedulingContract(previous, t) || !sameStageModelContract(previous, t) {
+				if previous.CompletionCriteria != t.CompletionCriteria || !sameTaskWork(previous, t) || !sameTaskSchedulingContract(previous, t) || !sameStageModelContract(previous, t) {
 					return fmt.Errorf("started task scheduling contract immutable: %s", previous.ID)
 				}
 				if previous.Stage != t.Stage || !sameEvidenceScope(previous.EvidenceScope, t.EvidenceScope) || previous.Goal != t.Goal || strings.Join(previous.Dependencies, "\x00") != strings.Join(t.Dependencies, "\x00") || strings.Join(previous.InputAttachmentIDs, "\x00") != strings.Join(t.InputAttachmentIDs, "\x00") || previous.SuccessContains != t.SuccessContains || !sameTaskRequirements(previous.Requirements, t.Requirements) {
@@ -277,6 +298,21 @@ func (a *Agent) updatePlan(id string, tasks []PlanTask, mode string, capacity in
 			}
 			tasks[i] = t
 			byID[t.ID] = t
+		}
+		if err := validateRootWorkLinks(s, tasks); err != nil {
+			return err
+		}
+		for _, task := range tasks {
+			previous := old[task.ID]
+			for _, ref := range task.Continues {
+				existed := false
+				for _, oldRef := range previous.Continues {
+					existed = existed || oldRef == ref
+				}
+				if !existed && workProgressResolved(s.Plan, ref, true) {
+					return fmt.Errorf("work %s/%s is already resolved", ref.TaskID, ref.ItemID)
+				}
+			}
 		}
 		for _, task := range tasks {
 			if len(task.HandoffTaskIDs) > 4 {
@@ -346,7 +382,7 @@ func (a *Agent) updatePlan(id string, tasks []PlanTask, mode string, capacity in
 			}
 		}
 		for _, t := range s.Plan.Tasks {
-			if taskStarted(s, t) {
+			if taskStarted(s, t) || len(t.WorkItems) > 0 || len(t.Remaining) > 0 {
 				if _, ok := byID[t.ID]; !ok {
 					return fmt.Errorf("cannot remove started task %s", t.ID)
 				}
@@ -354,7 +390,7 @@ func (a *Agent) updatePlan(id string, tasks []PlanTask, mode string, capacity in
 		}
 		s.Plan.Tasks = tasks
 		if s.Plan.Capacity == 0 && (!modelCall || len(tasks) > 0) {
-			s.Plan.Capacity = 5
+			s.Plan.Capacity = defaultWorkerCapacity(s)
 		}
 		// Updating a plan does not acknowledge observations. Only a successful
 		// model request's archived PlannerThrough consumes its exact fact batch.
@@ -458,6 +494,9 @@ func (a *Agent) claimTaskWithChild(ctx context.Context, id, taskID, workerID str
 				if err := a.checkWorkerCapacityLocked(s, 1); err != nil {
 					return err
 				}
+			}
+			if err := a.checkContinuationsLocked(s, *t); err != nil {
+				return err
 			}
 			if err := a.taskResourcesLocked(s, *t); err != nil {
 				return err
@@ -597,131 +636,6 @@ func (a *Agent) CompleteTask(id, taskID, workerID, status string, evidenceIDs []
 	})
 }
 
-// PlannerContext feeds newly observed facts back into the same model loop.
-// The model reasons with plan and explores with worker_dispatch; the durable
-// task frontier, rather than model prose, controls which tasks may execute.
-func (a *Agent) PlannerContext(id string) (string, error) {
-	text, _, err := a.plannerContextAt(id)
-	return text, err
-}
-
-func (a *Agent) plannerContextAt(id string) (string, int, error) {
-	s, err := a.store.Load(id)
-	if err != nil {
-		return "", 0, err
-	}
-	text, through := plannerContextFrom(&s)
-	return text, through, nil
-}
-
-func plannerContextFrom(s *Snapshot) (string, int) {
-	if len(s.Plan.Tasks) == 0 && len(s.Assets) == 0 && s.Run.Responsibility != ResponsibilityCoordinator {
-		return "", 0
-	}
-	facts := []Event{}
-	through := s.Plan.ReasonedThrough
-	// Facts already supplied to a completed model request remain in its archive;
-	// do not repeat them on every turn merely because the plan was unchanged.
-	completedRequests := map[string]bool{}
-	for _, response := range s.Responses {
-		if response.Error == "" {
-			completedRequests[response.RequestID] = true
-		}
-	}
-	for _, request := range s.Requests {
-		if completedRequests[request.ID] {
-			through = max(through, request.PlannerThrough)
-		}
-	}
-	for _, event := range s.Events {
-		if event.Sequence <= through {
-			continue
-		}
-		switch event.Type {
-		case "tool_result", "asset_added", "asset_updated", "relation_added", "worker_finished", "verification_invalidated", "task_retry_requested", "task_disposed", "task_blocked_capability", "task_capability_restored", "budget_checkpoint_requested":
-			facts = append(facts, event)
-		}
-	}
-	observedThrough := s.Run.EventSeq
-	if len(facts) > 20 {
-		facts = facts[:20]
-		observedThrough = facts[len(facts)-1].Sequence
-	}
-	data, _ := json.Marshal(map[string]any{"plan": compactPlan(s.Plan), "coverage": Coverage(*s), "new_facts": facts, "scheduling_window": schedulingWindow(s)})
-	role := "execute simple work directly; plan only near-term work."
-	if s.Run.Responsibility == "" && s.Run.ParentRunID == "" && len(s.Workers) > 0 {
-		role = "Coordinate delegated work: define task contracts and resource_keys, dispatch or message task owners, review outcomes and cleanup, and produce the final report. Delegate investigation and execution; do not repeat work owned by an active worker or create a separate queue."
-	}
-	if s.Run.Responsibility == ResponsibilityCoordinator {
-		role = "Coordinate delegated work: define task contracts and resource_keys, dispatch or message task owners, review outcomes and cleanup, and produce the final report. Delegate investigation and execution from the first turn, including simple tasks, to at least one Worker. Read existing receipts and ledgers for acceptance and correction. If dispatch fails, report the reason and coordinate recovery; never fall back to coordinator execution or create a separate queue."
-	}
-	return "Planner observations (data): " + role + " This compact view includes active/next tasks and their dependency contracts; use plan({}) for all tasks. Dispatch ready independent work or worker_wait for new outcomes. Failed/cancelled work needs explicit task_dispose (blocked/abandoned/superseded) or a valid retry/resume; disposition is never a successful dependency. Replan pending dependencies explicitly to a replacement with the same goal and preserved acceptance requirements. Predicates and cleanup still require verification.\n" + string(data), observedThrough
-}
-
-// Keep the next capacity-sized frontier and its direct dependency contracts.
-// The complete DAG remains in Store and is available through explicit plan({}).
-func compactPlan(p PlanState) map[string]any {
-	capacity := p.Capacity
-	if capacity == 0 {
-		capacity = 5
-	}
-	counts := map[string]int{}
-	selected := map[string]bool{}
-	for _, id := range p.Frontier[:min(len(p.Frontier), capacity)] {
-		selected[id] = true
-	}
-	for _, task := range p.Tasks {
-		counts[task.Status]++
-		if task.Status == "running" || task.Status == "paused" || task.Status == "uncertain" {
-			selected[task.ID] = true
-		}
-	}
-	// Recent settled failures remain visible without replaying every historical
-	// stage in every request; the complete DAG is explicitly readable.
-	historyShown := 0
-	for i := len(p.Tasks) - 1; i >= 0 && historyShown < workerViewLimit; i-- {
-		task := p.Tasks[i]
-		if task.Status == "failed" || task.Status == "cancelled" || taskDisposed(task) {
-			if !selected[task.ID] {
-				selected[task.ID] = true
-				historyShown++
-			}
-		}
-	}
-	dependencies := map[string]bool{}
-	for _, task := range p.Tasks {
-		if selected[task.ID] {
-			for _, id := range task.Dependencies {
-				dependencies[id] = true
-			}
-		}
-	}
-	tasks := []PlanTask{}
-	for _, task := range p.Tasks {
-		if selected[task.ID] || dependencies[task.ID] {
-			task.LeaseUntil = time.Time{}
-			tasks = append(tasks, task)
-		}
-	}
-	return map[string]any{"capacity": capacity, "total": len(p.Tasks), "counts": counts, "frontier": p.Frontier[:min(len(p.Frontier), capacity)], "ready_total": len(p.Frontier), "tasks": tasks, "history_tool": "worker_history"}
-}
-
-func compactWorkerState(s Snapshot) map[string]any {
-	messages := []WorkerMessage{}
-	pendingTotal := 0
-	for _, m := range s.WorkerMessages {
-		if !m.Delivered {
-			pendingTotal++
-			if len(messages) < workerViewLimit {
-				m.Content = excerpt(m.Content, 1024)
-				messages = append(messages, m)
-			}
-		}
-	}
-	helps, openTotal, resolvedTotal := compactWorkerHelps(s.WorkerMessages)
-	return map[string]any{"workers": currentWorkerView(s.Workers), "worker_total": len(s.Workers), "messages": messages, "pending_message_total": pendingTotal, "history_tool": "worker_history", "help_requests": helps, "open_help_total": openTotal, "resolved_help_total": resolvedTotal, "plan": compactPlan(s.Plan)}
-}
-
 func (a *Agent) SetPlanCapacity(id string, capacity int) (Snapshot, error) {
 	return a.store.Update(id, func(s *Snapshot) error { return setPlanCapacity(s, capacity) })
 }
@@ -732,6 +646,9 @@ func setPlanCapacity(s *Snapshot, capacity int) error {
 	}
 	if s.Run.ParentTaskID != "" {
 		return fmt.Errorf("worker capacity belongs to the root conversation")
+	}
+	if err := validatePlanWorkerCeiling(s, capacity); err != nil {
+		return err
 	}
 	s.Plan.Capacity = capacity
 	addEvent(s, "worker_capacity_updated", "根会话整树 Worker 并发容量已更新", map[string]int{"capacity": capacity})
@@ -803,7 +720,7 @@ func dispatchPrerequisiteWait(err error) bool {
 		return dispatchPrerequisiteWait(wrapped.Unwrap())
 	}
 	switch err.(type) {
-	case *TaskBlockedError, *ResourceBusyError, *HandoffNotReadyError, *TaskWindowError, *CheckpointWindowError:
+	case *TaskBlockedError, *ResourceBusyError, *HandoffNotReadyError, *TaskWindowError, *CheckpointWindowError, *WorkAlreadyResolvedError:
 		return true
 	}
 	return false

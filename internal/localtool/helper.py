@@ -193,12 +193,37 @@ def http_request(args):
         return CURL_WRITEFUNC_ERROR if len(content) > limit else len(chunk)
 
     body = args.get("body")
+    headers = args.get("headers", {})
+    if "json" in args:
+        if "body" in args:
+            raise ValueError("json and body are mutually exclusive")
+        headers = dict(headers)
+        content_types = [value for name, value in headers.items() if name.lower() == "content-type"]
+        if len(content_types) > 1:
+            raise ValueError("json requires a single Content-Type header")
+        if content_types:
+            content_type = Message()
+            content_type["content-type"] = content_types[0]
+            media_type = content_type.get_content_type()
+            if media_type != "application/json" and not (
+                    media_type.startswith("application/") and media_type.endswith("+json")):
+                raise ValueError("json requires Content-Type application/json or application/*+json")
+            if len([name for name, _ in content_type.get_params()[1:] if name == "charset"]) > 1:
+                raise ValueError("json requires a single UTF-8 Content-Type charset")
+            if content_type.get_content_charset() not in (None, "utf-8", "utf8"):
+                raise ValueError("json requires a UTF-8 Content-Type charset")
+        else:
+            headers["Content-Type"] = "application/json"
+        # curl_cffi's json=None means omitted; encode explicitly to send JSON null.
+        body = json.dumps(args["json"], allow_nan=False).encode("utf-8")
+    elif body is not None:
+        body = body.encode("utf-8")
     method = args.get("method", "GET").upper()
     with requests.Session(retry=0) as session:
         try:
             response = session.request(
-                method, args["url"], data=body.encode("utf-8") if body is not None else None,
-                headers=args.get("headers", {}), timeout=args.get("timeout", 10),
+                method, args["url"], data=body,
+                headers=headers, timeout=args.get("timeout", 10),
                 verify=verify_tls, impersonate=args.get("impersonate", "chrome"), content_callback=receive,
                 allow_redirects=method in ("GET", "HEAD"))
         except RequestException as exc:

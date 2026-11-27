@@ -543,7 +543,11 @@ func (a *Agent) preparePiRequest(ctx context.Context, id string) (ModelRequest, 
 		plannerContext, plannerThrough := plannerContextFrom(s)
 		catalog := a.skillCatalog()
 		a.prepareRecon(s)
-		runtimeObservations := plannerContext + verificationContext(s) + contextLedgerContext(s, inherited) + a.stageModelContext() + a.reconContext(s)
+		budgetObservation, err := workerBudgetObservation(ctx, s.Run, workerContext, now)
+		if err != nil {
+			return err
+		}
+		runtimeObservations := plannerContext + verificationContext(s) + contextLedgerContext(s, inherited) + a.stageModelContext() + a.reconContext(s) + budgetObservation
 		if err := a.prepareInputMessages(s); err != nil {
 			s.Run.Status, s.Run.PauseReason, s.Run.Error = StatusFailed, "", err.Error()
 			addEvent(s, "attachment_delivery_failed", "输入附件校验失败；运行结束并保留原始记录", map[string]string{"error": err.Error()})

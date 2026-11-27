@@ -156,6 +156,9 @@ func sameTaskRequirements(a, b []VerificationRequirement) bool {
 }
 
 func taskContractCovers(replacement, original PlanTask) bool {
+	if !sameTaskWork(replacement, original) {
+		return false
+	}
 	if !slices.Equal(replacement.ContextEvidenceIDs, original.ContextEvidenceIDs) {
 		return false
 	}

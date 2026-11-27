@@ -11,9 +11,10 @@ import (
 )
 
 type WorkerCapacityState struct {
-	RootRunID string `json:"root_run_id"`
-	Active    int    `json:"active"`
-	Capacity  int    `json:"capacity"`
+	RootRunID     string         `json:"root_run_id"`
+	Active        int            `json:"active"`
+	Capacity      int            `json:"capacity"`
+	WorkerCeiling *WorkerCeiling `json:"worker_ceiling,omitempty"`
 }
 
 type WorkerCapacityError struct {
@@ -92,8 +93,14 @@ func (a *Agent) workerCapacityLocked(current *Snapshot) (WorkerCapacityState, er
 
 func workerCapacityState(root *Snapshot) (WorkerCapacityState, error) {
 	state := WorkerCapacityState{RootRunID: root.Run.ID, Capacity: root.Plan.Capacity}
+	if err := validatePlanWorkerCeiling(root, state.Capacity); err != nil {
+		return state, err
+	}
+	if root.Run.ResourceLimits != nil {
+		state.WorkerCeiling = root.Run.ResourceLimits.WorkerCeiling
+	}
 	if state.Capacity == 0 {
-		state.Capacity = 5
+		state.Capacity = defaultWorkerCapacity(root)
 	}
 	if state.Capacity < 1 || state.Capacity > 32 {
 		return state, fmt.Errorf("root worker capacity must be 1..32")

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {explorationLayout,explorationRoutes,explorationChain,explorationGraph,selectExplorationChain,explorationControl,mountExploration} from './static/exploration.js';
+import {explorationLayout,explorationRoutes,explorationGeometry,explorationData,explorationProjection,explorationChain,explorationGraph,selectExplorationChain,explorationControl,mountExploration} from './static/exploration.js';
 import {explorationPreview} from './static/graphs.js';
 import {mountGraphPan} from './static/history-projection.js';
 
@@ -174,4 +174,39 @@ const zoom={};sizedRoot.querySelector=selector=>selector==='.graph-shell'||selec
 mountExploration();
 assert.match(explorationGraph({snap:{...snap,run:{...snap.run,id:'full-size-fixture'}}}),/style="width:640px;height:520px"/);
 delete globalThis.document;delete globalThis.ResizeObserver;
+
+{
+for(const preview of [false,true]){
+  const original=explorationGeometry('geometry-fixture',nodes,edges,preview),saved=JSON.stringify([...original.positions]);
+  const refreshed=explorationGeometry('geometry-fixture',[...nodes].reverse().map(n=>({...n,title:'状态刷新',state:'unknown'})),[...edges].reverse(),preview);
+  assert.equal(refreshed.positions,original.positions,'state and registration order updates reuse the same cached layout');
+  assert.equal(JSON.stringify([...refreshed.positions]),saved);
+  assert.deepEqual(refreshed.routes,[...original.routes].reverse(),'route identity follows its relation when input order changes');
+  const changed=explorationGeometry('geometry-fixture',[...nodes,{id:'new'}],[...edges,{from:'y',to:'new',relation:'next'}],preview);
+  assert.notEqual(changed.positions,original.positions,'a topology change invalidates the layout');
+  assert.ok(changed.positions.has('new'));
+  const unrelated=explorationGeometry('other-geometry-fixture',nodes,edges,preview);
+  assert.notEqual(unrelated.positions,original.positions,'Run geometry caches stay separate');
+}
+const fullCache=explorationGeometry('active-cache-run',nodes,edges),previewCache=explorationGeometry('active-cache-run',nodes,edges,true);
+assert.notEqual(fullCache.positions,previewCache.positions,'full and preview keep separate geometry for one active Run');
+assert.equal(explorationGeometry('active-cache-run',nodes,edges).positions,fullCache.positions,'rendering preview does not evict this Run full layout');
+for(const run of ['next-cache-run','last-cache-run'])explorationGeometry(run,nodes,edges);
+const revisited=explorationGeometry('active-cache-run',nodes,edges);
+assert.notEqual(revisited.positions,fullCache.positions,'switching Runs releases old geometry instead of keeping an unbounded Run cache');
+assert.deepEqual([...revisited.positions],[...fullCache.positions],'revisited topology still has deterministic positions');
+globalThis.document={querySelectorAll:()=>[]};
+mountExploration();
+delete globalThis.document;
+assert.notEqual(explorationGeometry('active-cache-run',nodes,edges).positions,revisited.positions,'unmounting the last exploration graph clears retained geometry');
+const receipt={source_run_id:'child',task_id:'one',worker_id:'worker',visit:1,source_hash:'ready',current:true,summary:'准备交付'};
+const first={run:{id:'receipt-geometry',status:'running'},plan:{tasks:[{id:'one',goal:'阶段一',status:'running'}]},child_reports:[receipt]};
+const after={...first,run:{...first.run,status:'completed'},plan:{tasks:[{...first.plan.tasks[0],status:'completed'}]},child_reports:[receipt,{...receipt,source_hash:'final',cleanup_status:'completed',summary:'完成回执'}]};
+const a=explorationProjection(explorationData(first)),b=explorationProjection(explorationData(after));
+const before=explorationGeometry(first.run.id,a.nodes,a.edges),settled=explorationGeometry(first.run.id,b.nodes,b.edges);
+assert.equal(settled.positions,before.positions,'report-ready to cleanup-complete revision preserves topology and layout');
+const previews=[explorationPreview(first),explorationPreview(after)].map(html=>[...html.matchAll(/data-id="([^"]+)"[^]*?<g transform="translate\(([^)]+)\)"/g)].map(m=>[m[1],m[2]]));
+assert.ok(previews[0].length>=3,'compare actual rendered goal, task and receipt positions');
+assert.deepEqual(previews[1],previews[0],'preview positions survive the same source revision');
+}
 console.log('Exploration interactions: stable crossing reduction, cycles, branch selection, source links, clear, resize/pan and retained dimensions passed.');

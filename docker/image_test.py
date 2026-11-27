@@ -66,7 +66,11 @@ def snapshot(image):
     code = r'''
 import json, os, stat, subprocess
 excluded = {"/proc", "/sys", "/dev", "/.dockerenv", "/etc/hosts", "/etc/hostname", "/etc/resolv.conf"}
-updated = {"/usr/local/bin/trace", "/opt/trace/prompts/agent.md", "/opt/trace/examples/tsecbench-task.md", "/opt/trace/docker/entrypoint.sh"}
+updated = {
+    "/usr/local/bin/trace", "/opt/trace/prompts/agent.md", "/opt/trace/prompts/coordinator.md",
+    "/opt/trace/prompts/worker.md", "/opt/trace/prompts/recon.md",
+    "/opt/trace/examples/tsecbench-task.md", "/opt/trace/docker/entrypoint.sh",
+}
 files = {}
 for directory, names, entries in os.walk("/"):
     names[:] = [name for name in names if os.path.join(directory, name) not in excluded]

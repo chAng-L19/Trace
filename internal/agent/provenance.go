@@ -69,6 +69,7 @@ func (store *Store) refreshDerivedLocked(s *Snapshot, visiting map[string]bool) 
 func (store *Store) verifyDerivedLocked(s *Snapshot, visiting map[string]bool, mode sourceReadMode) bool {
 	s.delegatedAcceptance = nil
 	previousFrontier := s.Plan.Frontier
+	previousWork := valueHash(s.Plan.WorkProgress)
 	previousVerification := valueHash(struct {
 		Checks   []VerificationCheck
 		Findings []Finding
@@ -168,6 +169,18 @@ func (store *Store) verifyDerivedLocked(s *Snapshot, visiting map[string]bool, m
 				again = true
 				break
 			}
+			for _, ref := range task.Continues {
+				sourceTask, err := continuationSourceTask(s, ref)
+				if err != nil || !continuationSourceReady(s, sourceTask, sourceFor(sourceTask.ChildRunID), task.ID) {
+					if task.Status != "uncertain" {
+						task.Status = "uncertain"
+						task.Error = "continuation source identity or Action settlement changed"
+						invalidate("task", task.ID, ref.TaskID, task.Error)
+						again = true
+					}
+					break
+				}
+			}
 		}
 	}
 	for i := range s.Assets {
@@ -199,6 +212,20 @@ func (store *Store) verifyDerivedLocked(s *Snapshot, visiting map[string]bool, m
 		s.delegatedDescendantsRetired = delegatedDescendantsRetired(s, sourceFor)
 	}
 	s.delegatedAcceptance = collectDelegatedAcceptance(s, sourceFor)
+	modern := s.Run.Responsibility == ResponsibilityCoordinator || s.Run.Responsibility == ResponsibilityWorker
+	for i := range s.Plan.Tasks {
+		task := &s.Plan.Tasks[i]
+		if task.ChildRunID == "" {
+			continue
+		}
+		if taskDisposed(*task) && !modern && len(task.WorkItems) == 0 && len(task.Remaining) == 0 && len(task.Continues) == 0 {
+			continue
+		}
+		if mergeRemainingWork(task, sourceFor(task.ChildRunID)) {
+			changed = true
+		}
+	}
+	refreshWorkProgress(s, sourceFor)
 	refreshResult(s)
 	for i, e := range s.Evidence {
 		if statuses[i] == e.Verification {
@@ -209,7 +236,7 @@ func (store *Store) verifyDerivedLocked(s *Snapshot, visiting map[string]bool, m
 			invalidate("evidence", e.ID, s.Run.ID, "execution ledger or artifact changed")
 		}
 	}
-	return changed || !slices.Equal(previousFrontier, s.Plan.Frontier) || !reflect.DeepEqual(previous, s.Result) || previousVerification != valueHash(struct {
+	return changed || previousWork != valueHash(s.Plan.WorkProgress) || !slices.Equal(previousFrontier, s.Plan.Frontier) || !reflect.DeepEqual(previous, s.Result) || previousVerification != valueHash(struct {
 		Checks   []VerificationCheck
 		Findings []Finding
 	}{s.Checks, s.Findings})

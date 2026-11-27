@@ -308,6 +308,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		SuccessContains    *string                         `json:"success_contains,omitempty"`
 		Budget             *agent.Budget                   `json:"budget,omitempty"`
 		TreeBudget         *agent.TreeBudget               `json:"tree_budget,omitempty"`
+		ResourceLimits     *agent.ResourceLimits           `json:"resource_limits,omitempty"`
 		Title              string                          `json:"title,omitempty"`
 	}
 	if !decode(w, r, &in) {
@@ -328,7 +329,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		respond(w, nil, err)
 		return
 	}
-	snap, err := s.a.CreateConfigured(in.Goal, agent.RunConfiguration{CompletionCriteria: in.CompletionCriteria, Requirements: in.Requirements, SuccessContains: in.SuccessContains, Budget: in.Budget, TreeBudget: in.TreeBudget, Title: in.Title, ModelSelection: in.ModelSelection, Exec: in.Exec, ToolSchema: in.ToolSchema, RootContract: in.RootContract}, attachments...)
+	snap, err := s.a.CreateConfigured(in.Goal, agent.RunConfiguration{CompletionCriteria: in.CompletionCriteria, Requirements: in.Requirements, SuccessContains: in.SuccessContains, Budget: in.Budget, TreeBudget: in.TreeBudget, ResourceLimits: in.ResourceLimits, Title: in.Title, ModelSelection: in.ModelSelection, Exec: in.Exec, ToolSchema: in.ToolSchema, RootContract: in.RootContract}, attachments...)
 	if err == nil && in.Start {
 		err = s.startLocked(snap.Run.ID, "", "")
 	}

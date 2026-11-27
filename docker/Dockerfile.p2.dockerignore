@@ -13,7 +13,7 @@
 !bin/
 !bin/trace
 !prompts/
-!prompts/agent.md
+!prompts/*.md
 !licenses/
 !licenses/**
 !examples/

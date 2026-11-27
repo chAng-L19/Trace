@@ -20,7 +20,11 @@ func reportWorkerFixture(t *testing.T, backend string, translation func(*Agent, 
 
 func reportWorkerFixtureInStore(t *testing.T, store *Store, translation func(*Agent, *Store, string, int, ModelRequest) error, legacyPause ...bool) (*Agent, *Store, string, AgentWorker, *atomic.Int32) {
 	t.Helper()
-	legacy := len(legacyPause) == 0 || legacyPause[0]
+	return reportWorkerScenario(t, store, translation, len(legacyPause) == 0 || legacyPause[0], false)
+}
+
+func reportWorkerScenario(t *testing.T, store *Store, translation func(*Agent, *Store, string, int, ModelRequest) error, legacy, withRemaining bool) (*Agent, *Store, string, AgentWorker, *atomic.Int32) {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "proof.txt")
 	const marker = "report-worker-proof"
 	if err := os.WriteFile(path, []byte(marker), 0600); err != nil {
@@ -41,6 +45,9 @@ func reportWorkerFixtureInStore(t *testing.T, store *Store, translation func(*Ag
 				return ModelResponse{}, err
 			}
 			claim := Result{Status: "success", Summary: "文件已经返回固定验证标记；保留本次读取的原始来源，双语文件报告尚待交付。", EvidenceIDs: []string{result.EvidenceID}, Answers: []Answer{{Kind: "marker", Value: marker, EvidenceIDs: []string{result.EvidenceID}}}}
+			if withRemaining {
+				claim.Remaining = []RemainingWork{{ID: "review-notes", Goal: "Review the separate notes", NextAction: "Read the notes", EvidenceIDs: []string{result.EvidenceID}}}
+			}
 			raw, _ := json.Marshal(map[string]any{"trace_result": claim})
 			return ModelResponse{Content: string(raw)}, nil
 		default:
@@ -126,7 +133,9 @@ func TestWorkerReportMissingTranslationContinuesAutomatically(t *testing.T) {
 func TestWorkerResultDeliveryBeforeTranslationAndResumption(t *testing.T) {
 	for _, backend := range []string{"json", "sqlite"} {
 		t.Run(backend, func(t *testing.T) {
-			a, store, id, w, calls := reportWorkerFixture(t, backend, func(a *Agent, store *Store, id string, n int, _ ModelRequest) error {
+			fixtureStore, _ := u7Store(t, backend)
+			var earlyHash atomic.Pointer[string]
+			a, store, id, w, calls := reportWorkerScenario(t, fixtureStore, func(a *Agent, store *Store, id string, n int, request ModelRequest) error {
 				parent, err := store.Load(id)
 				if err != nil {
 					return err
@@ -139,6 +148,10 @@ func TestWorkerResultDeliveryBeforeTranslationAndResumption(t *testing.T) {
 					if !r.SettlementPending || !r.DeliveryPending || r.CleanupStatus != "pending" || r.ResultStatus != "success" || len(r.Answers) == 0 || !r.Answers[0].Verified || r.Answers[0].Value != "report-worker-proof" {
 						return fmt.Errorf("early receipt lost verified answer or delivery boundary: %+v", r)
 					}
+					if len(r.Remaining) != 1 || r.Remaining[0].ID != "review-notes" || r.Remaining[0].NextAction != "Read the notes" || len(r.Remaining[0].EvidenceIDs) != 1 || !hasString(r.EvidenceIDs, r.Remaining[0].EvidenceIDs[0]) || hasString(parent.Plan.Frontier, "next") || parent.Run.Status == StatusCompleted {
+						return fmt.Errorf("early remaining missing or dependency released: %+v, frontier=%v", r, parent.Plan.Frontier)
+					}
+					earlyHash.Store(&r.SourceHash)
 					publisher := *a
 					publisher.workerRunID, publisher.workerVisit = r.SourceRunID, r.Visit
 					if err := publisher.publishWorkerResult(r.SourceRunID); err != nil {
@@ -149,8 +162,22 @@ func TestWorkerResultDeliveryBeforeTranslationAndResumption(t *testing.T) {
 						return fmt.Errorf("same business source duplicated early receipt: %v", err)
 					}
 					rows, err := store.ChildReports(id)
-					if err != nil || rows[0].SourceStatus != "available" {
+					if err != nil || len(rows) != 1 || rows[0].SourceStatus != "available" || rows[0].SourceHash != r.SourceHash {
 						return fmt.Errorf("translation telemetry invalidated business source: %+v %v", rows, err)
+					}
+					v := rows[0].Timings
+					if v == nil || v.LastObservationToEarlyReceipt == nil || v.EarlyReceiptToReportRequest == nil || !v.LastObservationToEarlyReceipt.To.Equal(v.EarlyReceiptToReportRequest.From) || !v.EarlyReceiptToReportRequest.To.Equal(request.CreatedAt) {
+						return fmt.Errorf("live early receipt does not reach the archived report request: %+v", v)
+					}
+					if v.ReportRequestToArchive != nil || v.ArchiveToSettlementObserved != nil || v.SettlementObservedToParent != nil || v.ParentSettlementToDependentClaim != nil {
+						return fmt.Errorf("report still running but projection includes a later stage: %+v", v)
+					}
+					saved, err := store.Load(id)
+					if err != nil {
+						return err
+					}
+					if len(saved.ChildReports) != 1 || saved.ChildReports[0].Timings != nil || workerContextHash(saved.ChildReports[0]) != workerContextHash(r) {
+						return fmt.Errorf("live timing projection rewrote the fixed early receipt")
 					}
 					return a.DeliverWorkerMessages(id)
 				}
@@ -162,7 +189,7 @@ func TestWorkerResultDeliveryBeforeTranslationAndResumption(t *testing.T) {
 				}
 				_, err = a.QueueMessage(parent.Workers[0].RunID, "follow_up", "Keep this input for a later business visit.")
 				return err
-			})
+			}, true, true)
 			_, err := store.Update(id, func(s *Snapshot) error {
 				s.Run.Status = StatusCompleted
 				_, err := a.deferForChildReportDelivery(s)
@@ -185,6 +212,9 @@ func TestWorkerResultDeliveryBeforeTranslationAndResumption(t *testing.T) {
 			child, childErr := store.Load(w.RunID)
 			if err != nil || childErr != nil || calls.Load() != 4 || child.Run.Status != StatusCompleted || reportDeliveryPending(&child) || len(child.Actions) != 1 || parent.Plan.Tasks[0].Status != "verified" || parent.Plan.Tasks[1].Status != "running" || len(child.Mailbox) != 1 || !child.Mailbox[0].Pending() {
 				t.Fatalf("report continuation replayed or consumed business input: parent=%+v child=%+v calls=%d err=%v/%v", parent.Plan, child.Run, calls.Load(), err, childErr)
+			}
+			if hash := earlyHash.Load(); hash == nil || *hash == "" || workerBusinessSourceHash(&child) != *hash || len(child.Result.Remaining) != 1 || child.Result.Remaining[0].ID != "review-notes" {
+				t.Fatal("report-only resume changed the early business source or lost remaining work")
 			}
 			if !a.reportFilesComplete(&child) {
 				t.Fatal("substantive bilingual CAS files remain incomplete")
@@ -251,6 +281,11 @@ func TestWorkerReportBusinessSettlementInvalidation(t *testing.T) {
 				rows, err := store.ChildReports(id)
 				if err != nil || len(rows) < 2 || change != "requirements" && rows[0].SourceStatus == "available" {
 					t.Fatalf("stale receipt presented as current: %+v %v", rows, err)
+				}
+				for _, r := range rows {
+					if r.SourceStatus != "available" && r.Timings != nil {
+						t.Fatalf("%s receipt retained live timings on %s: %+v", r.SourceStatus, change, r.Timings)
+					}
 				}
 			})
 		}

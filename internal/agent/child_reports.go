@@ -11,29 +11,31 @@ import (
 // Behavior references: Harness fcc0ad462172 continuation-messages.ts and DSH
 // 8c32a9dc5d72 reportRelay (MIT); Trace uses its own Store/visit transaction.
 type ChildReport struct {
-	ParentRunID       string        `json:"parent_run_id"`
-	SourceRunID       string        `json:"source_run_id"`
-	TaskID            string        `json:"task_id"`
-	WorkerID          string        `json:"worker_id"`
-	Visit             uint64        `json:"visit"`
-	SourceHash        string        `json:"source_hash"`
-	RunStatus         Status        `json:"run_status"`
-	ResultStatus      string        `json:"result_status"`
-	CleanupStatus     string        `json:"cleanup_status"`
-	DeliveryPending   bool          `json:"delivery_pending"`
-	SettlementPending bool          `json:"settlement_pending,omitempty"`
-	Summary           string        `json:"summary"`
-	Findings          []string      `json:"findings"`
-	Unresolved        []string      `json:"unresolved"`
-	AnswerCount       int           `json:"answer_count"`
-	Answers           []Answer      `json:"answers,omitempty"`
-	EvidenceIDs       []string      `json:"evidence_ids,omitempty"`
-	FindingCount      int           `json:"finding_count"`
-	ReportPath        string        `json:"report_path"`
-	ReportFiles       []ArtifactRef `json:"report_files,omitempty"`
-	SourceStatus      string        `json:"source_status"`
-	Current           bool          `json:"current"`
-	CreatedAt         time.Time     `json:"created_at"`
+	Timings           *WorkerTimings  `json:"timings,omitempty"`
+	ParentRunID       string          `json:"parent_run_id"`
+	SourceRunID       string          `json:"source_run_id"`
+	TaskID            string          `json:"task_id"`
+	WorkerID          string          `json:"worker_id"`
+	Visit             uint64          `json:"visit"`
+	SourceHash        string          `json:"source_hash"`
+	RunStatus         Status          `json:"run_status"`
+	ResultStatus      string          `json:"result_status"`
+	CleanupStatus     string          `json:"cleanup_status"`
+	DeliveryPending   bool            `json:"delivery_pending"`
+	SettlementPending bool            `json:"settlement_pending,omitempty"`
+	Summary           string          `json:"summary"`
+	Findings          []string        `json:"findings"`
+	Unresolved        []string        `json:"unresolved"`
+	Remaining         []RemainingWork `json:"remaining,omitempty"`
+	AnswerCount       int             `json:"answer_count"`
+	Answers           []Answer        `json:"answers,omitempty"`
+	EvidenceIDs       []string        `json:"evidence_ids,omitempty"`
+	FindingCount      int             `json:"finding_count"`
+	ReportPath        string          `json:"report_path"`
+	ReportFiles       []ArtifactRef   `json:"report_files,omitempty"`
+	SourceStatus      string          `json:"source_status"`
+	Current           bool            `json:"current"`
+	CreatedAt         time.Time       `json:"created_at"`
 }
 
 // Hash the fixed body as well as its source ledger. Rendering is pure: every
@@ -69,6 +71,10 @@ func newChildReport(parent string, w AgentWorker, child *Snapshot, cleanup strin
 	r := ChildReport{ParentRunID: parent, SourceRunID: w.RunID, TaskID: w.TaskID, WorkerID: w.ID, Visit: w.Visit, SourceHash: childReportHash(child), RunStatus: child.Run.Status, ResultStatus: child.Result.Status, CleanupStatus: cleanup, DeliveryPending: reportDeliveryIncomplete(child), SettlementPending: cleanup == "pending", Summary: excerpt(child.Result.Summary, 1600), Findings: []string{}, Unresolved: []string{}, AnswerCount: len(child.Result.Answers), FindingCount: len(child.Findings), SourceStatus: "available", Current: true, CreatedAt: time.Now().UTC()}
 	if child.WorkerSettlement.matches(parent, w) && !r.SettlementPending {
 		r.CreatedAt = child.WorkerSettlement.ObservedAt
+	}
+	r.Remaining = cloneRemainingWork(child.Result.Remaining)
+	for _, work := range r.Remaining {
+		r.Unresolved = append(r.Unresolved, work.ID+": "+work.Goal+"; next: "+work.NextAction)
 	}
 	r.Answers = append([]Answer(nil), child.Result.Answers...)
 	r.EvidenceIDs = append([]string(nil), child.Result.EvidenceIDs...)
@@ -154,9 +160,11 @@ func ChildReportReceipts(parent Snapshot, limit int) []ChildReport {
 	for i := range out {
 		r := &out[i]
 		r.Current = false
+		r.Timings = nil
 		r.SourceStatus = "unavailable"
 		r.Findings = append([]string{}, r.Findings...)
 		r.Unresolved = append([]string{}, r.Unresolved...)
+		r.Remaining = cloneRemainingWork(r.Remaining)
 		r.Answers = append([]Answer(nil), r.Answers...)
 		for j := range r.Answers {
 			r.Answers[j].EvidenceIDs = append([]string(nil), r.Answers[j].EvidenceIDs...)
@@ -183,6 +191,7 @@ func (s *Store) childReportsFromLocked(parent Snapshot, limit int) []ChildReport
 	for i := range out {
 		r := &out[i]
 		r.Current = false
+		r.Timings = nil
 		r.SourceStatus = "unavailable"
 		registered := false
 		for _, w := range parent.Workers {
@@ -213,6 +222,7 @@ func (s *Store) childReportsFromLocked(parent Snapshot, limit int) []ChildReport
 		if !r.SettlementPending && childReportHash(child) == r.SourceHash || r.SettlementPending && businessResultReady(child) && workerBusinessSourceHash(child) == r.SourceHash {
 			r.SourceStatus = "available"
 		}
+		r.Timings = workerTimings(child, &parent, r)
 	}
 	return out
 }

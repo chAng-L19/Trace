@@ -53,8 +53,8 @@ for(const value of ['标准输出','标准错误','响应状态码','完整原�
 assert.match(evidenceDetail({...ev,content:'plain <payload>'},snap),/plain &lt;payload&gt;/);
 assert.match(evidenceDetail({...ev,content:'{"broken"'},snap),/记录内容/);
 assert.match(evidenceCard({...ev,content:JSON.stringify({stdout:'x'.repeat(1200),exit_code:0})},snap),/前 1,000 字符/);
-assert.match(explorationGraph({snap:{...snap,evidence:[{...ev,content:'{"exit_code":2,"stderr":"failed"}',verification:'unverified'}]}}),/执行失败/);
-// Search keeps all connected nodes and locates matching nodes without a rerender.
+assert.match(explorationData({...snap,evidence:[{...ev,content:'{"exit_code":2,"stderr":"failed"}',verification:'unverified'}]}).nodes.find(n=>n.id==='evidence:ev-1').state,/执行失败/,'failure remains readable in folded evidence details');
+// Search keeps connected records; locating still marks and focuses exact matches.
 let located=0,focused=0;const toggles=[];
 const nodes=[{dataset:{explorationSearch:'first 比较响应'},classList:{toggle:(k,on)=>toggles.push(on)},scrollIntoView:()=>located++,focus:()=>focused++},{dataset:{explorationSearch:'second 复查'},classList:{toggle:(k,on)=>toggles.push(on)},scrollIntoView:()=>located++,focus:()=>focused++}];
 const count={},root={dataset:{explorationRun:'run-1'},querySelectorAll:()=>nodes,querySelector:()=>count};

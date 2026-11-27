@@ -17,7 +17,7 @@ COPY .trace/skills/cloakbrowser/ /opt/trace/.trace/skills/cloakbrowser/
 COPY .trace/skills/web-analysis/ /opt/trace/.trace/skills/web-analysis/
 RUN test -x /opt/trace/runtime/lightpanda/lightpanda
 COPY bin/trace /usr/local/bin/trace
-COPY prompts/agent.md /opt/trace/prompts/agent.md
+COPY prompts/ /opt/trace/prompts/
 COPY licenses/ /opt/trace/licenses/
 COPY examples/tsecbench-task.md /opt/trace/examples/tsecbench-task.md
 COPY examples/tsecbench_api.py /opt/trace/examples/tsecbench_api.py

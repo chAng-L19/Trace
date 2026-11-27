@@ -9,6 +9,9 @@ import (
 func toolCleanupError(s Snapshot) error {
 	var result error
 	for _, action := range s.Actions {
+		if action.ExecutorOwnershipError != "" {
+			result = errors.Join(result, fmt.Errorf("tool %s/%s executor ownership: %s", action.RequestID, action.CallID, action.ExecutorOwnershipError))
+		}
 		if (action.Adapter == "exec" || action.Adapter == "local") && action.Result == nil && action.ResourceCleanupStatus != "completed" {
 			result = errors.Join(result, fmt.Errorf("tool %s/%s has no durable process cleanup observation", action.RequestID, action.CallID))
 		}

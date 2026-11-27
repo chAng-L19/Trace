@@ -30,6 +30,22 @@ try{
     const root=page.locator(selector),canvas=root.locator('.graph-shell');
     const edge=root.locator('[data-action=exploration-chain][data-from="task:todo-ready"][data-to="task:todo-dependent"][data-relation="依赖"]');
     await edge.waitFor({state:'attached'});
+    if(mode==='preview'){
+      measurements.previewRefresh=await root.evaluate(async root=>{
+        const {patchLive}=await import('/interactions.js'),{mountExploration}=await import('/exploration.js');
+        const nodes=[...root.querySelectorAll('[data-chain-node]')],edges=[...root.querySelectorAll('[data-action=exploration-chain]')];
+        const retained=[];
+        for(const target of [nodes[0],edges[0]]){
+          target.focus();
+          patchLive(root,root.innerHTML);mountExploration();
+          const nextNodes=[...root.querySelectorAll('[data-chain-node]')],nextEdges=[...root.querySelectorAll('[data-action=exploration-chain]')];
+          retained.push({focused:document.activeElement===target,nodes:nextNodes.length===nodes.length&&nodes.every((node,i)=>node===nextNodes[i]),edges:nextEdges.length===edges.length&&edges.every((edge,i)=>edge===nextEdges[i])});
+        }
+        return {nodeCount:nodes.length,edgeCount:edges.length,retained};
+      });
+      assert.ok(measurements.previewRefresh.nodeCount>0&&measurements.previewRefresh.edgeCount>0);
+      assert.deepEqual(measurements.previewRefresh.retained,Array.from({length:2},()=>({focused:true,nodes:true,edges:true})),'same-topology preview reconciliation retains actual nodes, edges and keyboard focus');
+    }
     await canvas.evaluate(el=>el.scrollIntoView({block:'center',inline:'nearest'}));await frame();
     const before=await canvas.boundingBox(),x=before.x+before.width-5,y=before.y+before.height-5;
     await page.mouse.move(x,y);await page.mouse.down();await page.mouse.move(x+80,y+100,{steps:12});await page.mouse.up();await frame();
@@ -110,6 +126,28 @@ try{
     await enlargeExplorationForOuterScroll({page,root,frame,result:measurement.outer});
     await page.screenshot({path:join(output,`exploration-${mode}-outer-scroll.png`)});
   }
+  const full=page.locator('.exploration-view'),sources=full.locator('.exploration-node.source');
+  await full.locator('[data-command=mainline]').click();
+  assert.equal(await sources.count(),0,'sources fold behind the default task line');
+  const zoom=await full.locator('.exploration-zoom').textContent();
+  await full.locator('[data-command=kind][data-kind=""]').click();
+  assert.ok(await sources.count()>0,'the full view retains fixed source nodes');
+  await full.locator('[data-command=mainline]').click();
+  const search=full.locator('#exploration-search');
+  await search.fill('child-source:');
+  assert.ok(await sources.count()>0,'global search discloses folded source nodes');
+  assert.ok(await full.locator('.exploration-node.source.search-match').count()>0);
+  assert.equal(await search.evaluate(el=>el===document.activeElement),true,'search keeps keyboard focus when it unfolds the graph');
+  await search.fill('');
+  assert.equal(await sources.count(),0,'clearing search restores the task line');
+  assert.equal(await full.locator('.exploration-zoom').textContent(),zoom,'projection switches preserve manual zoom');
+  await full.locator('.exploration-node.child_report').first().click();
+  await page.locator('#dialog-content [data-command=expand]').click();
+  await page.locator('#close-dialog').click();
+  assert.ok(await sources.count()>0,'receipt disclosure can expand its source in the graph');
+  await full.locator('[data-command=collapse]').click();
+  assert.equal(await sources.count(),0,'collapse restores folded details');
+  measurements.projection={defaultTaskLine:true,fullView:true,globalSearch:true,focusRetained:true,zoomRetained:true,receiptDisclosure:true};
   assert.deepEqual(writes,[],'graph interaction must not issue a Run mutation');
 }catch(error){report.error=String(error.stack||error);throw error}
 finally{

@@ -257,7 +257,11 @@ func TestCanonicalPromptAndHistoricalSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data) != DefaultPrompt {
+	role, err := os.ReadFile(filepath.Join("..", "..", "prompts", "coordinator.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data)+"\n"+string(role) != DefaultPrompt {
 		t.Fatal("embedded prompt differs")
 	}
 	root := t.TempDir()

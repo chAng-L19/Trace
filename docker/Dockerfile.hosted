@@ -25,7 +25,7 @@ COPY docker/install-capabilities.sh docker/capabilities.sha256 scripts/http-requ
 RUN sh /tmp/trace-capability-build/install-capabilities.sh /tmp/trace-capabilities /tmp/trace-capability-build/capabilities.sha256 \
     && rm -rf /tmp/trace-capabilities /tmp/trace-capability-build
 COPY bin/trace /usr/local/bin/trace
-COPY prompts/agent.md /opt/trace/prompts/agent.md
+COPY prompts/ /opt/trace/prompts/
 COPY examples/tsecbench-task.md /opt/trace/examples/tsecbench-task.md
 COPY examples/tsecbench_api.py /opt/trace/examples/tsecbench_api.py
 COPY docker/entrypoint.sh /opt/trace/docker/entrypoint.sh

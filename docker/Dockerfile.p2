@@ -24,7 +24,7 @@ RUN chmod -R a+rX /opt/trace/runtime/cloakbrowser \
     && cd /opt/trace/tools/web-analysis \
     && node --input-type=module -e 'import {readFileSync} from "node:fs"; if(JSON.parse(readFileSync("node_modules/cloakbrowser/package.json")).version!=="0.6.4") throw new Error("CloakBrowser must be pinned to 0.6.4"); await import("cloakbrowser");'
 COPY bin/trace /usr/local/bin/trace
-COPY prompts/agent.md /opt/trace/prompts/agent.md
+COPY prompts/ /opt/trace/prompts/
 COPY licenses/ /opt/trace/licenses/
 COPY examples/tsecbench-task.md /opt/trace/examples/tsecbench-task.md
 COPY examples/tsecbench_api.py /opt/trace/examples/tsecbench_api.py

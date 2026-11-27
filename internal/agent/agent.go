@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -23,6 +22,9 @@ type Agent struct {
 	store                     *Store
 	provider                  Provider
 	prompt                    string
+	newRunPromptPath          string
+	workerPrompt              string
+	reconPrompt               string
 	promptID                  string
 	budget                    BudgetOverride
 	treeBudget                *TreeBudget
@@ -43,18 +45,11 @@ func New(store *Store, provider Provider, promptPath string) (*Agent, error) {
 	if provider == nil {
 		provider = MockProvider{}
 	}
-	prompt := DefaultPrompt
-	if promptPath != "" {
-		data, err := os.ReadFile(promptPath)
-		if err != nil {
-			return nil, fmt.Errorf("load runtime prompt: %w", err)
-		}
-		prompt = string(data)
+	roles, err := loadRuntimePrompts(promptPath)
+	if err != nil {
+		return nil, err
 	}
-	if strings.TrimSpace(prompt) == "" {
-		return nil, fmt.Errorf("runtime prompt is empty")
-	}
-	a := &Agent{store: store, provider: provider, prompt: prompt, promptID: promptHash(prompt), registry: NewToolRegistry(), contextConfig: DefaultContextConfig(), workers: newWorkerLifecycle(), mcpState: &mcpLifecycle{}}
+	a := &Agent{store: store, provider: provider, prompt: roles.coordinator, workerPrompt: roles.worker, reconPrompt: roles.recon, promptID: promptHash(roles.coordinator), registry: NewToolRegistry(), contextConfig: DefaultContextConfig(), workers: newWorkerLifecycle(), mcpState: &mcpLifecycle{}}
 	if err := a.ConfigureModels(nil, RoleModels{}); err != nil {
 		return nil, err
 	}
@@ -134,6 +129,7 @@ type RunConfiguration struct {
 	ModelSelection     *ModelSelection
 	role               string
 	TreeBudget         *TreeBudget
+	ResourceLimits     *ResourceLimits
 	Requirements       []VerificationRequirement
 	SuccessContains    *string
 	Budget             *Budget
@@ -143,6 +139,12 @@ type RunConfiguration struct {
 func (a *Agent) CreateConfigured(goal string, config RunConfiguration, attachments ...InputAttachment) (Snapshot, error) {
 	if strings.TrimSpace(goal) == "" {
 		return Snapshot{}, fmt.Errorf("goal is required")
+	}
+	if err := ValidateResourceLimits(config.ResourceLimits); err != nil {
+		return Snapshot{}, err
+	}
+	if config.ResourceLimits != nil && config.role == "worker" {
+		return Snapshot{}, fmt.Errorf("resource limits belong to the root conversation")
 	}
 	execConfig, toolSchema, toolSelection, err := a.executionConfiguration(config)
 	if err != nil {
@@ -179,11 +181,36 @@ func (a *Agent) CreateConfigured(goal string, config RunConfiguration, attachmen
 	if err != nil {
 		return Snapshot{}, err
 	}
-	return a.store.createInitializedWithID(config.runID, goal, a.prompt, a.promptID, func(s *Snapshot) error {
+	roles := runtimePrompts{a.prompt, a.workerPrompt, a.reconPrompt}
+	if a.newRunPromptPath != "" {
+		roles, err = loadRuntimePrompts(a.newRunPromptPath)
+		if err != nil {
+			return Snapshot{}, err
+		}
+	}
+	prompt := roles.coordinator
+	if config.role == "worker" {
+		prompt = roles.worker
+		if config.workerTask != nil && config.workerTask.ExecutionRole == "recon" {
+			prompt = roles.recon
+		}
+	}
+	return a.store.createInitializedWithID(config.runID, goal, prompt, promptHash(prompt), func(s *Snapshot) error {
 		s.Run.Exec, s.Run.ToolSchema, s.Run.ToolSelection = execConfig, toolSchema, toolSelection
 		s.Run.Responsibility = ResponsibilityCoordinator
 		if config.role == "worker" {
 			s.Run.Responsibility = ResponsibilityWorker
+		}
+		if config.ResourceLimits != nil {
+			limits := *config.ResourceLimits
+			if limits.WorkerCeiling != nil {
+				ceiling := *limits.WorkerCeiling
+				limits.WorkerCeiling = &ceiling
+			}
+			s.Run.ResourceLimits = &limits
+			if limits.WorkerCeiling != nil {
+				s.Plan.Capacity = defaultWorkerCapacity(s)
+			}
 		}
 		s.Run.ModelSelection = selected
 		s.Run.Context = a.contextConfig

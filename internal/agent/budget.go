@@ -222,6 +222,7 @@ func (a *Agent) beginBudgetContext(parent context.Context, id string) (context.C
 	if deadlineCause != nil {
 		ctx, cancel = context.WithDeadlineCause(ctx, deadline, deadlineCause)
 	}
+	ctx = context.WithValue(ctx, runTimeBudgetKey{}, selectedTimeBudget{deadline: deadline, cause: deadlineCause})
 	controlled, stop := a.controlledContext(ctx, id)
 	stopCheckpoint := a.startBudgetCheckpoint(controlled, snap, checkpointFailure)
 	var once sync.Once

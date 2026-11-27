@@ -110,6 +110,9 @@ func (a *Agent) registerPreparedWorker(ctx context.Context, id string, w AgentWo
 		if child.Run.Status != StatusCreated {
 			return fmt.Errorf("dispatch child is no longer ready: %s", child.Run.Status)
 		}
+		if err := a.checkContinuationsLocked(s, *t); err != nil {
+			return err
+		}
 		if err := a.checkWorkerCapacityLocked(s, 0); err != nil {
 			return err
 		}

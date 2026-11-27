@@ -56,6 +56,7 @@ type Run struct {
 	PauseReason               string            `json:"pause_reason,omitempty"`
 	Budget                    Budget            `json:"budget"`
 	TreeBudget                TreeBudget        `json:"tree_budget,omitempty"`
+	ResourceLimits            *ResourceLimits   `json:"resource_limits,omitempty"`
 	BudgetCheckpoint          *BudgetCheckpoint `json:"budget_checkpoint,omitempty"`
 	BudgetConfigured          bool              `json:"budget_configured,omitempty"`
 	ElapsedMillis             int64             `json:"elapsed_millis"`
@@ -184,6 +185,9 @@ type Action struct {
 	Result                *ToolResult `json:"result,omitempty"`
 	ResourceCleanupStatus string      `json:"resource_cleanup_status,omitempty"`
 	ResourceCleanupError  string      `json:"resource_cleanup_error,omitempty"`
+
+	PlanTaskID             string `json:"plan_task_id,omitempty"`
+	ExecutorOwnershipError string `json:"executor_ownership_error,omitempty"`
 }
 
 type ToolResult struct {

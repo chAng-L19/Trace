@@ -70,6 +70,11 @@ func (a *Agent) RecordToolObservation(id, requestID, callID, result string) (Sna
 
 func (a *Agent) recordToolObservation(id, requestID, callID, result string, allowPaused bool) (Snapshot, error) {
 	return a.store.Update(id, func(s *Snapshot) error {
+		if allowPaused {
+			if handled, err := a.recordExecutorOwnershipReviewLocked(s, requestID, callID, result); handled || err != nil {
+				return err
+			}
+		}
 		if s.Run.Status != StatusWaitingTool && !(allowPaused && s.Run.Status == StatusPaused) {
 			return fmt.Errorf("run is not waiting for a tool")
 		}
@@ -604,6 +609,8 @@ func (a *Agent) executeAction(ctx context.Context, id, callID, adapter string, c
 
 func (a *Agent) executeActionWithResourceIdentity(ctx context.Context, id, callID, adapter string, command []string, execute func() ToolResult, rootIdentity func(string) (string, error)) (Snapshot, error) {
 	actionIndex := -1
+	var ownership []executorOwner
+	checkOwnership := false
 	uncertain := false
 	snap, err := a.store.Update(id, func(s *Snapshot) error {
 		if isStopped(s.Run.Status) {
@@ -629,8 +636,27 @@ func (a *Agent) executeActionWithResourceIdentity(ctx context.Context, id, callI
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		checkOwnership = adapter != "builtin" || !a.registry.permitsRunTool(Run{Responsibility: ResponsibilityCoordinator}, call.Name, adapter)
+		if checkOwnership {
+			var err error
+			ownership, err = a.executorOwnershipLocked(s)
+			if err != nil {
+				return err
+			}
+		}
 		actionIndex = len(s.Actions)
 		s.Actions = append(s.Actions, Action{RequestID: requestID, CallID: callID, Name: call.Name, Adapter: adapter, Arguments: call.Arguments, Command: append([]string(nil), command...), Status: "started", StartedAt: time.Now().UTC()})
+		if checkOwnership {
+			localTask, candidates := "", 0
+			for _, task := range s.Plan.Tasks {
+				if task.ChildRunID == "" && task.Status == "running" && (!task.LocalExecution || task.LocalWorkerVisit == a.workerVisit) {
+					localTask, candidates = task.ID, candidates+1
+				}
+			}
+			if candidates == 1 {
+				s.Actions[actionIndex].PlanTaskID = localTask
+			}
+		}
 		if seconds, ok := ctx.Value(execTimeoutKey{}).(int); ok {
 			s.Actions[actionIndex].TimeoutSeconds = seconds
 		}
@@ -656,12 +682,15 @@ func (a *Agent) executeActionWithResourceIdentity(ctx context.Context, id, callI
 			}
 		}
 		addEvent(s, "action_started", "工具动作开始", map[string]string{"call_id": callID, "request_id": requestID})
+		if len(ownership) > 0 {
+			addEvent(s, "action_executor_admitted", "工具动作已核对 Worker 执行代次", map[string]any{"call_id": callID, "request_id": requestID, "owners": ownership})
+		}
 		return nil
 	})
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if uncertain || isStopped(snap.Run.Status) {
+	if actionIndex < 0 || uncertain || isStopped(snap.Run.Status) {
 		return snap, nil
 	}
 	result := execute()
@@ -689,6 +718,9 @@ func (a *Agent) executeActionWithResourceIdentity(ctx context.Context, id, callI
 	}
 	snap, err = a.store.Update(id, func(s *Snapshot) error {
 		action := &s.Actions[actionIndex]
+		if checkOwnership {
+			a.revalidateExecutorOwnershipLocked(s, action, ownership, &result)
+		}
 		action.Status = "completed"
 		if result.Interrupted {
 			action.Status = "interrupted"
